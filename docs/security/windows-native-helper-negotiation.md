@@ -5,9 +5,11 @@ The development NativeAOT peer lives in
 It is a separate project and does not compile the unfinished directory proof.
 The `--boundary-protocol 1.0.0` profile accepts one canonical framed hello and EOF.
 The explicit [session profile](../architecture/windows-boundary-session.md) accepts
-hello followed by bounded session-status requests in the same owned process.
-No workspace operations, leases, process execution service or production readiness
-are exposed. The production resolver remains unavailable.
+hello followed by bounded requests in the same process. The owned Node probe
+exposes status; an explicit test client exercises the native
+[directory lease profile](../architecture/windows-boundary-directory.md).
+File I/O, process execution and production readiness remain pending. The production
+resolver remains unavailable.
 
 From `proofs/windows-workspace-boundary` (so global.json selects the pinned SDK):
 
@@ -37,7 +39,8 @@ for this development-only test; production deployment remains separately gated.
 
 The peer bounds request allocation to4096bytes, rejects noncanonical JSON,
 duplicate/unknown fields, malformed UTF-8, truncation and extra frames, and writes
-no stdout diagnostics. It waits for EOF after replying. The owning parent provides
+no stdout diagnostics. The hello-only profile waits for EOF after replying; the
+session profile accepts up to 15 subsequent requests. The owning parent provides
 the deadline and termination behavior; standalone partial-input invocations have
 no internal timer and are not a public launcher. No descendants are created.
 
@@ -45,6 +48,7 @@ The first actual native run exposed Windows writer newline differences and an
 uncaught InvalidDataException rejection. Normalize canonical output toLF and catch
 that exception explicitly; failed evidence is retained in the control workspace.
 
-Next implement the accepted live directory lease/operation contract behind this
-transport and qualify ownership/failure behavior. Do not advertise ready after
-hello. The verifier's operational path and protected deployment remain pending.
+Next connect directory operations to the owned Node adapter, complete the remaining
+WorkspaceBoundary operations and qualify ownership/failure behavior. Do not
+advertise ready after hello or directory tests. The verifier's operational path
+and protected deployment remain pending.
