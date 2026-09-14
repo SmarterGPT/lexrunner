@@ -96,6 +96,27 @@ export const WindowsBoundaryDirectoryResult = z.strictObject({
     "child-missing",
   ]),
 });
+export const WindowsBoundaryFileRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_request"),
+  operation: z.literal("read-file"),
+  lease_token: Nonce,
+  component: z.string().min(1).max(255),
+  max_bytes: z.number().int().min(0).max(1024),
+});
+export const WindowsBoundaryFileResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_result"),
+  lease_token: Nonce,
+  byte_length: z.number().int().min(0).max(1024),
+  content_base64: z
+    .string()
+    .max(1368)
+    .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u),
+  content_sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  file_id: z.string().regex(/^[a-f0-9]{32}$/u),
+  volume_serial_number: z.string().regex(/^[a-f0-9]{16}$/u),
+});
 const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryHello,
   WindowsBoundaryHelloResult,
@@ -103,6 +124,8 @@ const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryStatusResult,
   WindowsBoundaryDirectoryRequest,
   WindowsBoundaryDirectoryResult,
+  WindowsBoundaryFileRequest,
+  WindowsBoundaryFileResult,
 ]);
 type SessionMessage = z.infer<typeof SessionMessage>;
 

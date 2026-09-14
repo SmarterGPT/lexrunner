@@ -1,6 +1,16 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rename, rm, symlink, writeFile, stat, readFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+  stat,
+  readFile,
+  open,
+} from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJSONStringify } from "../../src/util/canonicalJson.js";
@@ -148,10 +158,97 @@ async function setup() {
     ).toBe(true);
     return reply;
   }
-  return { root, parent, directory, child, closed, operation };
+  async function read(token: string, component: string, maximum: number) {
+    const body = {
+      kind: "file_request",
+      protocol_version: "1.0.0",
+      operation: "read-file",
+      client_nonce: nonce,
+      session_nonce: hello.session_nonce,
+      request_id: randomUUID(),
+      operation_id: randomUUID(),
+      lease_token: token,
+      component,
+      max_bytes: maximum,
+    };
+    const digest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
+    exchange.reserve(
+      { request_id: body.request_id, operation_id: body.operation_id, request_digest: digest },
+      2000
+    );
+    const reply = await send({ ...body, request_digest: digest });
+    expect(reply.kind).toBe("file_result");
+    expect(
+      exchange.correlate({
+        client_nonce: reply.client_nonce,
+        session_nonce: reply.session_nonce,
+        request_id: reply.request_id,
+        operation_id: reply.operation_id,
+        request_digest: reply.request_digest,
+      }).correlated
+    ).toBe(true);
+    expect(reply.lease_token).toBe(token);
+    const content = Buffer.from(reply.content_base64, "base64");
+    expect(content.toString("base64")).toBe(reply.content_base64);
+    expect(content.length).toBe(reply.byte_length);
+    expect(content.length).toBeLessThanOrEqual(maximum);
+    expect(`sha256:${createHash("sha256").update(content).digest("hex")}`).toBe(
+      reply.content_sha256
+    );
+    return { reply, content };
+  }
+  return { root, parent, directory, child, closed, operation, read };
 }
 
 describe.skipIf(process.platform !== "win32" || !executable)("real native directory lease", () => {
+  it.each([0, 1, 257, 1024])(
+    "reads exactly %i binary bytes and closes the file handle",
+    async (size) => {
+      const f = await setup();
+      const data = Buffer.from(Array.from({ length: size }, (_, i) => i % 256));
+      const target = path.join(f.directory, "résumé.bin");
+      await writeFile(target, data);
+      const root = await f.operation("acquire", f.directory);
+      const result = await f.read(root.lease_token, "résumé.bin", size);
+      expect(result.content).toEqual(data);
+      expect(result.reply.volume_serial_number).toBe(root.volume_serial_number);
+      await rename(target, target + "-closed");
+      expect((await f.operation("assert", root.lease_token)).status).toBe("current");
+      await f.operation("release", root.lease_token);
+    }
+  );
+  it.each(["missing", "oversized", "directory", "junction", "stream", "traversal"])(
+    "fails %s file reads without returning partial content",
+    async (kind) => {
+      const f = await setup();
+      let component = kind;
+      if (kind === "oversized") await writeFile(path.join(f.directory, kind), Buffer.alloc(1025));
+      if (kind === "directory") await mkdir(path.join(f.directory, kind));
+      if (kind === "junction") await symlink(f.parent, path.join(f.directory, kind), "junction");
+      if (kind === "stream") component = "file:stream";
+      if (kind === "traversal") component = "../outside";
+      const root = await f.operation("acquire", f.directory);
+      await expect(f.read(root.lease_token, component, 1024)).rejects.toThrow();
+      await f.closed;
+      expect(f.child.exitCode).toBe(3);
+      await rename(f.parent, f.parent + "-released");
+    }
+  );
+  it("rejects a file held for writing", async () => {
+    const f = await setup();
+    const target = path.join(f.directory, "active");
+    await writeFile(target, "in progress");
+    const writer = await open(target, "r+");
+    try {
+      const root = await f.operation("acquire", f.directory);
+      await expect(f.read(root.lease_token, "active", 1024)).rejects.toThrow();
+      await f.closed;
+      expect(f.child.exitCode).toBe(3);
+    } finally {
+      await writer.close();
+    }
+    await rename(f.parent, f.parent + "-released");
+  });
   it("opens an independent child that survives parent release", async () => {
     const f = await setup();
     const parent = await f.operation("acquire", f.parent);

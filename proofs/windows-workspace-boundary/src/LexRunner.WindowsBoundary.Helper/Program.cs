@@ -112,9 +112,12 @@ internal static class Program
           new JsonDocumentOptions { MaxDepth = 4 });
       var root = document.RootElement;
       if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException();
-      if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "directory_request")
+      if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String &&
+          kind.GetString() is "directory_request" or "file_request")
       {
-        var directoryReply = directories.Execute(root, bytes, nonce, sessionNonce, requests, operations);
+        var directoryReply = kind.GetString() == "file_request" ?
+          directories.ReadFile(root, bytes, nonce, sessionNonce, requests, operations) :
+          directories.Execute(root, bytes, nonce, sessionNonce, requests, operations);
         if (directoryReply.Length > Limit) throw new InvalidDataException();
         BinaryPrimitives.WriteUInt32BigEndian(header, (uint)directoryReply.Length);
         output.Write(header);

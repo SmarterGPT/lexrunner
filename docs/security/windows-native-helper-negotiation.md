@@ -8,7 +8,9 @@ The explicit [session profile](../architecture/windows-boundary-session.md) acce
 hello followed by bounded requests in the same process. The owned Node probe
 exposes status; a scoped owned Node adapter and an explicit test client exercise the native
 [directory lease profile](../architecture/windows-boundary-directory.md).
-File I/O, process execution and production readiness remain pending. The production
+Native [bounded reads](../architecture/windows-boundary-file-read.md) are tested
+through the explicit file-operation client. Owned Node reads, writes, process
+execution and production readiness remain pending. The production
 resolver remains unavailable.
 
 From `proofs/windows-workspace-boundary` (so global.json selects the pinned SDK):

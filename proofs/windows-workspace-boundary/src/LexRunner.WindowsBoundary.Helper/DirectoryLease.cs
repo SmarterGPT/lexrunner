@@ -61,9 +61,7 @@ internal sealed class DirectoryLease : IDisposable
 
   internal DirectoryLease? OpenChild(string component, bool allowMissing, bool create)
   {
-    if (component.Length is 0 or > 255 || component is "." or ".." ||
-        component.EndsWith(' ') || component.EndsWith('.') ||
-        component.Any(c => c < 32 || "<>:\"/\\|?*".Contains(c))) throw new InvalidDataException();
+    ValidateComponent(component);
     AssertCurrent();
     var path = System.IO.Path.Combine(Leaf.Path, component);
     // Validate the complete profile before a potentially effectful creation.
@@ -86,6 +84,56 @@ internal sealed class DirectoryLease : IDisposable
     catch { child?.Dispose(); throw; }
   }
 
+  private static void ValidateComponent(string component)
+  {
+    if (component.Length is 0 or > 255 || component is "." or ".." ||
+        component.EndsWith(' ') || component.EndsWith('.') ||
+        component.Any(c => c < 32 || "<>:\"/\\|?*".Contains(c))) throw new InvalidDataException();
+  }
+
+  internal sealed record FileObservation(Identity Identity, byte[] Content);
+
+  internal FileObservation ReadBoundedFile(string component, int maximum)
+  {
+    ValidateComponent(component);
+    if (maximum is < 0 or > 1024) throw new InvalidDataException();
+    AssertCurrent();
+    var path = System.IO.Path.Combine(Leaf.Path, component);
+    if (path.Length > 1024) throw new InvalidDataException();
+    // Synchronous read, no reparse following, read sharing only (no write/delete).
+    var file = CreateFileW(path, 0x80000000, 1, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+    try
+    {
+      if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (GetFileType(file) != 1) throw new InvalidDataException();
+      var before = Capture(file, false);
+      if (!string.Equals(before.Path, path, StringComparison.OrdinalIgnoreCase) ||
+          before.Volume != Leaf.Volume || before.FileSystem != Leaf.FileSystem) throw new InvalidDataException();
+      if (!GetFileSizeEx(file, out var size)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (size < 0 || size > maximum) throw new InvalidDataException();
+      var buffer = new byte[maximum + 1];
+      using var content = new MemoryStream();
+      while (true)
+      {
+        if (!ReadFile(file, buffer, (uint)buffer.Length, out var read, IntPtr.Zero))
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (read == 0) break;
+        if (content.Length + read > maximum) throw new InvalidDataException();
+        content.Write(buffer, 0, (int)read);
+      }
+      if (content.Length != size || !GetFileSizeEx(file, out var afterSize) || afterSize != size ||
+          Capture(file, false) != before) throw new InvalidDataException();
+      AssertCurrent();
+      return new FileObservation(before, content.ToArray());
+    }
+    finally
+    {
+      var valid = !file.IsInvalid;
+      file.Dispose();
+      if (valid && file.ReleaseSucceeded != true) throw new IOException("Native file release uncertain");
+    }
+  }
+
   public void Dispose()
   {
     if (closed) return;
@@ -101,14 +149,14 @@ internal sealed class DirectoryLease : IDisposable
     if (uncertain) throw new IOException("Native handle release uncertain");
   }
 
-  private static Identity Capture(DirectoryHandle handle)
+  private static Identity Capture(DirectoryHandle handle, bool directory = true)
   {
     var tag = new byte[8];
     var id = new byte[24];
     if (!GetFileInformationByHandleEx(handle, 9, tag, 8) ||
         !GetFileInformationByHandleEx(handle, 18, id, 24)) throw new Win32Exception(Marshal.GetLastWin32Error());
     var attributes = BinaryPrimitives.ReadUInt32LittleEndian(tag);
-    if ((attributes & 0x10) == 0 || (attributes & 0x400) != 0) throw new InvalidDataException();
+    if (((attributes & 0x10) != 0) != directory || (attributes & 0x400) != 0) throw new InvalidDataException();
     var final = new StringBuilder(2048);
     var length = GetFinalPathNameByHandleW(handle, final, 2048, 0);
     if (length == 0 || length >= 2048) throw new InvalidDataException();
@@ -157,4 +205,13 @@ internal sealed class DirectoryLease : IDisposable
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)]
   private static extern bool CreateDirectoryW(string path, IntPtr security);
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  private static extern uint GetFileType(DirectoryHandle handle);
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool GetFileSizeEx(DirectoryHandle handle, out long size);
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool ReadFile(DirectoryHandle handle, [Out] byte[] bytes, uint length,
+      out uint read, IntPtr overlapped);
 }
