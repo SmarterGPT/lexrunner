@@ -59,6 +59,33 @@ internal sealed class DirectoryLease : IDisposable
       if (Capture(handles[i]) != identities[i]) throw new InvalidDataException();
   }
 
+  internal DirectoryLease? OpenChild(string component, bool allowMissing, bool create)
+  {
+    if (component.Length is 0 or > 255 || component is "." or ".." ||
+        component.EndsWith(' ') || component.EndsWith('.') ||
+        component.Any(c => c < 32 || "<>:\"/\\|?*".Contains(c))) throw new InvalidDataException();
+    AssertCurrent();
+    var path = System.IO.Path.Combine(Leaf.Path, component);
+    // Validate the complete profile before a potentially effectful creation.
+    if (path.Length > 1024 || identities.Count >= 33) throw new InvalidDataException();
+    if (create && !CreateDirectoryW(path, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    DirectoryLease? child = null;
+    try
+    {
+      try { child = Acquire(path); }
+      catch (Win32Exception error) when (allowMissing && error.NativeErrorCode is 2 or 3)
+      {
+        AssertCurrent();
+        return null;
+      }
+      AssertCurrent();
+      if (child.identities.Count != identities.Count + 1 ||
+          !child.identities.Take(identities.Count).SequenceEqual(identities)) throw new InvalidDataException();
+      return child;
+    }
+    catch { child?.Dispose(); throw; }
+  }
+
   public void Dispose()
   {
     if (closed) return;
@@ -127,4 +154,7 @@ internal sealed class DirectoryLease : IDisposable
   [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)]
   private static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool CreateDirectoryW(string path, IntPtr security);
 }

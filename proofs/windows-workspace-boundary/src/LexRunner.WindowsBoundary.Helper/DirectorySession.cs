@@ -3,22 +3,24 @@ using System.Text.Json;
 
 internal sealed class DirectorySession : IDisposable
 {
-  private DirectoryLease? lease;
-  private string? token;
+  private readonly Dictionary<string, DirectoryLease> leases = [];
 
   internal byte[] Execute(JsonElement root, byte[] bytes, string nonce, string sessionNonce,
       HashSet<string> requests, HashSet<string> operations)
   {
     var fields = root.EnumerateObject().ToArray();
-    if (fields.Length != 9 || fields.Any(p => p.Value.ValueKind != JsonValueKind.String))
+    if (fields.Any(p => p.Value.ValueKind != JsonValueKind.String))
       throw new InvalidDataException();
     var operation = root.GetProperty("operation").GetString()!;
     var acquire = operation == "acquire";
-    if (!acquire && operation is not ("assert" or "release")) throw new InvalidDataException();
+    var childOperation = operation is "open-child" or "try-open-child" or "create-child";
+    if (fields.Length != (childOperation ? 10 : 9) ||
+        (!acquire && !childOperation && operation is not ("assert" or "release"))) throw new InvalidDataException();
     var request = root.GetProperty("request_id").GetString()!;
     var operationId = root.GetProperty("operation_id").GetString()!;
     var digest = root.GetProperty("request_digest").GetString()!;
     var argument = root.GetProperty(acquire ? "path" : "lease_token").GetString()!;
+    var component = childOperation ? root.GetProperty("component").GetString()! : null;
     if (!Program.IsId(request) || !Program.IsId(operationId) ||
         root.GetProperty("protocol_version").GetString() != "1.0.0" ||
         root.GetProperty("client_nonce").GetString() != nonce ||
@@ -27,6 +29,7 @@ internal sealed class DirectorySession : IDisposable
     void Body(Utf8JsonWriter writer, bool includeDigest)
     {
       writer.WriteString("client_nonce", nonce);
+      if (childOperation) writer.WriteString("component", component);
       writer.WriteString("kind", "directory_request");
       if (!acquire) writer.WriteString("lease_token", argument);
       writer.WriteString("operation", operation);
@@ -40,22 +43,41 @@ internal sealed class DirectorySession : IDisposable
     var expected = "sha256:" + Convert.ToHexString(SHA256.HashData(Program.Json(w => Body(w, false)))).ToLowerInvariant();
     if (digest != expected || !bytes.AsSpan().SequenceEqual(Program.Json(w => Body(w, true))) ||
         !requests.Add(request) || !operations.Add(operationId)) throw new InvalidDataException();
+    DirectoryLease lease;
+    string token;
+    var missing = false;
     if (acquire)
     {
-      if (lease is not null) throw new InvalidDataException();
+      if (leases.Count != 0) throw new InvalidDataException();
       lease = DirectoryLease.Acquire(argument);
       token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+      leases.Add(token, lease);
     }
-    else if (lease is null || argument != token) throw new InvalidDataException();
-    lease!.AssertCurrent();
+    else
+    {
+      if (!leases.TryGetValue(argument, out var parent)) throw new InvalidDataException();
+      lease = parent;
+      token = argument;
+      if (childOperation)
+      {
+        var child = parent.OpenChild(component!, operation == "try-open-child", operation == "create-child");
+        if (child is null) missing = true;
+        else
+        {
+          lease = child;
+          token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+          leases.Add(token, lease);
+        }
+      }
+    }
+    lease.AssertCurrent();
     var leaf = lease.Leaf;
     var count = lease.Identities.Count;
     var replyToken = token!;
     if (operation == "release")
     {
       lease.Dispose(); // Any uncertain CloseHandle result prevents a successful reply.
-      lease = null;
-      token = null;
+      leases.Remove(token);
     }
     return Program.Json(writer =>
     {
@@ -71,10 +93,19 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);
-      writer.WriteString("status", acquire ? "acquired" : operation == "assert" ? "current" : "released");
+      writer.WriteString("status", missing ? "child-missing" : childOperation ?
+        (operation == "create-child" ? "child-created" : "child-opened") :
+        acquire ? "acquired" : operation == "assert" ? "current" : "released");
       writer.WriteString("volume_serial_number", leaf.Volume);
     });
   }
 
-  public void Dispose() => lease?.Dispose();
+  public void Dispose()
+  {
+    var uncertain = false;
+    foreach (var lease in leases.Values)
+      try { lease.Dispose(); } catch (IOException) { uncertain = true; }
+    leases.Clear();
+    if (uncertain) throw new IOException("Native session release uncertain");
+  }
 }

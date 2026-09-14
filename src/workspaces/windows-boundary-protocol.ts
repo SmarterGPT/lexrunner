@@ -55,11 +55,22 @@ export const WindowsBoundaryDirectoryRequest = z
   .strictObject({
     ...OperationCommon,
     kind: z.literal("directory_request"),
-    operation: z.enum(["acquire", "assert", "release"]),
+    operation: z.enum([
+      "acquire",
+      "assert",
+      "release",
+      "open-child",
+      "try-open-child",
+      "create-child",
+    ]),
+    component: z.string().min(1).max(255).optional(),
     path: z.string().min(3).max(1024).optional(),
     lease_token: Nonce.optional(),
   })
   .superRefine((value, context) => {
+    const child = ["open-child", "try-open-child", "create-child"].includes(value.operation);
+    if (child ? value.component === undefined : value.component !== undefined)
+      context.addIssue({ code: "custom", message: "Invalid child operation arguments" });
     if (
       value.operation === "acquire"
         ? !value.path || value.lease_token !== undefined
@@ -76,7 +87,14 @@ export const WindowsBoundaryDirectoryResult = z.strictObject({
   file_id: z.string().regex(/^[a-f0-9]{32}$/u),
   volume_serial_number: z.string().regex(/^[a-f0-9]{16}$/u),
   filesystem: z.enum(["NTFS", "ReFS"]),
-  status: z.enum(["acquired", "current", "released"]),
+  status: z.enum([
+    "acquired",
+    "current",
+    "released",
+    "child-opened",
+    "child-created",
+    "child-missing",
+  ]),
 });
 const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryHello,

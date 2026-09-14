@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rename, rm, symlink, writeFile, stat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJSONStringify } from "../../src/util/canonicalJson.js";
@@ -114,7 +114,11 @@ async function setup() {
     client_nonce: nonce,
     session_nonce: hello.session_nonce,
   });
-  async function operation(operation: "acquire" | "assert" | "release", argument: string) {
+  async function operation(
+    operation: "acquire" | "assert" | "release" | "open-child" | "try-open-child" | "create-child",
+    argument: string,
+    component?: string
+  ) {
     const body = {
       kind: "directory_request",
       protocol_version: "1.0.0",
@@ -123,6 +127,7 @@ async function setup() {
       request_id: randomUUID(),
       operation_id: randomUUID(),
       operation,
+      ...(component === undefined ? {} : { component }),
       ...(operation === "acquire" ? { path: argument } : { lease_token: argument }),
     };
     const digest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
@@ -147,6 +152,81 @@ async function setup() {
 }
 
 describe.skipIf(process.platform !== "win32" || !executable)("real native directory lease", () => {
+  it("opens an independent child that survives parent release", async () => {
+    const f = await setup();
+    const parent = await f.operation("acquire", f.parent);
+    const child = await f.operation("open-child", parent.lease_token, "café");
+    expect(child).toMatchObject({
+      status: "child-opened",
+      path: f.directory,
+      chain_length: parent.chain_length + 1,
+    });
+    expect(child.lease_token).not.toBe(parent.lease_token);
+    await f.operation("release", parent.lease_token);
+    expect((await f.operation("assert", child.lease_token)).file_id).toBe(child.file_id);
+    await expect(rename(f.parent, f.parent + "-moved")).rejects.toThrow();
+    await f.operation("release", child.lease_token);
+    await rename(f.parent, f.parent + "-released");
+  });
+  it("reports a missing child without turning it into a capability or ending the session", async () => {
+    const f = await setup();
+    const parent = await f.operation("acquire", f.parent);
+    const absent = await f.operation("try-open-child", parent.lease_token, "absent");
+    expect(absent).toMatchObject({
+      status: "child-missing",
+      lease_token: parent.lease_token,
+      file_id: parent.file_id,
+      path: parent.path,
+    });
+    await expect(stat(path.join(f.parent, "absent"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await f.operation("assert", parent.lease_token)).status).toBe("current");
+    await f.operation("release", parent.lease_token);
+  });
+  it("creates a child and retains nested children through EOF cleanup", async () => {
+    const f = await setup();
+    const parent = await f.operation("acquire", f.parent);
+    const created = await f.operation("create-child", parent.lease_token, "created");
+    expect(created.status).toBe("child-created");
+    expect((await stat(path.join(f.parent, "created"))).isDirectory()).toBe(true);
+    const nested = await f.operation("create-child", created.lease_token, "nested");
+    expect(nested.chain_length).toBe(created.chain_length + 1);
+    f.child.stdin.end();
+    await f.closed;
+    expect(f.child.exitCode).toBe(0);
+    await rename(f.parent, f.parent + "-released");
+  });
+  it("does not overwrite an existing child when asked to create", async () => {
+    const f = await setup();
+    await writeFile(path.join(f.directory, "sentinel"), "preserved");
+    const parent = await f.operation("acquire", f.parent);
+    await expect(f.operation("create-child", parent.lease_token, "café")).rejects.toThrow();
+    await f.closed;
+    expect(f.child.exitCode).toBe(3);
+    expect(await readFile(path.join(f.directory, "sentinel"), "utf8")).toBe("preserved");
+    await rename(f.parent, f.parent + "-released");
+  });
+  it.each(["..", "nested/escape", "nested\\escape", "ads:stream", "trailing."])(
+    "rejects invalid child component %s before creation",
+    async (component) => {
+      const f = await setup();
+      const parent = await f.operation("acquire", f.parent);
+      await expect(f.operation("create-child", parent.lease_token, component)).rejects.toThrow();
+      await f.closed;
+      expect(f.child.exitCode).toBe(3);
+      await rename(f.parent, f.parent + "-released");
+    }
+  );
+  it.each(["junction", "file"])("try-open does not label %s as absent", async (kind) => {
+    const f = await setup();
+    const target = path.join(f.parent, kind);
+    if (kind === "junction") await symlink(f.directory, target, "junction");
+    else await writeFile(target, "ordinary file");
+    const parent = await f.operation("acquire", f.parent);
+    await expect(f.operation("try-open-child", parent.lease_token, kind)).rejects.toThrow();
+    await f.closed;
+    expect(f.child.exitCode).toBe(3);
+    await rename(f.parent, f.parent + "-released");
+  });
   it("holds leaf and ancestor across requests, revalidates, then releases", async () => {
     const f = await setup();
     await rename(f.directory, f.directory + "-control");

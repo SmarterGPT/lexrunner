@@ -1,7 +1,8 @@
 # Native development directory leases
 
 The explicit `--boundary-session 1.0.0` NativeAOT development peer supports one
-held directory chain per session. `directory_request` accepts `acquire` with a path,
+initial directory chain per session, plus independently held children.
+`directory_request` accepts `acquire` with a path,
 then `assert` and `release` with the returned opaque lease token. Requests share
 the status protocol's canonical digest, nonce/ID checks, replay rejection and
 15-operation lifetime limit. Replies correlate the request and report the leaf's
@@ -14,6 +15,32 @@ identities and paths before replying. Release closes the chain in reverse order;
 an uncertain close cannot produce a successful release reply. EOF disposes a live
 lease. A rejected operation terminates the helper; it does not return a typed
 no-effect response. Missing acknowledgment requires reconciliation, never resend.
+
+Native `open-child`, `try-open-child` and `create-child` accept a live parent token
+and one component. A child reopens and retains its complete ancestor chain,
+compares that prefix to the parent's held identities and revalidates the parent
+before returning a distinct child token. Releasing a parent does not release a
+completed child. Session EOF attempts to close every remaining chain; uncertain
+closure prevents successful session completion. The existing 15-operation budget
+bounds the number of live chains as well as messages.
+
+`try-open-child` returns `child-missing` only after a native file/path-not-found
+result and parent revalidation. Its identity/token fields identify the parent;
+they must not be interpreted as a new child capability. Absence is a bounded
+observation, not a durable guarantee. Reparse points and ordinary files fail the
+session instead of being relabeled as absent. Other failures are terminal too.
+
+`create-child` uses exclusive directory creation, then acquires the new chain.
+Existing targets fail without being overwritten. Components cannot contain path
+separators, streams, dot segments or trailing dots/spaces. Complete path/depth
+limits are checked before creation. If creation succeeds but later acquisition
+or acknowledgment fails, the new directory may remain: there is no implicit
+rollback or retry. Creation failure is not a typed proof of no effect.
+
+Eleven real native child tests cover parent-release independence, missing targets,
+nested creation and EOF cleanup, existing-content preservation, invalid components,
+and junction/file rejection. These child operations currently use the explicit
+test client; the owned Node scope still exposes only its initial directory.
 
 Paths must be absolute native drive paths, at most 1024 characters and 32 tail
 components. UNC/device paths, dot segments, alternate streams, trailing dots/spaces
@@ -61,7 +88,8 @@ failure, timeout, cancellation, concurrent and unawaited assertions. Controlled 
 wrong status, changed identity/token and lost release replies. These observations
 do not qualify forced termination, close failure or authenticated loading.
 
-Next complete the child-directory, bounded file I/O and process operations required
+Next expose child capabilities through the owned Node scope and complete bounded
+file I/O and process operations required
 by WorkspaceBoundary and map them to the existing receipt/verifier contract.
 Production resolution remains `helper_missing` until operations and the separately
 reviewed launch/trust profile satisfy the actual verifier contract. This local
