@@ -44,6 +44,7 @@ existing native negotiation, codec and exchange suites remain regression checks.
 Build/run using the explicit native executable described in
 [native helper negotiation](../security/windows-native-helper-negotiation.md).
 
-The directory profile is exercised by an explicit test client. Next connect those
-operations to the owned Node adapter. Do not advertise WorkspaceBoundary readiness
+The directory profile is also available through a scoped owned Node adapter;
+see its linked contract for deadlines, failure disposition and remaining operations.
+Do not advertise WorkspaceBoundary readiness
 or route the verifier based on this status-only development probe.

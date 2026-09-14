@@ -15,6 +15,7 @@ import {
   WINDOWS_BOUNDARY_PROTOCOL_VERSION,
   WindowsBoundaryControlDecoder,
   WindowsBoundaryHelloResult,
+  WindowsBoundaryDirectoryResult,
 } from "./windows-boundary-protocol.js";
 
 const AbsolutePath = z
@@ -42,6 +43,8 @@ type Failure =
   | "child_exit"
   | "handshake_timeout"
   | "operation_timeout"
+  | "work_failed"
+  | "work_timeout"
   | "cleanup_forced"
   | "cleanup_unknown"
   | "io_error"
@@ -61,11 +64,52 @@ export interface WindowsBoundaryHandshakeReport {
     descendants: "not_assessed";
   };
   stderrBytes: number;
+  directory?: {
+    acquired: boolean;
+    releaseAcknowledged: boolean;
+    assertions: number;
+  };
   sessionOperations?: {
     requested: number;
     correlated: number;
     failure?: WindowsBoundaryExchangeFailure;
   };
+}
+
+type DirectoryReply = z.infer<typeof WindowsBoundaryDirectoryResult>;
+export type OwnedWindowsDirectoryIdentity = Readonly<
+  Pick<DirectoryReply, "path" | "file_id" | "volume_serial_number" | "filesystem" | "chain_length">
+>;
+export interface OwnedWindowsDirectoryScope {
+  readonly identity: OwnedWindowsDirectoryIdentity;
+  assertCurrent(): Promise<OwnedWindowsDirectoryIdentity>;
+}
+const DirectoryOptions = z.strictObject({
+  path: z
+    .string()
+    .min(3)
+    .max(1024)
+    .regex(/^[a-z]:\\/iu)
+    .refine((s) => !s.includes("\0")),
+  workTimeoutMs: z.number().int().min(1).max(30_000).default(5_000),
+});
+type DirectoryWork = (scope: OwnedWindowsDirectoryScope) => Promise<void>;
+type DirectoryRun = z.output<typeof DirectoryOptions> & { work: DirectoryWork };
+
+/** Scoped development adapter. No authenticated custody or WorkspaceBoundary readiness. */
+export async function withOwnedWindowsBoundaryDirectory(
+  options: OwnedWindowsBoundaryHandshakeOptions,
+  directory: z.input<typeof DirectoryOptions>,
+  work: DirectoryWork,
+  signal?: AbortSignal
+): Promise<WindowsBoundaryHandshakeReport> {
+  const parsed = DirectoryOptions.safeParse(directory);
+  return runOwnedWindowsBoundary(
+    options,
+    signal,
+    parsed.success && typeof work === "function" ? 0 : -1,
+    parsed.success ? { ...parsed.data, work } : undefined
+  );
 }
 
 /**
@@ -91,7 +135,8 @@ export async function probeOwnedWindowsBoundarySession(
 async function runOwnedWindowsBoundary(
   options: OwnedWindowsBoundaryHandshakeOptions,
   signal: AbortSignal | undefined,
-  rounds: number
+  rounds: number,
+  directory?: DirectoryRun
 ): Promise<WindowsBoundaryHandshakeReport> {
   const parsed = Options.safeParse(options);
   const empty = (reason: Failure): WindowsBoundaryHandshakeReport => ({
@@ -113,6 +158,7 @@ async function runOwnedWindowsBoundary(
     return empty("invalid_options");
   if (signal?.aborted) return empty("cancelled");
   const settings = parsed.data;
+  const sessionMode = rounds > 0 || !!directory;
   const handshakeDeadline = performance.now() + settings.handshakeTimeoutMs;
   const request = {
     kind: "hello" as const,
@@ -130,7 +176,10 @@ async function runOwnedWindowsBoundary(
   try {
     child = spawn(
       settings.executable,
-      [rounds ? "--boundary-session" : "--boundary-protocol", WINDOWS_BOUNDARY_PROTOCOL_VERSION],
+      [
+        sessionMode ? "--boundary-session" : "--boundary-protocol",
+        WINDOWS_BOUNDARY_PROTOCOL_VERSION,
+      ],
       {
         cwd: settings.cwd,
         env: environment,
@@ -143,7 +192,21 @@ async function runOwnedWindowsBoundary(
     return empty("spawn_error");
   }
   return new Promise((resolve) => {
-    const decoder = new WindowsBoundaryControlDecoder(rounds > 0);
+    const decoder = new WindowsBoundaryControlDecoder(sessionMode);
+    let sentCount = 0;
+    let directoryReply: DirectoryReply | undefined;
+    let directoryOperation: "acquire" | "assert" | "release" | undefined;
+    let releaseAcknowledged = false;
+    let assertions = 0;
+    let working = false;
+    let workDeadline = 0;
+    let workTimer: ReturnType<typeof setTimeout> | undefined;
+    let assertion:
+      | {
+          resolve: (identity: OwnedWindowsDirectoryIdentity) => void;
+          reject: (error: Error) => void;
+        }
+      | undefined;
     let exchange: WindowsBoundaryExchange | undefined;
     let operationCount = 0;
     let sessionNonce: string | undefined;
@@ -169,6 +232,10 @@ async function runOwnedWindowsBoundary(
       clearTimeout(handshakeTimer);
       clearTimeout(closeTimer);
       clearTimeout(killTimer);
+      clearTimeout(workTimer);
+      working = false;
+      assertion?.reject(new Error("Directory session ended"));
+      assertion = undefined;
       signal?.removeEventListener("abort", abort);
       if (disposition === "unknown") {
         child.stdin.destroy();
@@ -177,7 +244,8 @@ async function runOwnedWindowsBoundary(
         child.unref();
       }
       if (!failure && !helloMatched) failure = "child_exit";
-      if (!failure && operationCount !== rounds) failure = "child_exit";
+      if (!failure && (directory ? !releaseAcknowledged : operationCount !== rounds))
+        failure = "child_exit";
       resolve({
         outcome: failure ? "failed" : "matched",
         ...(failure ? { reason: failure } : {}),
@@ -193,10 +261,13 @@ async function runOwnedWindowsBoundary(
           descendants: "not_assessed",
         },
         stderrBytes,
-        ...(rounds
+        ...(directory
+          ? { directory: { acquired: !!directoryReply, releaseAcknowledged, assertions } }
+          : {}),
+        ...(sessionMode
           ? {
               sessionOperations: {
-                requested: rounds,
+                requested: directory ? sentCount : rounds,
                 correlated: operationCount,
                 ...(failure && exchange ? { failure: exchange.disconnect() } : {}),
               },
@@ -229,9 +300,110 @@ async function runOwnedWindowsBoundary(
     const fail = (reason: Failure) => {
       if (finished) return;
       failure ??= reason;
+      working = false;
+      clearTimeout(workTimer);
+      assertion?.reject(new Error("Directory session failed"));
+      assertion = undefined;
       close();
     };
     const abort = () => fail("cancelled");
+    const identity = (reply: DirectoryReply): OwnedWindowsDirectoryIdentity =>
+      Object.freeze({
+        path: reply.path,
+        file_id: reply.file_id,
+        volume_serial_number: reply.volume_serial_number,
+        filesystem: reply.filesystem,
+        chain_length: reply.chain_length,
+      });
+    const sendDirectory = (operation: "acquire" | "assert" | "release") => {
+      if (finished || closing || failure || directoryOperation || sentCount >= 15)
+        throw new Error("Directory session unavailable");
+      const body = {
+        client_nonce: request.client_nonce,
+        kind: "directory_request",
+        operation,
+        operation_id: randomUUID(),
+        protocol_version: WINDOWS_BOUNDARY_PROTOCOL_VERSION,
+        request_id: randomUUID(),
+        session_nonce: sessionNonce!,
+        ...(operation === "acquire"
+          ? { path: directory!.path }
+          : { lease_token: directoryReply!.lease_token }),
+      };
+      const requestDigest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
+      const frame = encodeWindowsBoundarySession({ ...body, request_digest: requestDigest });
+      exchange!.reserve(
+        {
+          request_id: body.request_id,
+          operation_id: body.operation_id,
+          request_digest: requestDigest,
+        },
+        settings.handshakeTimeoutMs
+      );
+      directoryOperation = operation;
+      sentCount++;
+      clearTimeout(handshakeTimer);
+      handshakeTimer = setTimeout(() => fail("operation_timeout"), settings.handshakeTimeoutMs);
+      child.stdin.write(frame);
+    };
+    const startWork = () => {
+      working = true;
+      workDeadline = performance.now() + directory!.workTimeoutMs;
+      workTimer = setTimeout(() => fail("work_timeout"), directory!.workTimeoutMs);
+      const scope: OwnedWindowsDirectoryScope = Object.freeze({
+        identity: identity(directoryReply!),
+        assertCurrent: () => {
+          const pending = new Promise<OwnedWindowsDirectoryIdentity>((resolveAssertion, reject) => {
+            if (!working || finished || failure || closing)
+              throw new Error("Directory scope ended");
+            if (performance.now() >= workDeadline) {
+              fail("work_timeout");
+              throw new Error("Directory work timed out");
+            }
+            if (assertion || sentCount >= 14) {
+              fail("work_failed");
+              throw new Error("Directory operation limit or concurrent request");
+            }
+            assertion = { resolve: resolveAssertion, reject };
+            try {
+              sendDirectory("assert");
+            } catch {
+              fail("protocol_error");
+            }
+          });
+          // An accidentally unawaited operation still fails the scope, without an
+          // unhandled rejection escaping the process owner. Awaiters retain rejection.
+          void pending.catch(() => {});
+          return pending;
+        },
+      });
+      Promise.resolve()
+        .then(() => {
+          if (!working) throw new Error("Directory scope ended");
+          return directory!.work(scope);
+        })
+        .then(
+          () => {
+            if (!working || failure || finished) return;
+            if (performance.now() >= workDeadline) {
+              fail("work_timeout");
+              return;
+            }
+            working = false;
+            clearTimeout(workTimer);
+            if (assertion) {
+              fail("work_failed");
+              return;
+            }
+            try {
+              sendDirectory("release");
+            } catch {
+              fail("protocol_error");
+            }
+          },
+          () => fail("work_failed")
+        );
+    };
     const sendStatus = () => {
       const body = {
         client_nonce: request.client_nonce,
@@ -277,6 +449,54 @@ async function runOwnedWindowsBoundary(
       try {
         const messages = decoder.push(chunk);
         for (const message of messages) {
+          if (seenReply && directory && message.kind === "directory_result") {
+            const expectedStatus =
+              directoryOperation === "acquire"
+                ? "acquired"
+                : directoryOperation === "assert"
+                  ? "current"
+                  : "released";
+            if (
+              !directoryOperation ||
+              message.status !== expectedStatus ||
+              (directoryReply
+                ? message.lease_token !== directoryReply.lease_token ||
+                  canonicalJSONStringify(identity(message)) !==
+                    canonicalJSONStringify(identity(directoryReply))
+                : message.path.toLowerCase() !== directory!.path.toLowerCase())
+            ) {
+              fail("protocol_error");
+              return;
+            }
+            const match = exchange!.correlate({
+              client_nonce: message.client_nonce,
+              session_nonce: message.session_nonce,
+              request_id: message.request_id,
+              operation_id: message.operation_id,
+              request_digest: message.request_digest,
+            });
+            if (!match.correlated) {
+              fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
+              return;
+            }
+            clearTimeout(handshakeTimer);
+            operationCount++;
+            const operation = directoryOperation;
+            directoryOperation = undefined;
+            if (operation === "acquire") {
+              directoryReply = message;
+              startWork();
+            } else if (operation === "assert") {
+              assertions++;
+              const waiter = assertion;
+              assertion = undefined;
+              waiter!.resolve(identity(message));
+            } else {
+              releaseAcknowledged = true;
+              close();
+            }
+            continue;
+          }
           if (seenReply && rounds && message.kind === "session_result") {
             const {
               kind: _kind,
@@ -314,13 +534,14 @@ async function runOwnedWindowsBoundary(
           }
           helloMatched = true;
           sessionNonceSha256 = `sha256:${createHash("sha256").update(message.session_nonce, "hex").digest("hex")}`;
-          if (rounds) {
+          if (sessionMode) {
             sessionNonce = message.session_nonce;
             exchange = new WindowsBoundaryExchange({
               client_nonce: request.client_nonce,
               session_nonce: sessionNonce,
             });
-            sendStatus();
+            if (directory) sendDirectory("acquire");
+            else sendStatus();
           } else close();
         }
       } catch {

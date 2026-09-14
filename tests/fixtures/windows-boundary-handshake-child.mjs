@@ -18,11 +18,60 @@ const encode = (value) => {
 };
 let input = Buffer.alloc(0);
 let sent = false;
+let directoryPath;
+const sessionNonce = randomBytes(32).toString("hex");
 if (mode === "early-exit") process.exit(2);
 process.stdin.on("data", (chunk) => {
   if (sent && mode === "session-exit") process.exit(0);
   input = Buffer.concat([input, chunk]);
   if (input.length > 4_100) process.exit(3);
+  if (mode.startsWith("directory-")) {
+    if (input.length < 4 || input.length < 4 + input.readUInt32BE()) return;
+    const size = input.readUInt32BE();
+    const request = JSON.parse(input.subarray(4, 4 + size).toString("utf8"));
+    input = input.subarray(4 + size);
+    if (request.kind === "hello") {
+      process.stdout.write(
+        encode({
+          ...request,
+          kind: "hello_result",
+          session_nonce: sessionNonce,
+          helper: { artifact_sha256: digest, architecture: process.arch, process_id: process.pid },
+        })
+      );
+      return;
+    }
+    if (request.operation === "release" && mode === "directory-lost-release") return;
+    directoryPath ??= request.path;
+    const response = {
+      kind: "directory_result",
+      protocol_version: request.protocol_version,
+      client_nonce: request.client_nonce,
+      session_nonce: request.session_nonce,
+      request_id: request.request_id,
+      operation_id: request.operation_id,
+      request_digest: request.request_digest,
+      lease_token: "a".repeat(64),
+      path: directoryPath,
+      chain_length: 3,
+      file_id: "b".repeat(32),
+      volume_serial_number: "c".repeat(16),
+      filesystem: "ReFS",
+      status:
+        request.operation === "acquire"
+          ? "acquired"
+          : request.operation === "assert"
+            ? "current"
+            : "released",
+    };
+    if (mode === "directory-wrong-status") response.status = "released";
+    if (mode === "directory-changed-identity" && request.operation === "assert")
+      response.file_id = "d".repeat(32);
+    if (mode === "directory-wrong-token" && request.operation === "release")
+      response.lease_token = "e".repeat(64);
+    process.stdout.write(encode(response));
+    return;
+  }
   if (sent || input.length < 4 || input.length < 4 + input.readUInt32BE()) return;
   sent = true;
   if (mode === "silent") return;

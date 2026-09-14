@@ -6,7 +6,7 @@ It is a separate project and does not compile the unfinished directory proof.
 The `--boundary-protocol 1.0.0` profile accepts one canonical framed hello and EOF.
 The explicit [session profile](../architecture/windows-boundary-session.md) accepts
 hello followed by bounded requests in the same process. The owned Node probe
-exposes status; an explicit test client exercises the native
+exposes status; a scoped owned Node adapter and an explicit test client exercise the native
 [directory lease profile](../architecture/windows-boundary-directory.md).
 File I/O, process execution and production readiness remain pending. The production
 resolver remains unavailable.
@@ -48,7 +48,7 @@ The first actual native run exposed Windows writer newline differences and an
 uncaught InvalidDataException rejection. Normalize canonical output toLF and catch
 that exception explicitly; failed evidence is retained in the control workspace.
 
-Next connect directory operations to the owned Node adapter, complete the remaining
-WorkspaceBoundary operations and qualify ownership/failure behavior. Do not
+Next complete the remaining WorkspaceBoundary operations and qualify
+ownership/failure behavior. Do not
 advertise ready after hello or directory tests. The verifier's operational path
 and protected deployment remain pending.

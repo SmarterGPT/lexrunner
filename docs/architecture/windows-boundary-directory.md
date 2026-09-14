@@ -34,8 +34,35 @@ lease, leaf/ancestor rename exclusion, EOF cleanup, wrong tokens, junctions and
 partial acquisition cleanup for missing/file targets. They do not qualify the
 production Node directory adapter, forced termination or hostile-code containment.
 
-Next compose these operations with the existing owned Node process lifecycle and
-WorkspaceBoundary adapter, preserving outstanding-operation evidence on failure.
+`withOwnedWindowsBoundaryDirectory(options, directory, work, signal)` now composes
+these operations with the existing owned Node process lifecycle. It acquires one
+directory, invokes asynchronous caller work with a frozen identity snapshot and
+`assertCurrent()`, then requests release after work resolves. At most 13 sequential
+assertions leave room for acquire and release within the 15-request budget.
+Concurrent assertions, abandoned outstanding requests, callback exceptions and
+budget exhaustion fail the scope. Captured scope methods reject after it ends.
+
+Work has a separate bounded deadline (default five seconds, maximum 30 seconds).
+Requests retain their individual deadlines. The helper receives fixed argv and
+the existing constructed environment, not the caller's general environment.
+Every response must match the expected operation status and, after acquisition,
+the original token and identity as well as the exchange correlation fields.
+Failure preserves outstanding request identity and never resends it.
+
+The report separates acquisition, assertion count, release acknowledgment and
+process cleanup. A clean helper exit after cancellation or a lost reply does not
+become a release acknowledgment. Caller work is trusted same-process JavaScript:
+timeouts invalidate the scope and close the helper, but cannot preempt arbitrary
+callback code, undo its effects or interrupt synchronous event-loop blocking.
+Ordinary caller file writes are not mediated by this directory adapter.
+
+Seven actual-native adapter tests cover scoped work, the operation budget, callback
+failure, timeout, cancellation, concurrent and unawaited assertions. Controlled peers test
+wrong status, changed identity/token and lost release replies. These observations
+do not qualify forced termination, close failure or authenticated loading.
+
+Next complete the child-directory, bounded file I/O and process operations required
+by WorkspaceBoundary and map them to the existing receipt/verifier contract.
 Production resolution remains `helper_missing` until operations and the separately
 reviewed launch/trust profile satisfy the actual verifier contract. This local
 development executable is not authenticated installation or a release candidate.

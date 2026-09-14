@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   probeOwnedWindowsBoundaryHandshake,
   probeOwnedWindowsBoundarySession,
+  withOwnedWindowsBoundaryDirectory,
 } from "../../src/workspaces/owned-windows-boundary-handshake.js";
 
 const fixture = fileURLToPath(
@@ -55,6 +56,55 @@ afterEach(() => {
 });
 
 describe("owned Windows boundary development handshake", () => {
+  it.each(["wrong-status", "changed-identity", "wrong-token"])(
+    "rejects directory %s before acknowledging it",
+    async (mode) => {
+      state.mode = `directory-${mode}`;
+      const report = await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture" },
+        async (scope) => {
+          await scope.assertCurrent();
+        }
+      );
+      expect(report).toMatchObject({
+        outcome: "failed",
+        reason: "protocol_error",
+        directory: { releaseAcknowledged: false },
+        sessionOperations: {
+          failure: {
+            disposition: "reconciliation_required",
+            outstanding: { operation_id: expect.any(String) },
+          },
+        },
+      });
+    }
+  );
+  it("retains a lost release request instead of treating clean exit as acknowledgment", async () => {
+    state.mode = "directory-lost-release";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      { ...options(), handshakeTimeoutMs: 500 },
+      { path: "D:\\fixture" },
+      async () => {}
+    );
+    expect(report).toMatchObject({
+      reason: "operation_timeout",
+      directory: { acquired: true, releaseAcknowledged: false },
+      sessionOperations: {
+        requested: 2,
+        correlated: 1,
+        failure: { outstanding: { operation_id: expect.any(String) } },
+      },
+      cleanup: { exitCode: 0 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(3);
+  });
+  it("rejects invalid directory options before spawning", async () => {
+    expect(
+      await withOwnedWindowsBoundaryDirectory(options(), { path: "relative" }, async () => {})
+    ).toMatchObject({ reason: "invalid_options" });
+    expect(state.calls).toHaveLength(0);
+  });
   it("times out an unanswered operation and retains its unknown outcome", async () => {
     // This controlled peer answers hello but deliberately ignores later requests.
     const report = await probeOwnedWindowsBoundarySession(
