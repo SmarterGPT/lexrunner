@@ -117,6 +117,25 @@ export const WindowsBoundaryFileResult = z.strictObject({
   file_id: z.string().regex(/^[a-f0-9]{32}$/u),
   volume_serial_number: z.string().regex(/^[a-f0-9]{16}$/u),
 });
+export const WindowsBoundaryFileCreateRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_create_request"),
+  operation: z.literal("create-file"),
+  lease_token: Nonce,
+  component: z.string().min(1).max(255),
+  content_base64: WindowsBoundaryFileResult.shape.content_base64,
+  content_sha256: WindowsBoundaryFileResult.shape.content_sha256,
+});
+export const WindowsBoundaryFileCreateResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_create_result"),
+  status: z.literal("created"),
+  lease_token: Nonce,
+  byte_length: WindowsBoundaryFileResult.shape.byte_length,
+  content_sha256: WindowsBoundaryFileResult.shape.content_sha256,
+  file_id: WindowsBoundaryFileResult.shape.file_id,
+  volume_serial_number: WindowsBoundaryFileResult.shape.volume_serial_number,
+});
 const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryHello,
   WindowsBoundaryHelloResult,
@@ -126,6 +145,8 @@ const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryDirectoryResult,
   WindowsBoundaryFileRequest,
   WindowsBoundaryFileResult,
+  WindowsBoundaryFileCreateRequest,
+  WindowsBoundaryFileCreateResult,
 ]);
 type SessionMessage = z.infer<typeof SessionMessage>;
 

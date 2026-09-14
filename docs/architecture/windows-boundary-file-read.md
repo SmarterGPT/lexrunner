@@ -61,6 +61,8 @@ empty reads and unawaited-request disposition. Nine controlled-peer cases exerci
 wrong length/digest/token/volume/operation/kind, noncanonical base64, over-bound data
 and unanswered requests. Existing raw native tests remain regression evidence.
 
-Next implement writes, process operations and existing verifier receipt
+Native [exclusive file creation](windows-boundary-file-create.md) is now implemented
+through the explicit test client. Next connect creation to owned scopes, implement
+remaining write semantics, process operations and existing verifier receipt
 mapping. Production resolution remains `helper_missing`; launch trust and full
 operation guarantees remain independently required.

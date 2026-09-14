@@ -197,10 +197,111 @@ async function setup() {
     );
     return { reply, content };
   }
-  return { root, parent, directory, child, closed, operation, read };
+  async function create(
+    token: string,
+    component: string,
+    content: Buffer,
+    correction: Record<string, string> = {}
+  ) {
+    const body = {
+      kind: "file_create_request",
+      protocol_version: "1.0.0",
+      operation: "create-file",
+      client_nonce: nonce,
+      session_nonce: hello.session_nonce,
+      request_id: randomUUID(),
+      operation_id: randomUUID(),
+      lease_token: token,
+      component,
+      content_base64: content.toString("base64"),
+      content_sha256: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+      ...correction,
+    };
+    const digest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
+    exchange.reserve(
+      { request_id: body.request_id, operation_id: body.operation_id, request_digest: digest },
+      2000
+    );
+    const reply = await send({ ...body, request_digest: digest });
+    expect(reply.kind).toBe("file_create_result");
+    expect(
+      exchange.correlate({
+        client_nonce: reply.client_nonce,
+        session_nonce: reply.session_nonce,
+        request_id: reply.request_id,
+        operation_id: reply.operation_id,
+        request_digest: reply.request_digest,
+      }).correlated
+    ).toBe(true);
+    expect(reply).toMatchObject({
+      status: "created",
+      lease_token: token,
+      byte_length: content.length,
+      content_sha256: body.content_sha256,
+    });
+    return reply;
+  }
+  return { root, parent, directory, child, closed, operation, read, create };
 }
 
 describe.skipIf(process.platform !== "win32" || !executable)("real native directory lease", () => {
+  it.each([0, 1, 257, 1024])("creates and reads back exactly %i bytes", async (size) => {
+    const f = await setup();
+    const data = Buffer.from(Array.from({ length: size }, (_, i) => i % 256));
+    const root = await f.operation("acquire", f.directory);
+    const created = await f.create(root.lease_token, "créé.bin", data);
+    expect(await readFile(path.join(f.directory, "créé.bin"))).toEqual(data);
+    const observed = await f.read(root.lease_token, "créé.bin", size);
+    expect(observed.content).toEqual(data);
+    expect(observed.reply.file_id).toBe(created.file_id);
+    await rename(path.join(f.directory, "créé.bin"), path.join(f.directory, "closed.bin"));
+    await f.operation("release", root.lease_token);
+  });
+  it("preserves an existing file when creation collides", async () => {
+    const f = await setup();
+    const target = path.join(f.directory, "existing");
+    await writeFile(target, "coworker content");
+    const root = await f.operation("acquire", f.directory);
+    await expect(
+      f.create(root.lease_token, "existing", Buffer.from("new content"))
+    ).rejects.toThrow();
+    await f.closed;
+    expect(f.child.exitCode).toBe(3);
+    expect(await readFile(target, "utf8")).toBe("coworker content");
+    await rename(f.parent, f.parent + "-released");
+  });
+  it("creates within a held child after its parent token is released", async () => {
+    const f = await setup();
+    const parent = await f.operation("acquire", f.parent);
+    const child = await f.operation("open-child", parent.lease_token, "café");
+    await f.operation("release", parent.lease_token);
+    await f.create(child.lease_token, "child-file", Buffer.from("child work"));
+    expect(await readFile(path.join(f.directory, "child-file"), "utf8")).toBe("child work");
+    await f.operation("release", child.lease_token);
+  });
+  it.each(["digest", "encoding", "component"])(
+    "rejects inconsistent %s before creating a file",
+    async (kind) => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      const correction =
+        kind === "digest"
+          ? { content_sha256: `sha256:${"0".repeat(64)}` }
+          : kind === "encoding"
+            ? { content_base64: "/x==" }
+            : { component: "../outside" };
+      await expect(
+        f.create(root.lease_token, "not-created", Buffer.from([255]), correction)
+      ).rejects.toThrow();
+      await f.closed;
+      expect(f.child.exitCode).toBe(3);
+      await expect(stat(path.join(f.directory, "not-created"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(stat(path.join(f.parent, "outside"))).rejects.toMatchObject({ code: "ENOENT" });
+      await rename(f.parent, f.parent + "-released");
+    }
+  );
   it.each([0, 1, 257, 1024])(
     "reads exactly %i binary bytes and closes the file handle",
     async (size) => {

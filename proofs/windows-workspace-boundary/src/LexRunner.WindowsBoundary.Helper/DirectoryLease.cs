@@ -135,6 +135,57 @@ internal sealed class DirectoryLease : IDisposable
     }
   }
 
+  internal FileObservation CreateBoundedFile(string component, byte[] content)
+  {
+    ValidateComponent(component);
+    if (content.Length > 1024) throw new InvalidDataException();
+    AssertCurrent();
+    var path = System.IO.Path.Combine(Leaf.Path, component);
+    if (path.Length > 1024) throw new InvalidDataException();
+    // CREATE_NEW, read/write access, no sharing. Never truncate an existing target.
+    var file = CreateFileW(path, 0xc0000000, 0, IntPtr.Zero, 1, 0x00200080, IntPtr.Zero);
+    try
+    {
+      if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (GetFileType(file) != 1) throw new InvalidDataException();
+      var before = Capture(file, false);
+      if (!string.Equals(before.Path, path, StringComparison.OrdinalIgnoreCase) ||
+          before.Volume != Leaf.Volume || before.FileSystem != Leaf.FileSystem) throw new InvalidDataException();
+      var offset = 0;
+      while (offset < content.Length)
+      {
+        var remaining = content.AsSpan(offset).ToArray();
+        if (!WriteFile(file, remaining, (uint)remaining.Length, out var written, IntPtr.Zero))
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (written == 0 || written > remaining.Length) throw new IOException("Native write incomplete");
+        offset += (int)written;
+      }
+      if (!FlushFileBuffers(file) || !SetFilePointerEx(file, 0, out _, 0))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      var buffer = new byte[content.Length + 1];
+      using var observed = new MemoryStream();
+      while (true)
+      {
+        if (!ReadFile(file, buffer, (uint)(content.Length - observed.Length + 1), out var read, IntPtr.Zero))
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (read == 0) break;
+        if (observed.Length + read > content.Length) throw new InvalidDataException();
+        observed.Write(buffer, 0, (int)read);
+      }
+      var bytes = observed.ToArray();
+      if (!bytes.AsSpan().SequenceEqual(content) || !GetFileSizeEx(file, out var size) ||
+          size != content.Length || Capture(file, false) != before) throw new InvalidDataException();
+      AssertCurrent();
+      return new FileObservation(before, bytes);
+    }
+    finally
+    {
+      var valid = !file.IsInvalid;
+      file.Dispose();
+      if (valid && file.ReleaseSucceeded != true) throw new IOException("Native file release uncertain");
+    }
+  }
+
   public void Dispose()
   {
     if (closed) return;
@@ -215,4 +266,14 @@ internal sealed class DirectoryLease : IDisposable
   [return: MarshalAs(UnmanagedType.Bool)]
   private static extern bool ReadFile(DirectoryHandle handle, [Out] byte[] bytes, uint length,
       out uint read, IntPtr overlapped);
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool WriteFile(DirectoryHandle handle, byte[] bytes, uint length,
+      out uint written, IntPtr overlapped);
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool FlushFileBuffers(DirectoryHandle handle);
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool SetFilePointerEx(DirectoryHandle handle, long distance, out long position, uint method);
 }
