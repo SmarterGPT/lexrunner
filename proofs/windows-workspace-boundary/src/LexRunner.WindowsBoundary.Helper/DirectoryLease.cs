@@ -115,7 +115,8 @@ internal sealed class DirectoryLease : IDisposable
       using var content = new MemoryStream();
       while (true)
       {
-        if (!ReadFile(file, buffer, (uint)buffer.Length, out var read, IntPtr.Zero))
+        var remaining = (uint)(maximum - content.Length + 1);
+        if (!ReadFile(file, buffer, remaining, out var read, IntPtr.Zero))
           throw new Win32Exception(Marshal.GetLastWin32Error());
         if (read == 0) break;
         if (content.Length + read > maximum) throw new InvalidDataException();
