@@ -4,7 +4,8 @@
 tracker to the existing owned-process lifecycle and the actual NativeAOT peer.
 It performs hello followed by up to15 sequential session-status requests in one
 process, then closes stdin and observes cleanup. Zero rounds retains the original
-hello-only probe. No directory lease or filesystem operation is implemented.
+hello-only probe. This Node probe exposes status only; the native development peer
+also supports the separate [directory lease profile](windows-boundary-directory.md).
 
 This uses fixed `--boundary-session 1.0.0` arguments. The original
 `--boundary-protocol 1.0.0` remains hello-only and rejects extra input. The Node
@@ -43,6 +44,6 @@ existing native negotiation, codec and exchange suites remain regression checks.
 Build/run using the explicit native executable described in
 [native helper negotiation](../security/windows-native-helper-negotiation.md).
 
-Next add held-directory acquisition/revalidation/release behind an operation codec
-with its own reviewed limits and receipts. Do not advertise WorkspaceBoundary
-readiness or route the verifier based on this status-only development profile.
+The directory profile is exercised by an explicit test client. Next connect those
+operations to the owned Node adapter. Do not advertise WorkspaceBoundary readiness
+or route the verifier based on this status-only development probe.

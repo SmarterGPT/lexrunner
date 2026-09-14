@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-// Development negotiation peer only. No workspace operations or production readiness.
+// Development protocol and held-directory peer; not a qualified production boundary.
 internal static class Program
 {
   private const string Version = "1.0.0";
@@ -82,7 +82,7 @@ internal static class Program
       if (input.ReadByte() != -1) throw new InvalidDataException();
       return 0;
     }
-    catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+    catch (Exception error) when (error is IOException or InvalidDataException or JsonException or System.ComponentModel.Win32Exception or
         DecoderFallbackException or InvalidOperationException or KeyNotFoundException or
         UnauthorizedAccessException)
     {
@@ -93,6 +93,7 @@ internal static class Program
 
   private static int RunSession(Stream input, Stream output, string nonce, string sessionNonce)
   {
+    using var directories = new DirectorySession();
     var requests = new HashSet<string>(StringComparer.Ordinal);
     var operations = new HashSet<string>(StringComparer.Ordinal);
     var header = new byte[4];
@@ -111,6 +112,16 @@ internal static class Program
           new JsonDocumentOptions { MaxDepth = 4 });
       var root = document.RootElement;
       if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException();
+      if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "directory_request")
+      {
+        var directoryReply = directories.Execute(root, bytes, nonce, sessionNonce, requests, operations);
+        if (directoryReply.Length > Limit) throw new InvalidDataException();
+        BinaryPrimitives.WriteUInt32BigEndian(header, (uint)directoryReply.Length);
+        output.Write(header);
+        output.Write(directoryReply);
+        output.Flush();
+        continue;
+      }
       var fields = root.EnumerateObject().ToArray();
       if (fields.Length != 8 || fields.Any(p => p.Value.ValueKind != JsonValueKind.String))
         throw new InvalidDataException();
@@ -156,13 +167,13 @@ internal static class Program
     }
   }
 
-  private static bool IsId(string value) => value.Length is >= 1 and <= 64 &&
+  internal static bool IsId(string value) => value.Length is >= 1 and <= 64 &&
       value.All(c => c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' or '-');
 
-  private static byte[] Json(Action<Utf8JsonWriter> body)
+  internal static byte[] Json(Action<Utf8JsonWriter> body)
   {
     using var stream = new MemoryStream();
-    using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+    using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
     {
       writer.WriteStartObject();
       body(writer);

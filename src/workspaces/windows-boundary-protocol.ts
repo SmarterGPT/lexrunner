@@ -51,11 +51,40 @@ export const WindowsBoundaryStatusResult = z.strictObject({
   kind: z.literal("session_result"),
   status: z.literal("alive"),
 });
+export const WindowsBoundaryDirectoryRequest = z
+  .strictObject({
+    ...OperationCommon,
+    kind: z.literal("directory_request"),
+    operation: z.enum(["acquire", "assert", "release"]),
+    path: z.string().min(3).max(1024).optional(),
+    lease_token: Nonce.optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.operation === "acquire"
+        ? !value.path || value.lease_token !== undefined
+        : value.path !== undefined || value.lease_token === undefined
+    )
+      context.addIssue({ code: "custom", message: "Invalid directory operation arguments" });
+  });
+export const WindowsBoundaryDirectoryResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("directory_result"),
+  lease_token: Nonce,
+  path: z.string().min(3).max(2048),
+  chain_length: z.number().int().min(1).max(33),
+  file_id: z.string().regex(/^[a-f0-9]{32}$/u),
+  volume_serial_number: z.string().regex(/^[a-f0-9]{16}$/u),
+  filesystem: z.enum(["NTFS", "ReFS"]),
+  status: z.enum(["acquired", "current", "released"]),
+});
 const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryHello,
   WindowsBoundaryHelloResult,
   WindowsBoundaryStatusRequest,
   WindowsBoundaryStatusResult,
+  WindowsBoundaryDirectoryRequest,
+  WindowsBoundaryDirectoryResult,
 ]);
 type SessionMessage = z.infer<typeof SessionMessage>;
 
