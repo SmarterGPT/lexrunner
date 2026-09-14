@@ -1,5 +1,5 @@
 // Controlled protocol peer. It performs no filesystem or worker operations.
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 const mode = process.argv[2];
 const digest = process.argv[3];
 const encode = (value) => {
@@ -42,6 +42,33 @@ process.stdin.on("data", (chunk) => {
       return;
     }
     if (request.operation === "release" && mode === "directory-lost-release") return;
+    if (request.kind === "file_request" && mode !== "directory-file-wrong-kind") {
+      if (mode === "directory-file-silent") return;
+      const data = Buffer.from([255]);
+      const reply = {
+        kind: "file_result",
+        protocol_version: request.protocol_version,
+        client_nonce: request.client_nonce,
+        session_nonce: request.session_nonce,
+        request_id: request.request_id,
+        operation_id: request.operation_id,
+        request_digest: request.request_digest,
+        lease_token: request.lease_token,
+        byte_length: 1,
+        content_base64: data.toString("base64"),
+        content_sha256: `sha256:${createHash("sha256").update(data).digest("hex")}`,
+        file_id: "d".repeat(32),
+        volume_serial_number: "c".repeat(16),
+      };
+      if (mode === "directory-file-wrong-length") reply.byte_length = 2;
+      if (mode === "directory-file-noncanonical") reply.content_base64 = "/x==";
+      if (mode === "directory-file-wrong-digest") reply.content_sha256 = `sha256:${"0".repeat(64)}`;
+      if (mode === "directory-file-wrong-token") reply.lease_token = "e".repeat(64);
+      if (mode === "directory-file-wrong-volume") reply.volume_serial_number = "e".repeat(16);
+      if (mode === "directory-file-wrong-operation") reply.operation_id = "wrong";
+      process.stdout.write(encode(reply));
+      return;
+    }
     directoryPath ??= request.path;
     const response = {
       kind: "directory_result",

@@ -56,6 +56,53 @@ afterEach(() => {
 });
 
 describe("owned Windows boundary development handshake", () => {
+  it.each([
+    "wrong-length",
+    "noncanonical",
+    "wrong-digest",
+    "wrong-token",
+    "wrong-volume",
+    "wrong-operation",
+    "wrong-kind",
+    "over-bound",
+  ])("rejects file %s before delivering content", async (mode) => {
+    state.mode = `directory-file-${mode}`;
+    let delivered = false;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.readFile("file", mode === "over-bound" ? 0 : 1);
+        delivered = true;
+      }
+    );
+    expect(delivered).toBe(false);
+    expect(report).toMatchObject({
+      reason: "protocol_error",
+      directory: { filesRead: 0, bytesRead: 0, releaseAcknowledged: false },
+      sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+    });
+  });
+  it("retains an unanswered file request without retry", async () => {
+    state.mode = "directory-file-silent";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      { ...options(), handshakeTimeoutMs: 500 },
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.readFile("file", 1);
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "operation_timeout",
+      directory: { filesRead: 0 },
+      sessionOperations: {
+        requested: 2,
+        correlated: 1,
+        failure: { outstanding: { operation_id: expect.any(String) } },
+      },
+    });
+    expect(state.write).toHaveBeenCalledTimes(3);
+  });
   it.each(["reused-token", "wrong-path", "false-missing"])(
     "rejects child %s before exposing a scope",
     async (mode) => {

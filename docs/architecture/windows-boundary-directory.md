@@ -101,9 +101,8 @@ failure, timeout, cancellation, concurrent and unawaited assertions. Controlled 
 wrong status, changed identity/token and lost release replies. These observations
 do not qualify forced termination, close failure or authenticated loading.
 
-The native [bounded read profile](windows-boundary-file-read.md) is implemented
-through the explicit test client. Next connect it to the owned Node scope and
-complete writes and process operations required
+The [bounded read profile](windows-boundary-file-read.md) is implemented in the
+native helper and owned Node scopes. Next complete writes and process operations required
 by WorkspaceBoundary and map them to the existing receipt/verifier contract.
 Production resolution remains `helper_missing` until operations and the separately
 reviewed launch/trust profile satisfy the actual verifier contract. This local

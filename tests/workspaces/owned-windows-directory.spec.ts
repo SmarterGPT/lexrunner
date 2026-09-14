@@ -36,6 +36,63 @@ afterEach(async () => {
   }
 });
 describe.skipIf(process.platform !== "win32" || !executable)("owned native directory scope", () => {
+  it("reads binary content from a nested scope with independent caller bytes", async () => {
+    const f = await fixture();
+    await mkdir(path.join(f.directory, "nested"));
+    const data = Buffer.from([0, 255, 1, 128]);
+    await writeFile(path.join(f.directory, "nested", "résumé.bin"), data);
+    let retained: OwnedWindowsDirectoryScope | undefined;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        retained = await root.openChild("nested");
+        const read = await retained.readFile("résumé.bin", 4);
+        expect(Buffer.from(read.bytes)).toEqual(data);
+        expect(read.contentSha256).toBe(
+          `sha256:${createHash("sha256").update(data).digest("hex")}`
+        );
+        expect(read.fileId).toMatch(/^[a-f0-9]{32}$/u);
+        expect(read.volumeSerialNumber).toBe(retained.identity.volume_serial_number);
+        read.bytes[0] = 99;
+        expect(Buffer.from((await retained.readFile("résumé.bin", 4)).bytes)).toEqual(data);
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "matched",
+      directory: { filesRead: 2, bytesRead: 8, childrenReleased: 1, releaseAcknowledged: true },
+    });
+    await expect(retained!.readFile("résumé.bin", 4)).rejects.toThrow("scope ended");
+    await rename(f.directory, f.directory + "-released");
+  });
+  it("reads an empty file with a zero bound", async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.directory, "empty"), "");
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        expect((await root.readFile("empty", 0)).bytes.length).toBe(0);
+      }
+    );
+    expect(report).toMatchObject({ outcome: "matched", directory: { filesRead: 1, bytesRead: 0 } });
+  });
+  it("fails an unawaited read and retains its outstanding request", async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.directory, "file"), "a");
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        void root.readFile("file", 1);
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "work_failed",
+      directory: { releaseAcknowledged: false },
+      sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+    });
+  });
   it("opens and creates nested child scopes and acknowledges every release", async () => {
     const f = await fixture();
     await mkdir(path.join(f.directory, "existing"));

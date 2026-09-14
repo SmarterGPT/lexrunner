@@ -37,8 +37,30 @@ handle release, missing/oversized targets, directories and junctions, stream and
 traversal rejection, and an already-open writer. Tests run on the actual ReFS host;
 they do not qualify all NTFS/ReFS versions or file-symlink/forced-close failure cases.
 
-The explicit test client uses the shared codec and exchange and verifies returned
-bytes/digest. The owned Node scope does not expose readFile yet. Next connect these
-reads there, then implement writes, process operations and existing verifier receipt
+The owned Node scope now exposes `readFile(component, maxBytes)` on initial and
+child scopes. Its frozen result contains `bytes`, `contentSha256`, `fileId` and
+`volumeSerialNumber`, marked `kind: file_read`. It checks canonical base64, byte
+length, the requested bound, digest, parent token/volume and full request correlation
+before resolving the caller's promise. A directory-result frame cannot complete a
+read. Bad or missing replies fail the session with outstanding identity preserved;
+there is no resend or partial-content delivery.
+
+The bytes are a separate caller-owned Uint8Array and may be modified. The digest
+describes the original returned bytes, not subsequent caller edits; a consumer
+must recompute it before relying on modified content. This result remains an
+observation, not a WorkspaceBoundary verification or authority receipt.
+
+Reads share the existing one-outstanding-operation rule, work and request deadlines,
+scope expiration and release capacity. Their input bounds and component syntax are
+checked before sending. Unawaited reads fail the scope without an unhandled promise
+rejection. Reports count matched reads and bytes separately from release acknowledgment;
+those counts remain historical observations if later work or cleanup fails.
+
+Three actual-native owned tests cover nested binary reads, private returned bytes,
+empty reads and unawaited-request disposition. Nine controlled-peer cases exercise
+wrong length/digest/token/volume/operation/kind, noncanonical base64, over-bound data
+and unanswered requests. Existing raw native tests remain regression evidence.
+
+Next implement writes, process operations and existing verifier receipt
 mapping. Production resolution remains `helper_missing`; launch trust and full
 operation guarantees remain independently required.

@@ -70,6 +70,8 @@ export interface WindowsBoundaryHandshakeReport {
     assertions: number;
     childrenAcquired: number;
     childrenReleased: number;
+    filesRead: number;
+    bytesRead: number;
   };
   sessionOperations?: {
     requested: number;
@@ -88,9 +90,22 @@ export interface OwnedWindowsDirectoryScope {
   openChild(component: string): Promise<OwnedWindowsDirectoryScope>;
   tryOpenChild(component: string): Promise<OwnedWindowsDirectoryScope | null>;
   createChild(component: string): Promise<OwnedWindowsDirectoryScope>;
+  readFile(component: string, maxBytes: number): Promise<OwnedWindowsFileRead>;
+}
+export interface OwnedWindowsFileRead {
+  readonly kind: "file_read";
+  readonly bytes: Uint8Array;
+  readonly contentSha256: string;
+  readonly fileId: string;
+  readonly volumeSerialNumber: string;
+}
+type ScopeReply = DirectoryReply | OwnedWindowsFileRead | null;
+function directoryValue(reply: ScopeReply): DirectoryReply {
+  if (!reply || reply.kind !== "directory_result") throw new Error("Unexpected directory response");
+  return reply;
 }
 type DirectoryOperation =
-  "acquire" | "assert" | "release" | "open-child" | "try-open-child" | "create-child";
+  "acquire" | "assert" | "release" | "open-child" | "try-open-child" | "create-child" | "read-file";
 const DirectoryOptions = z.strictObject({
   path: z
     .string()
@@ -208,6 +223,9 @@ async function runOwnedWindowsBoundary(
     const liveDirectories: DirectoryReply[] = [];
     let childrenAcquired = 0;
     let childrenReleased = 0;
+    let filesRead = 0;
+    let bytesRead = 0;
+    let readLimit: number | undefined;
     let releaseAcknowledged = false;
     let assertions = 0;
     let working = false;
@@ -215,7 +233,7 @@ async function runOwnedWindowsBoundary(
     let workTimer: ReturnType<typeof setTimeout> | undefined;
     let assertion:
       | {
-          resolve: (reply: DirectoryReply | null) => void;
+          resolve: (reply: ScopeReply) => void;
           reject: (error: Error) => void;
         }
       | undefined;
@@ -281,6 +299,8 @@ async function runOwnedWindowsBoundary(
                 assertions,
                 childrenAcquired,
                 childrenReleased,
+                filesRead,
+                bytesRead,
               },
             }
           : {}),
@@ -338,19 +358,21 @@ async function runOwnedWindowsBoundary(
     const sendDirectory = (
       operation: DirectoryOperation,
       target = directoryReply,
-      component?: string
+      component?: string,
+      maxBytes?: number
     ) => {
       if (finished || closing || failure || directoryOperation || sentCount >= 15)
         throw new Error("Directory session unavailable");
       const body = {
         client_nonce: request.client_nonce,
-        kind: "directory_request",
+        kind: operation === "read-file" ? "file_request" : "directory_request",
         operation,
         operation_id: randomUUID(),
         protocol_version: WINDOWS_BOUNDARY_PROTOCOL_VERSION,
         request_id: randomUUID(),
         session_nonce: sessionNonce!,
         ...(component === undefined ? {} : { component }),
+        ...(operation === "read-file" ? { max_bytes: maxBytes } : {}),
         ...(operation === "acquire"
           ? { path: directory!.path }
           : { lease_token: target!.lease_token }),
@@ -368,6 +390,7 @@ async function runOwnedWindowsBoundary(
       directoryOperation = operation;
       directoryTarget = target;
       childComponent = component;
+      readLimit = maxBytes;
       sentCount++;
       clearTimeout(handshakeTimer);
       handshakeTimer = setTimeout(() => fail("operation_timeout"), settings.handshakeTimeoutMs);
@@ -377,17 +400,25 @@ async function runOwnedWindowsBoundary(
       const invoke = <T>(
         operation: DirectoryOperation,
         component: string | undefined,
-        convert: (reply: DirectoryReply | null) => T
+        convert: (reply: ScopeReply) => T,
+        maxBytes?: number
       ): Promise<T> => {
-        const pending = new Promise<DirectoryReply | null>((resolveAssertion, reject) => {
+        const pending = new Promise<ScopeReply>((resolveAssertion, reject) => {
           if (!working || finished || failure || closing) throw new Error("Directory scope ended");
           if (performance.now() >= workDeadline) {
             fail("work_timeout");
             throw new Error("Directory work timed out");
           }
-          const child = operation !== "assert";
+          const child = operation !== "assert" && operation !== "read-file";
           if (
-            child &&
+            operation === "read-file" &&
+            (!Number.isSafeInteger(maxBytes) || maxBytes! < 0 || maxBytes! > 1024)
+          ) {
+            fail("work_failed");
+            throw new Error("Invalid read bound");
+          }
+          if (
+            operation !== "assert" &&
             (typeof component !== "string" ||
               component.length < 1 ||
               component.length > 255 ||
@@ -405,7 +436,7 @@ async function runOwnedWindowsBoundary(
           }
           assertion = { resolve: resolveAssertion, reject };
           try {
-            sendDirectory(operation, target, component);
+            sendDirectory(operation, target, component, maxBytes);
           } catch {
             fail("protocol_error");
           }
@@ -418,13 +449,26 @@ async function runOwnedWindowsBoundary(
       };
       return Object.freeze({
         identity: identity(target),
-        assertCurrent: () => invoke("assert", undefined, (reply) => identity(reply!)),
+        assertCurrent: () =>
+          invoke("assert", undefined, (reply) => identity(directoryValue(reply))),
         openChild: (component: string) =>
-          invoke("open-child", component, (reply) => scopeFor(reply!)),
+          invoke("open-child", component, (reply) => scopeFor(directoryValue(reply))),
         tryOpenChild: (component: string) =>
-          invoke("try-open-child", component, (reply) => (reply ? scopeFor(reply) : null)),
+          invoke("try-open-child", component, (reply) =>
+            reply ? scopeFor(directoryValue(reply)) : null
+          ),
         createChild: (component: string) =>
-          invoke("create-child", component, (reply) => scopeFor(reply!)),
+          invoke("create-child", component, (reply) => scopeFor(directoryValue(reply))),
+        readFile: (component: string, maxBytes: number) =>
+          invoke(
+            "read-file",
+            component,
+            (reply) => {
+              if (!reply || reply.kind !== "file_read") throw new Error("Unexpected file response");
+              return reply;
+            },
+            maxBytes
+          ),
       });
     };
     const releaseNext = () =>
@@ -506,6 +550,58 @@ async function runOwnedWindowsBoundary(
       try {
         const messages = decoder.push(chunk);
         for (const message of messages) {
+          if (seenReply && directory && message.kind === "file_result") {
+            if (
+              directoryOperation !== "read-file" ||
+              !directoryTarget ||
+              readLimit === undefined ||
+              !assertion
+            ) {
+              fail("protocol_error");
+              return;
+            }
+            const bytes = Buffer.from(message.content_base64, "base64");
+            const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+            if (
+              message.lease_token !== directoryTarget.lease_token ||
+              message.volume_serial_number !== directoryTarget.volume_serial_number ||
+              bytes.length !== message.byte_length ||
+              bytes.length > readLimit ||
+              bytes.toString("base64") !== message.content_base64 ||
+              digest !== message.content_sha256
+            ) {
+              fail("protocol_error");
+              return;
+            }
+            const match = exchange!.correlate({
+              client_nonce: message.client_nonce,
+              session_nonce: message.session_nonce,
+              request_id: message.request_id,
+              operation_id: message.operation_id,
+              request_digest: message.request_digest,
+            });
+            if (!match.correlated) {
+              fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
+              return;
+            }
+            clearTimeout(handshakeTimer);
+            operationCount++;
+            filesRead++;
+            bytesRead += bytes.length;
+            directoryOperation = undefined;
+            const waiter = assertion;
+            assertion = undefined;
+            waiter.resolve(
+              Object.freeze({
+                kind: "file_read",
+                bytes: Uint8Array.from(bytes),
+                contentSha256: digest,
+                fileId: message.file_id,
+                volumeSerialNumber: message.volume_serial_number,
+              })
+            );
+            continue;
+          }
           if (seenReply && directory && message.kind === "directory_result") {
             const childOperation =
               directoryOperation === "open-child" ||
@@ -527,6 +623,7 @@ async function runOwnedWindowsBoundary(
                     : "released";
             if (
               !directoryOperation ||
+              directoryOperation === "read-file" ||
               message.status !== expectedStatus ||
               (childOperation && !missing
                 ? !directoryTarget ||

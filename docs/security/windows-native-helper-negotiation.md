@@ -9,7 +9,7 @@ hello followed by bounded requests in the same process. The owned Node probe
 exposes status; a scoped owned Node adapter and an explicit test client exercise the native
 [directory lease profile](../architecture/windows-boundary-directory.md).
 Native [bounded reads](../architecture/windows-boundary-file-read.md) are tested
-through the explicit file-operation client. Owned Node reads, writes, process
+through the explicit client and owned Node scopes. Writes, process
 execution and production readiness remain pending. The production
 resolver remains unavailable.
 
