@@ -3,7 +3,9 @@
 `WindowsBoundaryExchange` is local correlation state for the next persistent
 owned-helper transport. It does not open that transport, extend the current hello
 wire format, expose a native lease, perform operations, or change the resolver.
-It is not yet called by the one-shot handshake or NativeAOT peer.
+The [bounded development session](windows-boundary-session.md) now uses it in the
+owned Node process for sequential status requests. The one-shot hello path remains
+unchanged; no directory operations or native lease are supplied by this tracker.
 
 The owning transport must obtain client/session nonces from its single matched
 handshake, generate fresh request IDs, bind an operation ID and digest to the

@@ -3,7 +3,9 @@
 The development NativeAOT peer lives in
 `proofs/windows-workspace-boundary/src/LexRunner.WindowsBoundary.Helper`.
 It is a separate project and does not compile the unfinished directory proof.
-It accepts only `--boundary-protocol 1.0.0`, one canonical framed hello and EOF.
+The `--boundary-protocol 1.0.0` profile accepts one canonical framed hello and EOF.
+The explicit [session profile](../architecture/windows-boundary-session.md) accepts
+hello followed by bounded session-status requests in the same owned process.
 No workspace operations, leases, process execution service or production readiness
 are exposed. The production resolver remains unavailable.
 

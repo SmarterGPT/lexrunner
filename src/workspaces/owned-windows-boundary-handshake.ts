@@ -2,10 +2,16 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { canonicalJSONStringify } from "../util/canonicalJson.js";
+import {
+  WindowsBoundaryExchange,
+  type WindowsBoundaryExchangeFailure,
+} from "./windows-boundary-exchange.js";
 
 import {
   assessWindowsBoundaryHello,
   encodeWindowsBoundaryControl,
+  encodeWindowsBoundarySession,
   WINDOWS_BOUNDARY_PROTOCOL_VERSION,
   WindowsBoundaryControlDecoder,
   WindowsBoundaryHelloResult,
@@ -35,6 +41,7 @@ type Failure =
   | "metadata_mismatch"
   | "child_exit"
   | "handshake_timeout"
+  | "operation_timeout"
   | "cleanup_forced"
   | "cleanup_unknown"
   | "io_error"
@@ -54,6 +61,11 @@ export interface WindowsBoundaryHandshakeReport {
     descendants: "not_assessed";
   };
   stderrBytes: number;
+  sessionOperations?: {
+    requested: number;
+    correlated: number;
+    failure?: WindowsBoundaryExchangeFailure;
+  };
 }
 
 /**
@@ -63,6 +75,23 @@ export interface WindowsBoundaryHandshakeReport {
 export async function probeOwnedWindowsBoundaryHandshake(
   options: OwnedWindowsBoundaryHandshakeOptions,
   signal?: AbortSignal
+): Promise<WindowsBoundaryHandshakeReport> {
+  return runOwnedWindowsBoundary(options, signal, 0);
+}
+
+/** Up to fifteen status round trips on one owned process; no filesystem operations. */
+export async function probeOwnedWindowsBoundarySession(
+  options: OwnedWindowsBoundaryHandshakeOptions,
+  rounds: number,
+  signal?: AbortSignal
+): Promise<WindowsBoundaryHandshakeReport> {
+  return runOwnedWindowsBoundary(options, signal, rounds);
+}
+
+async function runOwnedWindowsBoundary(
+  options: OwnedWindowsBoundaryHandshakeOptions,
+  signal: AbortSignal | undefined,
+  rounds: number
 ): Promise<WindowsBoundaryHandshakeReport> {
   const parsed = Options.safeParse(options);
   const empty = (reason: Failure): WindowsBoundaryHandshakeReport => ({
@@ -80,7 +109,8 @@ export async function probeOwnedWindowsBoundaryHandshake(
     },
     stderrBytes: 0,
   });
-  if (!parsed.success) return empty("invalid_options");
+  if (!parsed.success || !Number.isSafeInteger(rounds) || rounds < 0 || rounds > 15)
+    return empty("invalid_options");
   if (signal?.aborted) return empty("cancelled");
   const settings = parsed.data;
   const handshakeDeadline = performance.now() + settings.handshakeTimeoutMs;
@@ -98,18 +128,25 @@ export async function probeOwnedWindowsBoundaryHandshake(
   );
   let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawn(settings.executable, ["--boundary-protocol", WINDOWS_BOUNDARY_PROTOCOL_VERSION], {
-      cwd: settings.cwd,
-      env: environment,
-      shell: false,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    child = spawn(
+      settings.executable,
+      [rounds ? "--boundary-session" : "--boundary-protocol", WINDOWS_BOUNDARY_PROTOCOL_VERSION],
+      {
+        cwd: settings.cwd,
+        env: environment,
+        shell: false,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
   } catch {
     return empty("spawn_error");
   }
   return new Promise((resolve) => {
-    const decoder = new WindowsBoundaryControlDecoder();
+    const decoder = new WindowsBoundaryControlDecoder(rounds > 0);
+    let exchange: WindowsBoundaryExchange | undefined;
+    let operationCount = 0;
+    let sessionNonce: string | undefined;
     let failure: Failure | undefined;
     let helloMatched = false;
     let sessionNonceSha256: string | undefined;
@@ -140,6 +177,7 @@ export async function probeOwnedWindowsBoundaryHandshake(
         child.unref();
       }
       if (!failure && !helloMatched) failure = "child_exit";
+      if (!failure && operationCount !== rounds) failure = "child_exit";
       resolve({
         outcome: failure ? "failed" : "matched",
         ...(failure ? { reason: failure } : {}),
@@ -155,6 +193,15 @@ export async function probeOwnedWindowsBoundaryHandshake(
           descendants: "not_assessed",
         },
         stderrBytes,
+        ...(rounds
+          ? {
+              sessionOperations: {
+                requested: rounds,
+                correlated: operationCount,
+                ...(failure && exchange ? { failure: exchange.disconnect() } : {}),
+              },
+            }
+          : {}),
       });
     };
     const terminate = () => {
@@ -185,6 +232,29 @@ export async function probeOwnedWindowsBoundaryHandshake(
       close();
     };
     const abort = () => fail("cancelled");
+    const sendStatus = () => {
+      const body = {
+        client_nonce: request.client_nonce,
+        kind: "session_request" as const,
+        operation: "session-status" as const,
+        operation_id: randomUUID(),
+        protocol_version: WINDOWS_BOUNDARY_PROTOCOL_VERSION,
+        request_id: randomUUID(),
+        session_nonce: sessionNonce!,
+      };
+      const requestDigest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
+      exchange!.reserve(
+        {
+          request_id: body.request_id,
+          operation_id: body.operation_id,
+          request_digest: requestDigest,
+        },
+        settings.handshakeTimeoutMs
+      );
+      clearTimeout(handshakeTimer);
+      handshakeTimer = setTimeout(() => fail("operation_timeout"), settings.handshakeTimeoutMs);
+      child.stdin.write(encodeWindowsBoundarySession({ ...body, request_digest: requestDigest }));
+    };
     child.on("error", () => fail("spawn_error"));
     child.stdin.on("error", () => fail("io_error"));
     child.stdout.on("error", () => fail("io_error"));
@@ -207,6 +277,23 @@ export async function probeOwnedWindowsBoundaryHandshake(
       try {
         const messages = decoder.push(chunk);
         for (const message of messages) {
+          if (seenReply && rounds && message.kind === "session_result") {
+            const {
+              kind: _kind,
+              status: _status,
+              protocol_version: _version,
+              ...correlation
+            } = message;
+            const match = exchange!.correlate(correlation);
+            if (!match.correlated) {
+              fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
+              return;
+            }
+            operationCount++;
+            if (operationCount === rounds) close();
+            else sendStatus();
+            continue;
+          }
           if (seenReply || message.kind !== "hello_result") {
             fail("protocol_error");
             return;
@@ -227,7 +314,14 @@ export async function probeOwnedWindowsBoundaryHandshake(
           }
           helloMatched = true;
           sessionNonceSha256 = `sha256:${createHash("sha256").update(message.session_nonce, "hex").digest("hex")}`;
-          close();
+          if (rounds) {
+            sessionNonce = message.session_nonce;
+            exchange = new WindowsBoundaryExchange({
+              client_nonce: request.client_nonce,
+              session_nonce: sessionNonce,
+            });
+            sendStatus();
+          } else close();
         }
       } catch {
         fail("protocol_error");

@@ -35,6 +35,29 @@ export const WindowsBoundaryHelloResult = z.strictObject({
 });
 const Message = z.discriminatedUnion("kind", [WindowsBoundaryHello, WindowsBoundaryHelloResult]);
 export type WindowsBoundaryControlMessage = z.infer<typeof Message>;
+const OperationCommon = {
+  ...Common,
+  session_nonce: Nonce,
+  operation_id: RequestId,
+  request_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+};
+export const WindowsBoundaryStatusRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("session_request"),
+  operation: z.literal("session-status"),
+});
+export const WindowsBoundaryStatusResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("session_result"),
+  status: z.literal("alive"),
+});
+const SessionMessage = z.discriminatedUnion("kind", [
+  WindowsBoundaryHello,
+  WindowsBoundaryHelloResult,
+  WindowsBoundaryStatusRequest,
+  WindowsBoundaryStatusResult,
+]);
+type SessionMessage = z.infer<typeof SessionMessage>;
 
 export class WindowsBoundaryProtocolError extends Error {
   constructor(
@@ -47,7 +70,16 @@ export class WindowsBoundaryProtocolError extends Error {
 
 /** Four-byte unsigned big-endian UTF-8 byte length, then exact canonical JSON. */
 export function encodeWindowsBoundaryControl(value: unknown): Buffer {
-  const parsed = Message.safeParse(value);
+  return encodeFrame(value, false);
+}
+
+/** Explicit bounded development session profile; negotiation stays strict by default. */
+export function encodeWindowsBoundarySession(value: unknown): Buffer {
+  return encodeFrame(value, true);
+}
+
+function encodeFrame(value: unknown, sessionMode: boolean): Buffer {
+  const parsed = (sessionMode ? SessionMessage : Message).safeParse(value);
   if (!parsed.success) throw new WindowsBoundaryProtocolError("invalid_frame");
   const bytes = Buffer.from(canonicalJSONStringify(parsed.data), "utf8");
   if (bytes.length === 0 || bytes.length > WINDOWS_BOUNDARY_CONTROL_BYTES) {
@@ -61,6 +93,7 @@ export function encodeWindowsBoundaryControl(value: unknown): Buffer {
 
 /** Fixed storage; malformed input and budget exhaustion permanently close the decoder. */
 export class WindowsBoundaryControlDecoder {
+  constructor(private readonly sessionMode = false) {}
   private readonly header = Buffer.alloc(4);
   private readonly payload = Buffer.alloc(WINDOWS_BOUNDARY_CONTROL_BYTES);
   private headerUsed = 0;
@@ -70,11 +103,11 @@ export class WindowsBoundaryControlDecoder {
   private frames = 0;
   private closed = false;
 
-  push(chunk: Uint8Array): WindowsBoundaryControlMessage[] {
+  push(chunk: Uint8Array): SessionMessage[] {
     if (this.closed) throw new WindowsBoundaryProtocolError("stream_closed");
     if (chunk.byteLength > MAX_STREAM_BYTES - this.streamBytes) return this.fail("stream_limit");
     this.streamBytes += chunk.byteLength;
-    const messages: WindowsBoundaryControlMessage[] = [];
+    const messages: SessionMessage[] = [];
     let offset = 0;
     while (offset < chunk.byteLength) {
       if (this.headerUsed < 4) {
@@ -97,7 +130,7 @@ export class WindowsBoundaryControlDecoder {
       try {
         const bytes = this.payload.subarray(0, this.payloadLength);
         const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-        const parsed = Message.parse(JSON.parse(text));
+        const parsed = (this.sessionMode ? SessionMessage : Message).parse(JSON.parse(text));
         // Reject duplicate keys, alternate encodings/BOM and noncanonical JSON on the wire.
         if (!bytes.equals(Buffer.from(canonicalJSONStringify(parsed), "utf8"))) {
           return this.fail("invalid_frame");

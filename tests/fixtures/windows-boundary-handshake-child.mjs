@@ -20,6 +20,7 @@ let input = Buffer.alloc(0);
 let sent = false;
 if (mode === "early-exit") process.exit(2);
 process.stdin.on("data", (chunk) => {
+  if (sent && mode === "session-exit") process.exit(0);
   input = Buffer.concat([input, chunk]);
   if (input.length > 4_100) process.exit(3);
   if (sent || input.length < 4 || input.length < 4 + input.readUInt32BE()) return;

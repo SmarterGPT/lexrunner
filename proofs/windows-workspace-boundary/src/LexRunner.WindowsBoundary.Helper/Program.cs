@@ -13,7 +13,7 @@ internal static class Program
   private static int Main(string[] args)
   {
     if (!OperatingSystem.IsWindows() || args.Length != 2 ||
-        args[0] != "--boundary-protocol" || args[1] != Version)
+        (args[0] != "--boundary-protocol" && args[0] != "--boundary-session") || args[1] != Version)
       return 2;
     try
     {
@@ -77,6 +77,7 @@ internal static class Program
       output.Write(header);
       output.Write(reply);
       output.Flush();
+      if (args[0] == "--boundary-session") return RunSession(input, output, nonce, sessionNonce);
       // One exchange only. The owned parent closes stdin after matching the reply.
       if (input.ReadByte() != -1) throw new InvalidDataException();
       return 0;
@@ -89,6 +90,74 @@ internal static class Program
       return 3;
     }
   }
+
+  private static int RunSession(Stream input, Stream output, string nonce, string sessionNonce)
+  {
+    var requests = new HashSet<string>(StringComparer.Ordinal);
+    var operations = new HashSet<string>(StringComparer.Ordinal);
+    var header = new byte[4];
+    for (var count = 0; ; count++)
+    {
+      var first = input.ReadByte();
+      if (first == -1) return 0;
+      if (count >= 15) throw new InvalidDataException();
+      header[0] = (byte)first;
+      input.ReadExactly(header.AsSpan(1));
+      var length = BinaryPrimitives.ReadUInt32BigEndian(header);
+      if (length is 0 or > Limit) throw new InvalidDataException();
+      var bytes = new byte[(int)length];
+      input.ReadExactly(bytes);
+      using var document = JsonDocument.Parse(new UTF8Encoding(false, true).GetString(bytes),
+          new JsonDocumentOptions { MaxDepth = 4 });
+      var root = document.RootElement;
+      if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException();
+      var fields = root.EnumerateObject().ToArray();
+      if (fields.Length != 8 || fields.Any(p => p.Value.ValueKind != JsonValueKind.String))
+        throw new InvalidDataException();
+      var request = root.GetProperty("request_id").GetString()!;
+      var operation = root.GetProperty("operation_id").GetString()!;
+      var digest = root.GetProperty("request_digest").GetString()!;
+      if (!IsId(request) || !IsId(operation) ||
+          root.GetProperty("kind").GetString() != "session_request" ||
+          root.GetProperty("operation").GetString() != "session-status" ||
+          root.GetProperty("protocol_version").GetString() != Version ||
+          root.GetProperty("client_nonce").GetString() != nonce ||
+          root.GetProperty("session_nonce").GetString() != sessionNonce)
+        throw new InvalidDataException();
+      void Body(Utf8JsonWriter writer, bool includeDigest)
+      {
+        writer.WriteString("client_nonce", nonce);
+        writer.WriteString("kind", "session_request");
+        writer.WriteString("operation", "session-status");
+        writer.WriteString("operation_id", operation);
+        writer.WriteString("protocol_version", Version);
+        if (includeDigest) writer.WriteString("request_digest", digest);
+        writer.WriteString("request_id", request);
+        writer.WriteString("session_nonce", sessionNonce);
+      }
+      var expected = "sha256:" + Convert.ToHexString(SHA256.HashData(Json(w => Body(w, false)))).ToLowerInvariant();
+      if (digest != expected || !bytes.AsSpan().SequenceEqual(Json(w => Body(w, true))) ||
+          !requests.Add(request) || !operations.Add(operation)) throw new InvalidDataException();
+      var reply = Json(writer =>
+      {
+        writer.WriteString("client_nonce", nonce);
+        writer.WriteString("kind", "session_result");
+        writer.WriteString("operation_id", operation);
+        writer.WriteString("protocol_version", Version);
+        writer.WriteString("request_digest", digest);
+        writer.WriteString("request_id", request);
+        writer.WriteString("session_nonce", sessionNonce);
+        writer.WriteString("status", "alive");
+      });
+      BinaryPrimitives.WriteUInt32BigEndian(header, (uint)reply.Length);
+      output.Write(header);
+      output.Write(reply);
+      output.Flush();
+    }
+  }
+
+  private static bool IsId(string value) => value.Length is >= 1 and <= 64 &&
+      value.All(c => c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' or '-');
 
   private static byte[] Json(Action<Utf8JsonWriter> body)
   {

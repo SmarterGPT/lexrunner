@@ -2,7 +2,10 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { probeOwnedWindowsBoundaryHandshake } from "../../src/workspaces/owned-windows-boundary-handshake.js";
+import {
+  probeOwnedWindowsBoundaryHandshake,
+  probeOwnedWindowsBoundarySession,
+} from "../../src/workspaces/owned-windows-boundary-handshake.js";
 
 const fixture = fileURLToPath(
   new URL("../fixtures/windows-boundary-handshake-child.mjs", import.meta.url)
@@ -52,6 +55,47 @@ afterEach(() => {
 });
 
 describe("owned Windows boundary development handshake", () => {
+  it("times out an unanswered operation and retains its unknown outcome", async () => {
+    // This controlled peer answers hello but deliberately ignores later requests.
+    const report = await probeOwnedWindowsBoundarySession(
+      { ...options(), handshakeTimeoutMs: 500 },
+      2
+    );
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "operation_timeout",
+      sessionOperations: {
+        requested: 2,
+        correlated: 0,
+        failure: {
+          disposition: "reconciliation_required",
+          outstanding: { operation_id: expect.any(String) },
+        },
+      },
+      cleanup: { disposition: "closed", processExited: true },
+    });
+    expect(state.write).toHaveBeenCalledTimes(2); // Hello and one operation; no resend.
+  });
+  it("does not count clean child exit as completion of an outstanding operation", async () => {
+    state.mode = "session-exit";
+    const report = await probeOwnedWindowsBoundarySession(options(), 2);
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "child_exit",
+      sessionOperations: {
+        correlated: 0,
+        failure: { outstanding: { request_id: expect.any(String) } },
+      },
+      cleanup: { exitCode: 0 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(2);
+  });
+  it("rejects session budgets before spawning", async () => {
+    expect(await probeOwnedWindowsBoundarySession(options(), 16)).toMatchObject({
+      reason: "invalid_options",
+    });
+    expect(state.calls).toHaveLength(0);
+  });
   it("checks the elapsed deadline even before the timer callback runs", async () => {
     const now = performance.now();
     const clock = vi.spyOn(performance, "now").mockReturnValue(now);

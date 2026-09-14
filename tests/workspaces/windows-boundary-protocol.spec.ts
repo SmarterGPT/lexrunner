@@ -3,11 +3,29 @@ import { canonicalJSONStringify } from "../../src/util/canonicalJson.js";
 import {
   assessWindowsBoundaryHello,
   encodeWindowsBoundaryControl,
+  encodeWindowsBoundarySession,
   WINDOWS_BOUNDARY_CONTROL_BYTES,
   WINDOWS_BOUNDARY_NEGOTIATION_FRAMES,
   WindowsBoundaryControlDecoder,
   WindowsBoundaryProtocolError,
 } from "../../src/workspaces/windows-boundary-protocol.js";
+
+it("requires explicit session decoding and keeps negotiation closed to operations", () => {
+  const operation = {
+    kind: "session_result",
+    protocol_version: "1.0.0",
+    request_id: "r1",
+    client_nonce: "a".repeat(64),
+    session_nonce: "b".repeat(64),
+    operation_id: "op1",
+    request_digest: `sha256:${"c".repeat(64)}`,
+    status: "alive",
+  };
+  const frame = encodeWindowsBoundarySession(operation);
+  expect(() => encodeWindowsBoundaryControl(operation)).toThrow();
+  expect(() => new WindowsBoundaryControlDecoder().push(frame)).toThrow();
+  expect(new WindowsBoundaryControlDecoder(true).push(frame)).toEqual([operation]);
+});
 
 const request = {
   kind: "hello" as const,
