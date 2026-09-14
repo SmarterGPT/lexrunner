@@ -56,6 +56,41 @@ afterEach(() => {
 });
 
 describe("owned Windows boundary development handshake", () => {
+  it.each(["reused-token", "wrong-path", "false-missing"])(
+    "rejects child %s before exposing a scope",
+    async (mode) => {
+      state.mode = `directory-child-${mode}`;
+      const report = await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture" },
+        async (root) => {
+          await root.openChild("child");
+        }
+      );
+      expect(report).toMatchObject({
+        reason: "protocol_error",
+        directory: { childrenAcquired: 0, releaseAcknowledged: false },
+        sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+      });
+    }
+  );
+  it("does not claim all scopes released when a child release reply is lost", async () => {
+    state.mode = "directory-child-lost-release";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      { ...options(), handshakeTimeoutMs: 500 },
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.openChild("child");
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "operation_timeout",
+      directory: { childrenAcquired: 1, childrenReleased: 0, releaseAcknowledged: false },
+      sessionOperations: { requested: 3, correlated: 2 },
+      cleanup: { exitCode: 0 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(4);
+  });
   it.each(["wrong-status", "changed-identity", "wrong-token"])(
     "rejects directory %s before acknowledging it",
     async (mode) => {

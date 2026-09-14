@@ -39,8 +39,21 @@ rollback or retry. Creation failure is not a typed proof of no effect.
 
 Eleven real native child tests cover parent-release independence, missing targets,
 nested creation and EOF cleanup, existing-content preservation, invalid components,
-and junction/file rejection. These child operations currently use the explicit
-test client; the owned Node scope still exposes only its initial directory.
+and junction/file rejection. The owned Node scope now also exposes `openChild`,
+`tryOpenChild` and `createChild`, returning child scopes with frozen identities.
+Try-open maps validated absence to `null`, never to the parent as a child scope.
+Nested scopes share the caller-work deadline and single outstanding request rule.
+They all expire when work ends; reverse acquisition order releases children before
+the initial directory. `releaseAcknowledged` means all those releases were matched.
+Reports separately count children acquired and children with acknowledged releases.
+
+The owner checks child path, depth, filesystem/volume and fresh live token before
+exposing a scope. A missing reply must exactly identify its parent. This is protocol
+consistency, not authenticated evidence of a child's identity. Each operation
+reserves capacity for releasing all live directories, including a possible new
+child. The bounded development session therefore permits at most six child opens
+without other work, or thirteen assertions with only the initial directory.
+Over-budget requests fail before sending; they do not weaken release requirements.
 
 Paths must be absolute native drive paths, at most 1024 characters and 32 tail
 components. UNC/device paths, dot segments, alternate streams, trailing dots/spaces
@@ -88,8 +101,7 @@ failure, timeout, cancellation, concurrent and unawaited assertions. Controlled 
 wrong status, changed identity/token and lost release replies. These observations
 do not qualify forced termination, close failure or authenticated loading.
 
-Next expose child capabilities through the owned Node scope and complete bounded
-file I/O and process operations required
+Next complete bounded file I/O and process operations required
 by WorkspaceBoundary and map them to the existing receipt/verifier contract.
 Production resolution remains `helper_missing` until operations and the separately
 reviewed launch/trust profile satisfy the actual verifier contract. This local

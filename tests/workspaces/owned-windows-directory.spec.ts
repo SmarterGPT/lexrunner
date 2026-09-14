@@ -36,6 +36,61 @@ afterEach(async () => {
   }
 });
 describe.skipIf(process.platform !== "win32" || !executable)("owned native directory scope", () => {
+  it("opens and creates nested child scopes and acknowledges every release", async () => {
+    const f = await fixture();
+    await mkdir(path.join(f.directory, "existing"));
+    let retained: OwnedWindowsDirectoryScope | undefined;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        expect(await root.tryOpenChild("absent")).toBeNull();
+        const existing = await root.openChild("existing");
+        retained = await existing.createChild("nested");
+        expect(await retained.assertCurrent()).toEqual(retained.identity);
+        await writeFile(path.join(retained.identity.path, "work.txt"), "child work");
+        await expect(rename(f.directory, f.directory + "-moved")).rejects.toThrow();
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "matched",
+      directory: { childrenAcquired: 2, childrenReleased: 2, releaseAcknowledged: true },
+      sessionOperations: { requested: 8, correlated: 8 },
+    });
+    await expect(retained!.openChild("later")).rejects.toThrow("scope ended");
+    await rename(f.directory, f.directory + "-released");
+  });
+  it("reserves release capacity for all child scopes", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        for (let i = 0; i < 6; i++) await root.createChild(`child-${i}`);
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "matched",
+      directory: { childrenAcquired: 6, childrenReleased: 6, releaseAcknowledged: true },
+      sessionOperations: { requested: 14, correlated: 14 },
+    });
+  });
+  it("refuses an extra child before sending an unclosable request", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        for (let i = 0; i < 7; i++) await root.createChild(`child-${i}`);
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "work_failed",
+      directory: { childrenAcquired: 6, childrenReleased: 0, releaseAcknowledged: false },
+      sessionOperations: { requested: 7, correlated: 7 },
+    });
+    await rename(f.directory, f.directory + "-released");
+  });
   it("holds across caller work and revalidation, acknowledges release and expires the scope", async () => {
     const f = await fixture();
     let retained: OwnedWindowsDirectoryScope | undefined;

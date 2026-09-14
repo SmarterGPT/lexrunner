@@ -65,6 +65,17 @@ process.stdin.on("data", (chunk) => {
             : "released",
     };
     if (mode === "directory-wrong-status") response.status = "released";
+    if (mode.startsWith("directory-child-") && request.operation !== "acquire") {
+      if (request.operation === "release" && mode === "directory-child-lost-release") return;
+      response.path = directoryPath + "\\child";
+      response.chain_length = 4;
+      response.file_id = "d".repeat(32);
+      response.lease_token = "b".repeat(64);
+      if (request.operation === "open-child") response.status = "child-opened";
+      if (mode === "directory-child-reused-token") response.lease_token = "a".repeat(64);
+      if (mode === "directory-child-wrong-path") response.path = directoryPath + "\\other";
+      if (mode === "directory-child-false-missing") response.status = "child-missing";
+    }
     if (mode === "directory-changed-identity" && request.operation === "assert")
       response.file_id = "d".repeat(32);
     if (mode === "directory-wrong-token" && request.operation === "release")

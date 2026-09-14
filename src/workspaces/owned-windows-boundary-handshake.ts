@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, win32 } from "node:path";
 import { z } from "zod";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import {
@@ -68,6 +68,8 @@ export interface WindowsBoundaryHandshakeReport {
     acquired: boolean;
     releaseAcknowledged: boolean;
     assertions: number;
+    childrenAcquired: number;
+    childrenReleased: number;
   };
   sessionOperations?: {
     requested: number;
@@ -83,7 +85,12 @@ export type OwnedWindowsDirectoryIdentity = Readonly<
 export interface OwnedWindowsDirectoryScope {
   readonly identity: OwnedWindowsDirectoryIdentity;
   assertCurrent(): Promise<OwnedWindowsDirectoryIdentity>;
+  openChild(component: string): Promise<OwnedWindowsDirectoryScope>;
+  tryOpenChild(component: string): Promise<OwnedWindowsDirectoryScope | null>;
+  createChild(component: string): Promise<OwnedWindowsDirectoryScope>;
 }
+type DirectoryOperation =
+  "acquire" | "assert" | "release" | "open-child" | "try-open-child" | "create-child";
 const DirectoryOptions = z.strictObject({
   path: z
     .string()
@@ -195,7 +202,12 @@ async function runOwnedWindowsBoundary(
     const decoder = new WindowsBoundaryControlDecoder(sessionMode);
     let sentCount = 0;
     let directoryReply: DirectoryReply | undefined;
-    let directoryOperation: "acquire" | "assert" | "release" | undefined;
+    let directoryOperation: DirectoryOperation | undefined;
+    let directoryTarget: DirectoryReply | undefined;
+    let childComponent: string | undefined;
+    const liveDirectories: DirectoryReply[] = [];
+    let childrenAcquired = 0;
+    let childrenReleased = 0;
     let releaseAcknowledged = false;
     let assertions = 0;
     let working = false;
@@ -203,7 +215,7 @@ async function runOwnedWindowsBoundary(
     let workTimer: ReturnType<typeof setTimeout> | undefined;
     let assertion:
       | {
-          resolve: (identity: OwnedWindowsDirectoryIdentity) => void;
+          resolve: (reply: DirectoryReply | null) => void;
           reject: (error: Error) => void;
         }
       | undefined;
@@ -262,7 +274,15 @@ async function runOwnedWindowsBoundary(
         },
         stderrBytes,
         ...(directory
-          ? { directory: { acquired: !!directoryReply, releaseAcknowledged, assertions } }
+          ? {
+              directory: {
+                acquired: !!directoryReply,
+                releaseAcknowledged,
+                assertions,
+                childrenAcquired,
+                childrenReleased,
+              },
+            }
           : {}),
         ...(sessionMode
           ? {
@@ -315,7 +335,11 @@ async function runOwnedWindowsBoundary(
         filesystem: reply.filesystem,
         chain_length: reply.chain_length,
       });
-    const sendDirectory = (operation: "acquire" | "assert" | "release") => {
+    const sendDirectory = (
+      operation: DirectoryOperation,
+      target = directoryReply,
+      component?: string
+    ) => {
       if (finished || closing || failure || directoryOperation || sentCount >= 15)
         throw new Error("Directory session unavailable");
       const body = {
@@ -326,9 +350,10 @@ async function runOwnedWindowsBoundary(
         protocol_version: WINDOWS_BOUNDARY_PROTOCOL_VERSION,
         request_id: randomUUID(),
         session_nonce: sessionNonce!,
+        ...(component === undefined ? {} : { component }),
         ...(operation === "acquire"
           ? { path: directory!.path }
-          : { lease_token: directoryReply!.lease_token }),
+          : { lease_token: target!.lease_token }),
       };
       const requestDigest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
       const frame = encodeWindowsBoundarySession({ ...body, request_digest: requestDigest });
@@ -341,42 +366,74 @@ async function runOwnedWindowsBoundary(
         settings.handshakeTimeoutMs
       );
       directoryOperation = operation;
+      directoryTarget = target;
+      childComponent = component;
       sentCount++;
       clearTimeout(handshakeTimer);
       handshakeTimer = setTimeout(() => fail("operation_timeout"), settings.handshakeTimeoutMs);
       child.stdin.write(frame);
     };
+    const scopeFor = (target: DirectoryReply): OwnedWindowsDirectoryScope => {
+      const invoke = <T>(
+        operation: DirectoryOperation,
+        component: string | undefined,
+        convert: (reply: DirectoryReply | null) => T
+      ): Promise<T> => {
+        const pending = new Promise<DirectoryReply | null>((resolveAssertion, reject) => {
+          if (!working || finished || failure || closing) throw new Error("Directory scope ended");
+          if (performance.now() >= workDeadline) {
+            fail("work_timeout");
+            throw new Error("Directory work timed out");
+          }
+          const child = operation !== "assert";
+          if (
+            child &&
+            (typeof component !== "string" ||
+              component.length < 1 ||
+              component.length > 255 ||
+              component === "." ||
+              component === ".." ||
+              /[<>:"/\\|?*\u0000-\u001f]/u.test(component) ||
+              /[. ]$/u.test(component))
+          ) {
+            fail("work_failed");
+            throw new Error("Invalid child component");
+          }
+          if (assertion || sentCount + 1 + liveDirectories.length + (child ? 1 : 0) > 15) {
+            fail("work_failed");
+            throw new Error("Directory operation limit or concurrent request");
+          }
+          assertion = { resolve: resolveAssertion, reject };
+          try {
+            sendDirectory(operation, target, component);
+          } catch {
+            fail("protocol_error");
+          }
+        });
+        // An accidentally unawaited operation still fails the scope, without an
+        // unhandled rejection escaping the process owner. Awaiters retain rejection.
+        const converted = pending.then(convert);
+        void converted.catch(() => {});
+        return converted;
+      };
+      return Object.freeze({
+        identity: identity(target),
+        assertCurrent: () => invoke("assert", undefined, (reply) => identity(reply!)),
+        openChild: (component: string) =>
+          invoke("open-child", component, (reply) => scopeFor(reply!)),
+        tryOpenChild: (component: string) =>
+          invoke("try-open-child", component, (reply) => (reply ? scopeFor(reply) : null)),
+        createChild: (component: string) =>
+          invoke("create-child", component, (reply) => scopeFor(reply!)),
+      });
+    };
+    const releaseNext = () =>
+      sendDirectory("release", liveDirectories[liveDirectories.length - 1]!);
     const startWork = () => {
       working = true;
       workDeadline = performance.now() + directory!.workTimeoutMs;
       workTimer = setTimeout(() => fail("work_timeout"), directory!.workTimeoutMs);
-      const scope: OwnedWindowsDirectoryScope = Object.freeze({
-        identity: identity(directoryReply!),
-        assertCurrent: () => {
-          const pending = new Promise<OwnedWindowsDirectoryIdentity>((resolveAssertion, reject) => {
-            if (!working || finished || failure || closing)
-              throw new Error("Directory scope ended");
-            if (performance.now() >= workDeadline) {
-              fail("work_timeout");
-              throw new Error("Directory work timed out");
-            }
-            if (assertion || sentCount >= 14) {
-              fail("work_failed");
-              throw new Error("Directory operation limit or concurrent request");
-            }
-            assertion = { resolve: resolveAssertion, reject };
-            try {
-              sendDirectory("assert");
-            } catch {
-              fail("protocol_error");
-            }
-          });
-          // An accidentally unawaited operation still fails the scope, without an
-          // unhandled rejection escaping the process owner. Awaiters retain rejection.
-          void pending.catch(() => {});
-          return pending;
-        },
-      });
+      const scope = scopeFor(directoryReply!);
       Promise.resolve()
         .then(() => {
           if (!working) throw new Error("Directory scope ended");
@@ -396,7 +453,7 @@ async function runOwnedWindowsBoundary(
               return;
             }
             try {
-              sendDirectory("release");
+              releaseNext();
             } catch {
               fail("protocol_error");
             }
@@ -450,20 +507,40 @@ async function runOwnedWindowsBoundary(
         const messages = decoder.push(chunk);
         for (const message of messages) {
           if (seenReply && directory && message.kind === "directory_result") {
+            const childOperation =
+              directoryOperation === "open-child" ||
+              directoryOperation === "try-open-child" ||
+              directoryOperation === "create-child";
+            const missing =
+              directoryOperation === "try-open-child" && message.status === "child-missing";
             const expectedStatus =
               directoryOperation === "acquire"
                 ? "acquired"
                 : directoryOperation === "assert"
                   ? "current"
-                  : "released";
+                  : childOperation
+                    ? missing
+                      ? "child-missing"
+                      : directoryOperation === "create-child"
+                        ? "child-created"
+                        : "child-opened"
+                    : "released";
             if (
               !directoryOperation ||
               message.status !== expectedStatus ||
-              (directoryReply
-                ? message.lease_token !== directoryReply.lease_token ||
-                  canonicalJSONStringify(identity(message)) !==
-                    canonicalJSONStringify(identity(directoryReply))
-                : message.path.toLowerCase() !== directory!.path.toLowerCase())
+              (childOperation && !missing
+                ? !directoryTarget ||
+                  message.path.toLowerCase() !==
+                    win32.join(directoryTarget.path, childComponent!).toLowerCase() ||
+                  message.chain_length !== directoryTarget.chain_length + 1 ||
+                  message.volume_serial_number !== directoryTarget.volume_serial_number ||
+                  message.filesystem !== directoryTarget.filesystem ||
+                  liveDirectories.some((item) => item.lease_token === message.lease_token)
+                : directoryTarget
+                  ? message.lease_token !== directoryTarget.lease_token ||
+                    canonicalJSONStringify(identity(message)) !==
+                      canonicalJSONStringify(identity(directoryTarget))
+                  : message.path.toLowerCase() !== directory!.path.toLowerCase())
             ) {
               fail("protocol_error");
               return;
@@ -485,15 +562,25 @@ async function runOwnedWindowsBoundary(
             directoryOperation = undefined;
             if (operation === "acquire") {
               directoryReply = message;
+              liveDirectories.push(message);
               startWork();
-            } else if (operation === "assert") {
-              assertions++;
+            } else if (operation === "assert" || childOperation) {
+              if (operation === "assert") assertions++;
+              else if (!missing) {
+                liveDirectories.push(message);
+                childrenAcquired++;
+              }
               const waiter = assertion;
               assertion = undefined;
-              waiter!.resolve(identity(message));
+              waiter!.resolve(missing ? null : message);
             } else {
-              releaseAcknowledged = true;
-              close();
+              const released = liveDirectories.pop()!;
+              if (released !== directoryReply) childrenReleased++;
+              if (liveDirectories.length) releaseNext();
+              else {
+                releaseAcknowledged = true;
+                close();
+              }
             }
             continue;
           }
