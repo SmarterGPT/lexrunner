@@ -38,8 +38,33 @@ rejection before creation. Tests do not inject partial writes, disk-full, flush/
 failures, process kill or power loss. Those remain qualification work, not implied
 by a successful flush or the test count.
 
-This operation currently uses the explicit test client. Next expose it through the
-owned Node scope with conservative effect bookkeeping, then implement remaining
+Owned initial and child scopes now expose `createFile(component, content)`. Input
+must be a Uint8Array of at most1024bytes. The owner copies the bytes synchronously
+before encoding/hashing and dispatch, so later caller edits do not change the
+request. Acknowledgment must match request correlation, parent token/volume and
+the exact submitted length/digest before the caller receives frozen `file_created`
+metadata. No general overwrite option is added.
+
+The returned session report includes bounded, frozen `fileCreations` records:
+request and operation IDs, request digest, parent identity, component, content
+length/digest, acknowledgment flag and observed file ID when acknowledged. Records
+are reserved before the pipe write. An unacknowledged record therefore does not
+prove dispatch, execution or absence of effects; it preserves what needs
+reconciliation. It never triggers an automatic retry or rollback. A matched creation
+remains acknowledged if later caller work or scope cleanup fails.
+
+These records are in-memory observations returned by the live process owner, not
+a durable intent journal or existing WorkspaceBoundary receipts. Parent-crash
+recovery still requires the later durable receipt integration. Payload bytes and
+live native tokens are not retained in these report records.
+
+Reads, creates and child operations share request/deadline and release budgets.
+Five actual-native owned tests cover private byte capture, empty files, collisions,
+oversized input before dispatch and later work failure. Seven controlled reply
+cases cover mismatched fields/kind and lost acknowledgments, including preserved
+request identity without resend. They do not establish forced-failure durability.
+
+Next implement remaining
 write semantics, process operations and the existing verifier receipt mapping.
 General overwrite is not implemented by this create operation. Runtime choice and
 production resolver readiness remain unchanged; `helper_missing` remains explicit.

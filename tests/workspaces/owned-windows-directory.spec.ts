@@ -36,6 +36,93 @@ afterEach(async () => {
   }
 });
 describe.skipIf(process.platform !== "win32" || !executable)("owned native directory scope", () => {
+  it("creates from a private byte copy through a child scope", async () => {
+    const f = await fixture();
+    const original = Buffer.from([0, 255, 1]);
+    const mutable = Buffer.from(original);
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        const child = await root.createChild("nested");
+        const pending = child.createFile("file", mutable);
+        mutable.fill(99);
+        const created = await pending;
+        const read = await child.readFile("file", 3);
+        expect(Buffer.from(read.bytes)).toEqual(original);
+        expect(created.contentSha256).toBe(read.contentSha256);
+        expect(created.fileId).toBe(read.fileId);
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "matched",
+      directory: { filesCreated: 1, releaseAcknowledged: true },
+      fileCreations: [{ byteLength: 3, acknowledged: true, component: "file" }],
+    });
+  });
+  it("creates an empty file", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        expect((await root.createFile("empty", new Uint8Array())).byteLength).toBe(0);
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "matched",
+      fileCreations: [{ byteLength: 0, acknowledged: true }],
+    });
+  });
+  it("preserves an existing file and the unacknowledged creation record", async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.directory, "existing"), "coworker content");
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        await root.createFile("existing", Buffer.from("replacement"));
+      }
+    );
+    expect(readFileSync(path.join(f.directory, "existing"), "utf8")).toBe("coworker content");
+    expect(report).toMatchObject({
+      outcome: "failed",
+      directory: { filesCreated: 0 },
+      fileCreations: [{ acknowledged: false, component: "existing" }],
+    });
+  });
+  it("rejects oversized input before recording or sending a creation", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        await root.createFile("large", new Uint8Array(1025));
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "work_failed",
+      fileCreations: [],
+      sessionOperations: { requested: 1, correlated: 1 },
+    });
+  });
+  it("keeps a matched creation historical when subsequent caller work fails", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (root) => {
+        await root.createFile("kept", Buffer.from("completed write"));
+        throw new Error("later work failed");
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "work_failed",
+      fileCreations: [{ acknowledged: true }],
+      directory: { filesCreated: 1, releaseAcknowledged: false },
+    });
+    expect(readFileSync(path.join(f.directory, "kept"), "utf8")).toBe("completed write");
+  });
   it("reads binary content from a nested scope with independent caller bytes", async () => {
     const f = await fixture();
     await mkdir(path.join(f.directory, "nested"));

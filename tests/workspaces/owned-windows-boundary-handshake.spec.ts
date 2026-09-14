@@ -58,6 +58,53 @@ afterEach(() => {
 describe("owned Windows boundary development handshake", () => {
   it.each([
     "wrong-length",
+    "wrong-digest",
+    "wrong-token",
+    "wrong-volume",
+    "wrong-operation",
+    "wrong-kind",
+  ])("retains unknown creation after %s reply", async (mode) => {
+    state.mode = `directory-create-${mode}`;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.createFile("file", Buffer.from("a"));
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "protocol_error",
+      directory: { filesCreated: 0, releaseAcknowledged: false },
+      fileCreations: [
+        { component: "file", byteLength: 1, acknowledged: false, parent: { path: "D:\\fixture" } },
+      ],
+      sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+    });
+    expect(report.fileCreations![0].operationId).toBe(
+      report.sessionOperations!.failure!.outstanding!.operation_id
+    );
+  });
+  it("retains creation intent when the acknowledgment is missing, without retry", async () => {
+    state.mode = "directory-create-silent";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      { ...options(), handshakeTimeoutMs: 500 },
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.createFile("file", Buffer.from("a"));
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "operation_timeout",
+      fileCreations: [{ acknowledged: false }],
+      directory: { filesCreated: 0 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(3);
+    expect(Object.isFrozen(report.fileCreations)).toBe(true);
+    expect(Object.isFrozen(report.fileCreations![0])).toBe(true);
+    expect(Object.isFrozen(report.fileCreations![0].parent)).toBe(true);
+  });
+  it.each([
+    "wrong-length",
     "noncanonical",
     "wrong-digest",
     "wrong-token",

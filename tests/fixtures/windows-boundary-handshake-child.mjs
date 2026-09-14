@@ -42,6 +42,32 @@ process.stdin.on("data", (chunk) => {
       return;
     }
     if (request.operation === "release" && mode === "directory-lost-release") return;
+    if (request.kind === "file_create_request" && mode !== "directory-create-wrong-kind") {
+      if (mode === "directory-create-silent") return;
+      const reply = {
+        kind: "file_create_result",
+        status: "created",
+        protocol_version: request.protocol_version,
+        client_nonce: request.client_nonce,
+        session_nonce: request.session_nonce,
+        request_id: request.request_id,
+        operation_id: request.operation_id,
+        request_digest: request.request_digest,
+        lease_token: request.lease_token,
+        byte_length: Buffer.from(request.content_base64, "base64").length,
+        content_sha256: request.content_sha256,
+        file_id: "d".repeat(32),
+        volume_serial_number: "c".repeat(16),
+      };
+      if (mode === "directory-create-wrong-length") reply.byte_length++;
+      if (mode === "directory-create-wrong-digest")
+        reply.content_sha256 = `sha256:${"0".repeat(64)}`;
+      if (mode === "directory-create-wrong-token") reply.lease_token = "e".repeat(64);
+      if (mode === "directory-create-wrong-volume") reply.volume_serial_number = "e".repeat(16);
+      if (mode === "directory-create-wrong-operation") reply.operation_id = "wrong";
+      process.stdout.write(encode(reply));
+      return;
+    }
     if (request.kind === "file_request" && mode !== "directory-file-wrong-kind") {
       if (mode === "directory-file-silent") return;
       const data = Buffer.from([255]);

@@ -11,7 +11,7 @@ exposes status; a scoped owned Node adapter and an explicit test client exercise
 Native [bounded reads](../architecture/windows-boundary-file-read.md) are tested
 through the explicit client and owned Node scopes. Native
 [exclusive file creation](../architecture/windows-boundary-file-create.md) uses
-the explicit test client. Owned creation, general writes, process
+the explicit client and owned Node scopes. General writes, process
 execution and production readiness remain pending. The production
 resolver remains unavailable.
 

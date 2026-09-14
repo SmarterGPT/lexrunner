@@ -64,6 +64,7 @@ export interface WindowsBoundaryHandshakeReport {
     descendants: "not_assessed";
   };
   stderrBytes: number;
+  fileCreations?: readonly OwnedWindowsFileCreationAttempt[];
   directory?: {
     acquired: boolean;
     releaseAcknowledged: boolean;
@@ -72,6 +73,7 @@ export interface WindowsBoundaryHandshakeReport {
     childrenReleased: number;
     filesRead: number;
     bytesRead: number;
+    filesCreated: number;
   };
   sessionOperations?: {
     requested: number;
@@ -91,6 +93,25 @@ export interface OwnedWindowsDirectoryScope {
   tryOpenChild(component: string): Promise<OwnedWindowsDirectoryScope | null>;
   createChild(component: string): Promise<OwnedWindowsDirectoryScope>;
   readFile(component: string, maxBytes: number): Promise<OwnedWindowsFileRead>;
+  createFile(component: string, content: Uint8Array): Promise<OwnedWindowsFileCreated>;
+}
+export interface OwnedWindowsFileCreated {
+  readonly kind: "file_created";
+  readonly byteLength: number;
+  readonly contentSha256: string;
+  readonly fileId: string;
+  readonly volumeSerialNumber: string;
+}
+export interface OwnedWindowsFileCreationAttempt {
+  readonly requestId: string;
+  readonly operationId: string;
+  readonly requestDigest: string;
+  readonly parent: OwnedWindowsDirectoryIdentity;
+  readonly component: string;
+  readonly byteLength: number;
+  readonly contentSha256: string;
+  readonly acknowledged: boolean;
+  readonly fileId?: string;
 }
 export interface OwnedWindowsFileRead {
   readonly kind: "file_read";
@@ -99,13 +120,20 @@ export interface OwnedWindowsFileRead {
   readonly fileId: string;
   readonly volumeSerialNumber: string;
 }
-type ScopeReply = DirectoryReply | OwnedWindowsFileRead | null;
+type ScopeReply = DirectoryReply | OwnedWindowsFileRead | OwnedWindowsFileCreated | null;
 function directoryValue(reply: ScopeReply): DirectoryReply {
   if (!reply || reply.kind !== "directory_result") throw new Error("Unexpected directory response");
   return reply;
 }
 type DirectoryOperation =
-  "acquire" | "assert" | "release" | "open-child" | "try-open-child" | "create-child" | "read-file";
+  | "acquire"
+  | "assert"
+  | "release"
+  | "open-child"
+  | "try-open-child"
+  | "create-child"
+  | "read-file"
+  | "create-file";
 const DirectoryOptions = z.strictObject({
   path: z
     .string()
@@ -224,6 +252,9 @@ async function runOwnedWindowsBoundary(
     let childrenAcquired = 0;
     let childrenReleased = 0;
     let filesRead = 0;
+    let filesCreated = 0;
+    const fileCreations: OwnedWindowsFileCreationAttempt[] = [];
+    let currentCreation: number | undefined;
     let bytesRead = 0;
     let readLimit: number | undefined;
     let releaseAcknowledged = false;
@@ -301,9 +332,11 @@ async function runOwnedWindowsBoundary(
                 childrenReleased,
                 filesRead,
                 bytesRead,
+                filesCreated,
               },
             }
           : {}),
+        ...(directory ? { fileCreations: Object.freeze([...fileCreations]) } : {}),
         ...(sessionMode
           ? {
               sessionOperations: {
@@ -359,13 +392,23 @@ async function runOwnedWindowsBoundary(
       operation: DirectoryOperation,
       target = directoryReply,
       component?: string,
-      maxBytes?: number
+      maxBytes?: number,
+      content?: Uint8Array
     ) => {
       if (finished || closing || failure || directoryOperation || sentCount >= 15)
         throw new Error("Directory session unavailable");
+      const payload = operation === "create-file" ? Buffer.from(content!) : undefined;
+      const contentDigest = payload
+        ? `sha256:${createHash("sha256").update(payload).digest("hex")}`
+        : undefined;
       const body = {
         client_nonce: request.client_nonce,
-        kind: operation === "read-file" ? "file_request" : "directory_request",
+        kind:
+          operation === "create-file"
+            ? "file_create_request"
+            : operation === "read-file"
+              ? "file_request"
+              : "directory_request",
         operation,
         operation_id: randomUUID(),
         protocol_version: WINDOWS_BOUNDARY_PROTOCOL_VERSION,
@@ -373,6 +416,9 @@ async function runOwnedWindowsBoundary(
         session_nonce: sessionNonce!,
         ...(component === undefined ? {} : { component }),
         ...(operation === "read-file" ? { max_bytes: maxBytes } : {}),
+        ...(payload
+          ? { content_base64: payload.toString("base64"), content_sha256: contentDigest }
+          : {}),
         ...(operation === "acquire"
           ? { path: directory!.path }
           : { lease_token: target!.lease_token }),
@@ -391,6 +437,22 @@ async function runOwnedWindowsBoundary(
       directoryTarget = target;
       childComponent = component;
       readLimit = maxBytes;
+      currentCreation = undefined;
+      if (payload) {
+        currentCreation = fileCreations.length;
+        fileCreations.push(
+          Object.freeze({
+            requestId: body.request_id,
+            operationId: body.operation_id,
+            requestDigest,
+            parent: identity(target!),
+            component: component!,
+            byteLength: payload.length,
+            contentSha256: contentDigest!,
+            acknowledged: false,
+          })
+        );
+      }
       sentCount++;
       clearTimeout(handshakeTimer);
       handshakeTimer = setTimeout(() => fail("operation_timeout"), settings.handshakeTimeoutMs);
@@ -401,7 +463,8 @@ async function runOwnedWindowsBoundary(
         operation: DirectoryOperation,
         component: string | undefined,
         convert: (reply: ScopeReply) => T,
-        maxBytes?: number
+        maxBytes?: number,
+        content?: Uint8Array
       ): Promise<T> => {
         const pending = new Promise<ScopeReply>((resolveAssertion, reject) => {
           if (!working || finished || failure || closing) throw new Error("Directory scope ended");
@@ -409,7 +472,14 @@ async function runOwnedWindowsBoundary(
             fail("work_timeout");
             throw new Error("Directory work timed out");
           }
-          const child = operation !== "assert" && operation !== "read-file";
+          const child = ["open-child", "try-open-child", "create-child"].includes(operation);
+          if (
+            operation === "create-file" &&
+            (!(content instanceof Uint8Array) || content.byteLength > 1024)
+          ) {
+            fail("work_failed");
+            throw new Error("Invalid creation content");
+          }
           if (
             operation === "read-file" &&
             (!Number.isSafeInteger(maxBytes) || maxBytes! < 0 || maxBytes! > 1024)
@@ -436,7 +506,7 @@ async function runOwnedWindowsBoundary(
           }
           assertion = { resolve: resolveAssertion, reject };
           try {
-            sendDirectory(operation, target, component, maxBytes);
+            sendDirectory(operation, target, component, maxBytes, content);
           } catch {
             fail("protocol_error");
           }
@@ -468,6 +538,18 @@ async function runOwnedWindowsBoundary(
               return reply;
             },
             maxBytes
+          ),
+        createFile: (component: string, content: Uint8Array) =>
+          invoke(
+            "create-file",
+            component,
+            (reply) => {
+              if (!reply || reply.kind !== "file_created")
+                throw new Error("Unexpected creation response");
+              return reply;
+            },
+            undefined,
+            content
           ),
       });
     };
@@ -550,6 +632,59 @@ async function runOwnedWindowsBoundary(
       try {
         const messages = decoder.push(chunk);
         for (const message of messages) {
+          if (seenReply && directory && message.kind === "file_create_result") {
+            if (
+              directoryOperation !== "create-file" ||
+              !directoryTarget ||
+              currentCreation === undefined ||
+              !assertion
+            ) {
+              fail("protocol_error");
+              return;
+            }
+            const attempt = fileCreations[currentCreation];
+            if (
+              message.lease_token !== directoryTarget.lease_token ||
+              message.volume_serial_number !== directoryTarget.volume_serial_number ||
+              message.byte_length !== attempt.byteLength ||
+              message.content_sha256 !== attempt.contentSha256
+            ) {
+              fail("protocol_error");
+              return;
+            }
+            const match = exchange!.correlate({
+              client_nonce: message.client_nonce,
+              session_nonce: message.session_nonce,
+              request_id: message.request_id,
+              operation_id: message.operation_id,
+              request_digest: message.request_digest,
+            });
+            if (!match.correlated) {
+              fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
+              return;
+            }
+            clearTimeout(handshakeTimer);
+            operationCount++;
+            filesCreated++;
+            fileCreations[currentCreation] = Object.freeze({
+              ...attempt,
+              acknowledged: true,
+              fileId: message.file_id,
+            });
+            directoryOperation = undefined;
+            const waiter = assertion;
+            assertion = undefined;
+            waiter.resolve(
+              Object.freeze({
+                kind: "file_created",
+                byteLength: message.byte_length,
+                contentSha256: message.content_sha256,
+                fileId: message.file_id,
+                volumeSerialNumber: message.volume_serial_number,
+              })
+            );
+            continue;
+          }
           if (seenReply && directory && message.kind === "file_result") {
             if (
               directoryOperation !== "read-file" ||
@@ -624,6 +759,7 @@ async function runOwnedWindowsBoundary(
             if (
               !directoryOperation ||
               directoryOperation === "read-file" ||
+              directoryOperation === "create-file" ||
               message.status !== expectedStatus ||
               (childOperation && !missing
                 ? !directoryTarget ||
