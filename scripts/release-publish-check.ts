@@ -15,7 +15,7 @@ const EXPECTED_PACKAGE = "@smartergpt/lexrunner";
 const EXPECTED_REGISTRY = "https://registry.npmjs.org/";
 
 export function releaseTagForVersion(version: string): string {
-  return `lexrunner-v${version}`;
+  return `v${version}`;
 }
 
 export function trustedPublishCommand(distTag = "latest"): string {

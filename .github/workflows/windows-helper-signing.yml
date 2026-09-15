@@ -1,0 +1,97 @@
+name: Windows helper signing qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-helper-signing
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: proofs/windows-workspace-boundary/global.json
+      - run: npm install --global npm@11.16.0
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check:install-scripts
+      - run: npm audit --omit=dev --audit-level=high
+      - name: Build only the native helper
+        working-directory: proofs/windows-workspace-boundary
+        run: dotnet publish src/LexRunner.WindowsBoundary.Helper/LexRunner.WindowsBoundary.Helper.csproj -c Release -r win-x64 --self-contained true -o ../../artifacts/windows-helper/win-x64
+      - name: Exercise real helper
+        shell: pwsh
+        run: |
+          $env:LEXRUNNER_TEST_NATIVE_HELPER = Join-Path $PWD 'artifacts/windows-helper/win-x64/lexrunner-windows-boundary-helper.exe'
+          $env:LEXRUNNER_TEST_GIT = (Get-Command git.exe).Source
+          node node_modules/vitest/vitest.mjs run tests/workspaces/owned-windows-directory.spec.ts tests/workspaces/windows-native-directory.spec.ts tests/workspaces/windows-native-helper.spec.ts tests/workspaces/owned-windows-boundary-handshake.spec.ts tests/workspaces/windows-boundary-protocol.spec.ts tests/workspaces/windows-boundary-exchange.spec.ts tests/workspaces/workspace-boundary.spec.ts tests/workspaces/owned-windows-process-receipt.spec.ts tests/workspaces/owned-windows-process-binding.spec.ts tests/workspaces/windows-command-environment.spec.ts --maxWorkers=1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unsigned-helper
+          path: artifacts/windows-helper/win-x64/lexrunner-windows-boundary-helper.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    environment: windows-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: unsigned-helper
+          path: artifacts/signing
+      - name: Require an unsigned, single-file payload
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem artifacts/signing -File -Recurse)
+          if ($files.Count -ne 1 -or $files[0].Name -cne 'lexrunner-windows-boundary-helper.exe') { throw 'Unexpected signing payload' }
+          if ((Get-AuthenticodeSignature -LiteralPath $files[0].FullName).Status -ne 'NotSigned') { throw 'Expected unsigned helper' }
+      - uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign only the helper
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME }}
+          files: ${{ github.workspace }}\artifacts\signing\lexrunner-windows-boundary-helper.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: LexRunner Windows helper qualification
+      - name: Verify publisher, timestamp and final bytes
+        shell: pwsh
+        run: ./scripts/verify-windows-helper-signature.ps1 -Path artifacts/signing/lexrunner-windows-boundary-helper.exe -SourceRevision $env:GITHUB_SHA -ReceiptPath artifacts/signing/signature-receipt.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-helper-qualification-${{ github.sha }}
+          path: artifacts/signing/
+          if-no-files-found: error
+          retention-days: 30

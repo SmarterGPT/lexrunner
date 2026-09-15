@@ -30,7 +30,7 @@ function getPackageVersion() {
 
 function getGitTags() {
   try {
-    const output = execSync('git tag -l "lexrunner-v*"', {
+    const output = execSync('git tag -l "v*" "lexrunner-v*"', {
       cwd: rootDir,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -43,11 +43,34 @@ function getGitTags() {
 
 function main() {
   const version = getPackageVersion();
-  const expectedTag = `lexrunner-v${version}`;
+  const expectedTag = `v${version}`;
+  // Immutable pre-migration releases are observations, never new publication authority.
+  const historicalVersions = new Set([
+    "1.0.0",
+    "1.2.1",
+    "1.3.0",
+    "1.4.0",
+    "1.4.1",
+    "1.5.0",
+    "1.5.1",
+    "1.5.2",
+    "2.0.0",
+    "2.0.1",
+    "2.0.2",
+    "2.1.0",
+    "2.2.0",
+    "2.3.0",
+    "2.4.0",
+  ]);
   const tags = getGitTags();
 
   console.log(`📦 package.json version: ${version}`);
   console.log(`🏷️  Expected tag: ${expectedTag}`);
+
+  if (historicalVersions.has(version) && tags.includes(`lexrunner-v${version}`)) {
+    console.log(`Historical tag lexrunner-v${version} exists; no retagging required.`);
+    process.exit(0);
+  }
 
   if (tags.includes(expectedTag)) {
     console.log(`✅ Tag ${expectedTag} exists. No drift detected.`);
@@ -55,14 +78,14 @@ function main() {
   } else {
     console.log(`\n❌ DRIFT DETECTED: Tag ${expectedTag} does not exist.`);
     console.log(`\nExisting tags:`);
-    const semverTags = tags.filter((t) => /^lexrunner-v\d+\.\d+\.\d+/.test(t));
+    const semverTags = tags.filter((t) => /^(?:lexrunner-)?v\d+\.\d+\.\d+$/.test(t));
     if (semverTags.length > 0) {
       semverTags.slice(-5).forEach((t) => console.log(`  - ${t}`));
       if (semverTags.length > 5) {
         console.log(`  ... and ${semverTags.length - 5} more`);
       }
     } else {
-      console.log("  (none matching lexrunner-vX.Y.Z pattern)");
+      console.log("  (none matching release version patterns)");
     }
 
     console.log(`\nTo fix, create the missing tag:`);

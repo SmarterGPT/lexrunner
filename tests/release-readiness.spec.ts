@@ -130,8 +130,8 @@ describe("LexRunner current release readiness", () => {
     expect(migration).not.toContain("@smartergpt/lexrunner@3.1.0");
     expect(instructions).toContain("MUST NOT");
     expect(instructions).toContain("npm's package-scoped GitHub OIDC trusted publisher");
-    expect(releaseWorkflow).toContain('"lexrunner-v*.*.*"');
-    expect(releaseWorkflow).not.toContain('"v*.*.*"');
+    expect(releaseWorkflow).toContain('"v*.*.*"');
+    expect(releaseWorkflow).not.toContain('"lexrunner-v*.*.*"');
     expect(releaseWorkflow).toContain("npm publish --access public --tag latest --json");
     expect(releaseWorkflow).toContain("id-token: write");
     expect(releaseWorkflow).toContain("package-manager-cache: false");
@@ -192,9 +192,9 @@ describe("LexRunner current release readiness", () => {
     expect(releaseWorkflow).not.toContain("NODE_AUTH_TOKEN");
     expect(releaseWorkflow).not.toContain("secrets.NPM_TOKEN");
     expect(releaseProcess).toContain("npm trust github @smartergpt/lexrunner --file release.yml");
-    expect(releaseProcess).toContain("lexrunner-vX.Y.Z");
+    expect(releaseProcess).toContain("vX.Y.Z");
     expect(releaseProcess).toContain("runs only for push events");
-    expect(releaseDriftCheck).toContain("lexrunner-v${version}");
+    expect(releaseDriftCheck).toContain("v${version}");
   });
 });
 

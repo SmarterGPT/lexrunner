@@ -334,10 +334,10 @@ function main(): void {
   console.log(`   git add CHANGELOG.md package.json`);
   console.log(`   git commit -m "chore(release): prepare ${nextVersion}"\n`);
   console.log("3. Create a signed tag:");
-  console.log(`   git tag -s lexrunner-v${nextVersion} -m "Release ${nextVersion}"\n`);
+  console.log(`   git tag -s v${nextVersion} -m "Release ${nextVersion}"\n`);
   console.log("4. Push the changes and tag:");
   console.log(`   git push origin main`);
-  console.log(`   git push origin lexrunner-v${nextVersion}\n`);
+  console.log(`   git push origin v${nextVersion}\n`);
   console.log("5. Create a GitHub release from the tag\n");
 }
 
