@@ -50,3 +50,24 @@ use the existing bounded pipe-close/termination path; unknown effects remain unk
 The grace budget precedes existing close/kill budgets, so total completion can exceed
 the work timeout. This is bounded cleanup, not guaranteed graceful application shutdown,
 durable recovery or a new command cancellation protocol.
+
+## Process observations during a session
+
+Scopes and the session bridge expose `snapshotProcessAttempts()`: a synchronous,
+immutable copy of the owner's bounded process-attempt history. It covers the whole
+owner, including child-directory commands, and remains readable after close. Reading
+it sends no protocol request and does not refresh identity, extend a deadline,
+acknowledge a pending request, or establish authority.
+
+An admitted attempt appears before its transport write with `acknowledged: false`.
+That entry is intent; dispatch and effects are unconfirmed. A validated reply replaces
+the owner's entry with its acknowledgment and observation time. Earlier snapshots
+remain unchanged. Unanswered attempts receive their terminal observation time only
+when the existing owner finalizes; an intermediate snapshot cannot establish a
+terminal unknown outcome by itself.
+
+A consumer may pair a result with the matching attempt through the existing process
+receipt projector before closing the session. The projector's identity checks still
+apply. This is in-memory observation access, not durable receipt delivery, a lifecycle
+lease binding, or the completed portable WorkspaceBoundary adapter. Snapshots carry
+no command arguments, environment values, or output bytes.

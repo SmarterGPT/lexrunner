@@ -1,3 +1,4 @@
+import { projectOwnedWindowsProcessReceipt } from "../../src/workspaces/owned-windows-process-receipt.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -33,6 +34,65 @@ afterEach(async () => {
 describe.skipIf(process.platform !== "win32" || !executable)(
   "owned directory session bridge",
   () => {
+    it("projects an acknowledged process receipt before closing the native session", async () => {
+      const f = await fixture();
+      const acquired = await acquireOwnedWindowsDirectorySession(f.options, {
+        path: f.root,
+        workTimeoutMs: 25_000,
+      });
+      if (!acquired.ok) throw new Error("acquisition failed");
+      const { session } = acquired;
+      try {
+        const empty = session.snapshotProcessAttempts();
+        const child = await session.run((scope) => scope.createChild("worker"));
+        await session.run(async () => {
+          const pending = child.runProcess({
+            executable: process.execPath,
+            args: [
+              { kind: "literal", value: "-e" },
+              { kind: "literal", value: "process.stdout.write('bird')" },
+            ],
+            environment: "inherit-helper",
+            timeoutMs: 5_000,
+            maxOutputBytes: 1024,
+          });
+          const before = session.snapshotProcessAttempts();
+          expect(before).toHaveLength(1);
+          expect(before[0]).toMatchObject({
+            acknowledged: false,
+            cwd: { path: child.identity.path },
+          });
+          expect(before[0].observedAt).toBeUndefined();
+          expect(Object.isFrozen(before)).toBe(true);
+          expect(Object.isFrozen(before[0])).toBe(true);
+          expect(Object.isFrozen(before[0].cwd)).toBe(true);
+          expect(Reflect.set(before[0], "acknowledged", true)).toBe(false);
+          const result = await pending;
+          const after = session.snapshotProcessAttempts();
+          expect(empty).toHaveLength(0);
+          expect(before[0].acknowledged).toBe(false);
+          expect(after[0]).toMatchObject({ acknowledged: true, operationId: result.operationId });
+          const attempt = after[0];
+          const projected = projectOwnedWindowsProcessReceipt(
+            {
+              leaseId: attempt.boundaryLeaseId,
+              startedAt: attempt.startedAt,
+              completedAt: attempt.observedAt!,
+            },
+            attempt,
+            result
+          );
+          expect(projected).toMatchObject({ ok: true, value: { ok: true, stdout: "bird" } });
+        });
+        // Receipt projection neither closes nor re-acquires the native owner.
+        await session.run(() => child.assertCurrent());
+        const report = await session.close();
+        expect(report.outcome).toBe("matched");
+        expect(session.snapshotProcessAttempts()).toEqual(report.processAttempts);
+      } finally {
+        await session.close();
+      }
+    });
     it("retains real scopes across calls and returns the owner's terminal report", async () => {
       const f = await fixture();
       const acquired = await acquireOwnedWindowsDirectorySession(f.options, { path: f.root });

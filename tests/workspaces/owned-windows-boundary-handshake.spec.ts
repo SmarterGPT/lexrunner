@@ -94,10 +94,12 @@ describe("owned Windows boundary development handshake", () => {
   ])("preserves unknown process outcome after %s reply", async (mode) => {
     state.mode = `directory-process-${mode}`;
     let delivered = false;
+    let snapshots!: () => readonly import("../../src/workspaces/owned-windows-boundary-handshake.js").OwnedWindowsProcessAttempt[];
     const report = await withOwnedWindowsBoundaryDirectory(
       options(),
       { path: "D:\\fixture", workTimeoutMs: 15_000 },
       async (scope) => {
+        snapshots = scope.snapshotProcessAttempts;
         await scope.runProcess({
           executable: "C:\\fixture.exe",
           args: [],
@@ -109,6 +111,7 @@ describe("owned Windows boundary development handshake", () => {
       }
     );
     expect(delivered).toBe(false);
+    expect(snapshots()).toEqual(report.processAttempts);
     expect(report).toMatchObject({ outcome: "failed", processAttempts: [{ acknowledged: false }] });
     expect(state.write).toHaveBeenCalledTimes(3);
     expect(Number.isFinite(Date.parse(report.processAttempts![0].observedAt!))).toBe(true);

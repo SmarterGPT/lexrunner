@@ -93,6 +93,8 @@ export type OwnedWindowsDirectoryIdentity = Readonly<
 >;
 export interface OwnedWindowsDirectoryScope {
   readonly identity: OwnedWindowsDirectoryIdentity;
+  /** Owner-wide historical observations; reading does not assert liveness or acknowledge work. */
+  snapshotProcessAttempts(): readonly OwnedWindowsProcessAttempt[];
   assertCurrent(): Promise<OwnedWindowsDirectoryIdentity>;
   openChild(component: string): Promise<OwnedWindowsDirectoryScope>;
   tryOpenChild(component: string): Promise<OwnedWindowsDirectoryScope | null>;
@@ -654,6 +656,7 @@ async function runOwnedWindowsBoundary(
         return converted;
       };
       const scope: OwnedWindowsDirectoryScope = Object.freeze({
+        snapshotProcessAttempts: () => Object.freeze([...processAttempts]),
         runProcess: (input: OwnedWindowsProcessRequest): Promise<OwnedWindowsProcessResult> => {
           const pending = new Promise<ScopeReply>((resolve, reject) => {
             try {
