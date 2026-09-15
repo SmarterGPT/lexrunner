@@ -130,6 +130,9 @@ export interface OwnedWindowsProcessResult {
   readonly stderrTruncated: boolean;
 }
 export interface OwnedWindowsProcessAttempt {
+  readonly boundaryLeaseId: string;
+  readonly startedAt: string;
+  readonly observedAt?: string;
   readonly requestId: string;
   readonly operationId: string;
   readonly requestDigest: string;
@@ -340,6 +343,7 @@ async function runOwnedWindowsBoundary(
     const fileCreations: OwnedWindowsFileCreationAttempt[] = [];
     let currentCreation: number | undefined;
     const processAttempts: OwnedWindowsProcessAttempt[] = [];
+    const processBoundaryLeaseId = randomUUID();
     const scopes = new WeakMap<OwnedWindowsDirectoryScope, DirectoryReply>();
     let pendingProcess: { index: number; target: DirectoryReply; limit: number } | undefined;
     let bytesRead = 0;
@@ -377,6 +381,14 @@ async function runOwnedWindowsBoundary(
     const finish = (disposition: "closed" | "unknown") => {
       if (finished) return;
       finished = true;
+      for (let i = 0; i < processAttempts.length; i++) {
+        const attempt = processAttempts[i];
+        if (!attempt.observedAt)
+          processAttempts[i] = Object.freeze({
+            ...attempt,
+            observedAt: new Date(Math.max(Date.parse(attempt.startedAt), Date.now())).toISOString(),
+          });
+      }
       clearTimeout(handshakeTimer);
       clearTimeout(closeTimer);
       clearTimeout(killTimer);
@@ -682,6 +694,8 @@ async function runOwnedWindowsBoundary(
               };
               processAttempts.push(
                 Object.freeze({
+                  boundaryLeaseId: processBoundaryLeaseId,
+                  startedAt: new Date().toISOString(),
                   requestId: body.request_id,
                   operationId: body.operation_id,
                   requestDigest: digest,
@@ -858,6 +872,9 @@ async function runOwnedWindowsBoundary(
             const index = pendingProcess.index;
             processAttempts[index] = Object.freeze({
               ...processAttempts[index],
+              observedAt: new Date(
+                Math.max(Date.parse(processAttempts[index].startedAt), Date.now())
+              ).toISOString(),
               acknowledged: true,
               status: result.status,
             });

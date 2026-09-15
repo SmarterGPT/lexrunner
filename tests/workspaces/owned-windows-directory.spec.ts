@@ -75,6 +75,14 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned native direc
         report.processAttempts![0],
         command
       );
+      expect(report.processAttempts![0]).toMatchObject({
+        boundaryLeaseId: expect.any(String),
+        startedAt: expect.any(String),
+        observedAt: expect.any(String),
+      });
+      expect(Date.parse(report.processAttempts![0].observedAt!)).toBeGreaterThanOrEqual(
+        Date.parse(report.processAttempts![0].startedAt)
+      );
       expect(projection).toMatchObject({
         ok: true,
         value: { ok: exitCode === 0, exitCode },

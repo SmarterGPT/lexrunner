@@ -110,6 +110,7 @@ describe("owned Windows boundary development handshake", () => {
     expect(delivered).toBe(false);
     expect(report).toMatchObject({ outcome: "failed", processAttempts: [{ acknowledged: false }] });
     expect(state.write).toHaveBeenCalledTimes(3);
+    expect(Number.isFinite(Date.parse(report.processAttempts![0].observedAt!))).toBe(true);
     expect(Object.isFrozen(report.processAttempts)).toBe(true);
     expect(Object.isFrozen(report.processAttempts![0])).toBe(true);
   });

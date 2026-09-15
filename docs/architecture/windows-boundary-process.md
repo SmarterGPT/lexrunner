@@ -139,3 +139,33 @@ footprint, persistence, verification or launch qualification. Wiring the durable
 service must supply and validate its real lease/time association and retain request
 provenance alongside the existing receipt; a valid receipt digest alone does not
 prove those facts. No store writes or automatic replay are introduced here.
+
+## Lifecycle association
+
+The process owner now assigns a random boundary lease ID to its process session and
+records wall-clock startedAt before pipe write. A validated acknowledgment records
+observedAt; terminal session handling timestamps unresolved attempts without marking
+them acknowledged. Times are clamped not to precede startedAt, as in the existing
+boundary receipt implementation. They are local observations, not trusted time or
+proof of dispatch. The boundary lease ID is distinct from the orchestration lease ID.
+
+`bindOwnedWindowsProcessObservation` snapshots inputs before asynchronously looking
+up the existing WorkspaceLifecycleStore lease. It checks exact expected lease revision,
+attempt and host, case-insensitive normalized cwd/worktree equality, active status,
+and that the recorded interval and lookup time fit the stored lease interval. This
+initial binding supports the exact worktree root, not arbitrary child scopes or
+filesystem alias resolution. The projection uses the owner's boundary ID and times;
+the binding carries the stored workspace lease identity/revision and provenance fields.
+
+Missing/changed/expired leases, lookup failure or invalid observations return an
+unbound observation. Binding failure is not a no-effect execution result and never
+permits automatic replay. A successful binding may still contain an indeterminate
+process receipt. Input/result copies prevent caller changes during the asynchronous
+lookup from replacing the observation. The store read is a point-in-time association;
+it does not prove historical or continuous fencing, OS host identity, authorization,
+protected launch, durable storage of the binding or full workspace readiness.
+
+Current tests exercise the store interface with controlled lease records and retain
+actual-native owner timestamp coverage. An actual durable store write/readback and
+crash recovery through the existing services remain pending. Do not treat this lookup
+adapter as another lease authority or a replacement for the existing verifier.

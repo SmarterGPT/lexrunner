@@ -14,6 +14,9 @@ const context = {
   completedAt: "2026-09-15T05:00:01.000Z",
 };
 const attempt: OwnedWindowsProcessAttempt = {
+  boundaryLeaseId: context.leaseId,
+  startedAt: context.startedAt,
+  observedAt: context.completedAt,
   requestId: "request-1",
   operationId: "operation-1",
   requestDigest: `sha256:${"a".repeat(64)}`,
