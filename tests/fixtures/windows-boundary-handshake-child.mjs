@@ -1,5 +1,5 @@
 // Controlled protocol peer. It performs no filesystem or worker operations.
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 const mode = process.argv[2];
 const digest = process.argv[3];
 const encode = (value) => {
@@ -18,10 +18,157 @@ const encode = (value) => {
 };
 let input = Buffer.alloc(0);
 let sent = false;
+let directoryPath;
+const sessionNonce = randomBytes(32).toString("hex");
 if (mode === "early-exit") process.exit(2);
 process.stdin.on("data", (chunk) => {
+  if (sent && mode === "session-exit") process.exit(0);
   input = Buffer.concat([input, chunk]);
   if (input.length > 4_100) process.exit(3);
+  if (mode.startsWith("directory-")) {
+    if (input.length < 4 || input.length < 4 + input.readUInt32BE()) return;
+    const size = input.readUInt32BE();
+    const request = JSON.parse(input.subarray(4, 4 + size).toString("utf8"));
+    input = input.subarray(4 + size);
+    if (request.kind === "hello") {
+      process.stdout.write(
+        encode({
+          ...request,
+          kind: "hello_result",
+          session_nonce: sessionNonce,
+          helper: { artifact_sha256: digest, architecture: process.arch, process_id: process.pid },
+        })
+      );
+      return;
+    }
+    if (request.kind === "process_request") {
+      if (mode === "directory-process-lost") {
+        process.exit(0);
+      }
+      const reply = {
+        kind: "process_result",
+        protocol_version: request.protocol_version,
+        client_nonce: request.client_nonce,
+        session_nonce: request.session_nonce,
+        request_id: request.request_id,
+        operation_id: request.operation_id,
+        request_digest: request.request_digest,
+        lease_token: request.lease_token,
+        process_id: 42,
+        exit_code: 0,
+        status: "exited",
+        job_empty: true,
+        duration_ms: 1,
+        stdout_base64: "YQ==",
+        stderr_base64: "",
+        stdout_truncated: false,
+        stderr_truncated: false,
+      };
+      if (mode === "directory-process-wrong-token") reply.lease_token = "e".repeat(64);
+      if (mode === "directory-process-wrong-digest")
+        reply.request_digest = `sha256:${"0".repeat(64)}`;
+      if (mode === "directory-process-noncanonical") reply.stdout_base64 = "YR==";
+      if (mode === "directory-process-over-bound") reply.stdout_base64 = "YWE=";
+      if (mode === "directory-process-wrong-exit") reply.exit_code = 7;
+      if (mode === "directory-process-wrong-truncation") reply.stdout_truncated = true;
+      process.stdout.write(encode(reply));
+      return;
+    }
+    if (request.operation === "release" && mode === "directory-lost-release") return;
+    if (request.kind === "file_create_request" && mode !== "directory-create-wrong-kind") {
+      if (mode === "directory-create-silent") return;
+      const reply = {
+        kind: "file_create_result",
+        status: "created",
+        protocol_version: request.protocol_version,
+        client_nonce: request.client_nonce,
+        session_nonce: request.session_nonce,
+        request_id: request.request_id,
+        operation_id: request.operation_id,
+        request_digest: request.request_digest,
+        lease_token: request.lease_token,
+        byte_length: Buffer.from(request.content_base64, "base64").length,
+        content_sha256: request.content_sha256,
+        file_id: "d".repeat(32),
+        volume_serial_number: "c".repeat(16),
+      };
+      if (mode === "directory-create-wrong-length") reply.byte_length++;
+      if (mode === "directory-create-wrong-digest")
+        reply.content_sha256 = `sha256:${"0".repeat(64)}`;
+      if (mode === "directory-create-wrong-token") reply.lease_token = "e".repeat(64);
+      if (mode === "directory-create-wrong-volume") reply.volume_serial_number = "e".repeat(16);
+      if (mode === "directory-create-wrong-operation") reply.operation_id = "wrong";
+      process.stdout.write(encode(reply));
+      return;
+    }
+    if (request.kind === "file_request" && mode !== "directory-file-wrong-kind") {
+      if (mode === "directory-file-silent") return;
+      const data = Buffer.from([255]);
+      const reply = {
+        kind: "file_result",
+        protocol_version: request.protocol_version,
+        client_nonce: request.client_nonce,
+        session_nonce: request.session_nonce,
+        request_id: request.request_id,
+        operation_id: request.operation_id,
+        request_digest: request.request_digest,
+        lease_token: request.lease_token,
+        byte_length: 1,
+        content_base64: data.toString("base64"),
+        content_sha256: `sha256:${createHash("sha256").update(data).digest("hex")}`,
+        file_id: "d".repeat(32),
+        volume_serial_number: "c".repeat(16),
+      };
+      if (mode === "directory-file-wrong-length") reply.byte_length = 2;
+      if (mode === "directory-file-noncanonical") reply.content_base64 = "/x==";
+      if (mode === "directory-file-wrong-digest") reply.content_sha256 = `sha256:${"0".repeat(64)}`;
+      if (mode === "directory-file-wrong-token") reply.lease_token = "e".repeat(64);
+      if (mode === "directory-file-wrong-volume") reply.volume_serial_number = "e".repeat(16);
+      if (mode === "directory-file-wrong-operation") reply.operation_id = "wrong";
+      process.stdout.write(encode(reply));
+      return;
+    }
+    directoryPath ??= request.path;
+    const response = {
+      kind: "directory_result",
+      protocol_version: request.protocol_version,
+      client_nonce: request.client_nonce,
+      session_nonce: request.session_nonce,
+      request_id: request.request_id,
+      operation_id: request.operation_id,
+      request_digest: request.request_digest,
+      lease_token: "a".repeat(64),
+      path: directoryPath,
+      chain_length: 3,
+      file_id: "b".repeat(32),
+      volume_serial_number: "c".repeat(16),
+      filesystem: "ReFS",
+      status:
+        request.operation === "acquire"
+          ? "acquired"
+          : request.operation === "assert"
+            ? "current"
+            : "released",
+    };
+    if (mode === "directory-wrong-status") response.status = "released";
+    if (mode.startsWith("directory-child-") && request.operation !== "acquire") {
+      if (request.operation === "release" && mode === "directory-child-lost-release") return;
+      response.path = directoryPath + "\\child";
+      response.chain_length = 4;
+      response.file_id = "d".repeat(32);
+      response.lease_token = "b".repeat(64);
+      if (request.operation === "open-child") response.status = "child-opened";
+      if (mode === "directory-child-reused-token") response.lease_token = "a".repeat(64);
+      if (mode === "directory-child-wrong-path") response.path = directoryPath + "\\other";
+      if (mode === "directory-child-false-missing") response.status = "child-missing";
+    }
+    if (mode === "directory-changed-identity" && request.operation === "assert")
+      response.file_id = "d".repeat(32);
+    if (mode === "directory-wrong-token" && request.operation === "release")
+      response.lease_token = "e".repeat(64);
+    process.stdout.write(encode(response));
+    return;
+  }
   if (sent || input.length < 4 || input.length < 4 + input.readUInt32BE()) return;
   sent = true;
   if (mode === "silent") return;

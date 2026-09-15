@@ -2,7 +2,11 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { probeOwnedWindowsBoundaryHandshake } from "../../src/workspaces/owned-windows-boundary-handshake.js";
+import {
+  probeOwnedWindowsBoundaryHandshake,
+  probeOwnedWindowsBoundarySession,
+  withOwnedWindowsBoundaryDirectory,
+} from "../../src/workspaces/owned-windows-boundary-handshake.js";
 
 const fixture = fileURLToPath(
   new URL("../fixtures/windows-boundary-handshake-child.mjs", import.meta.url)
@@ -41,7 +45,9 @@ const options = () => ({
   expectedArtifactSha256: `sha256:${"c".repeat(64)}`,
   architecture: process.arch as "x64" | "arm64",
   handshakeTimeoutMs: 2_000,
-  closeTimeoutMs: 100,
+  // Real peers need scheduling room to report natural exit on a loaded Windows host.
+  // Tests of forced cleanup select their own short deadline below.
+  closeTimeoutMs: 1_000,
   killTimeoutMs: 1_000,
 });
 afterEach(() => {
@@ -52,6 +58,322 @@ afterEach(() => {
 });
 
 describe("owned Windows boundary development handshake", () => {
+  it.each(["foreign-scope", "insufficient-budget", "over-timeout"])(
+    "rejects %s before dispatch",
+    async (mode) => {
+      state.mode = "directory-process-valid";
+      const report = await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture", workTimeoutMs: mode === "insufficient-budget" ? 5_000 : 30_000 },
+        async (scope) => {
+          await scope.runProcess({
+            executable: "C:\\fixture.exe",
+            args:
+              mode === "foreign-scope"
+                ? [{ kind: "directory", directory: { ...scope }, prefix: "", relativeToCwd: false }]
+                : [],
+            environment: "inherit-helper",
+            timeoutMs: mode === "over-timeout" ? 30_000 : 100,
+            maxOutputBytes: 1,
+          });
+        }
+      );
+      expect(report).toMatchObject({ reason: "work_failed", processAttempts: [] });
+      expect(state.write).toHaveBeenCalledTimes(2);
+    }
+  );
+  it.each([
+    "wrong-token",
+    "wrong-digest",
+    "noncanonical",
+    "over-bound",
+    "wrong-exit",
+    "wrong-truncation",
+    "lost",
+  ])("preserves unknown process outcome after %s reply", async (mode) => {
+    state.mode = `directory-process-${mode}`;
+    let delivered = false;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 15_000 },
+      async (scope) => {
+        await scope.runProcess({
+          executable: "C:\\fixture.exe",
+          args: [],
+          environment: "inherit-helper",
+          timeoutMs: 100,
+          maxOutputBytes: 1,
+        });
+        delivered = true;
+      }
+    );
+    expect(delivered).toBe(false);
+    expect(report).toMatchObject({ outcome: "failed", processAttempts: [{ acknowledged: false }] });
+    expect(state.write).toHaveBeenCalledTimes(3);
+    expect(Number.isFinite(Date.parse(report.processAttempts![0].observedAt!))).toBe(true);
+    expect(Object.isFrozen(report.processAttempts)).toBe(true);
+    expect(Object.isFrozen(report.processAttempts![0])).toBe(true);
+  });
+  it("retains an acknowledged command when subsequent work fails", async () => {
+    state.mode = "directory-process-valid";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 15_000 },
+      async (scope) => {
+        const result = await scope.runProcess({
+          executable: "C:\\fixture.exe",
+          args: [],
+          environment: "inherit-helper",
+          timeoutMs: 100,
+          maxOutputBytes: 1,
+        });
+        expect(Buffer.from(result.stdout).toString()).toBe("a");
+        throw new Error("Later work failed");
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "work_failed",
+      processAttempts: [{ acknowledged: true, status: "exited" }],
+    });
+  });
+  it("rejects unsupported environment options before process dispatch", async () => {
+    state.mode = "directory-process-valid";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 15_000 },
+      async (scope) => {
+        await scope.runProcess({
+          executable: "C:\\fixture.exe",
+          args: [],
+          environment: "inherit-helper",
+          timeoutMs: 100,
+          maxOutputBytes: 1,
+          env: {},
+        } as any);
+      }
+    );
+    expect(report).toMatchObject({ reason: "work_failed", processAttempts: [] });
+    expect(state.write).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    "wrong-length",
+    "wrong-digest",
+    "wrong-token",
+    "wrong-volume",
+    "wrong-operation",
+    "wrong-kind",
+  ])("retains unknown creation after %s reply", async (mode) => {
+    state.mode = `directory-create-${mode}`;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.createFile("file", Buffer.from("a"));
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "protocol_error",
+      directory: { filesCreated: 0, releaseAcknowledged: false },
+      fileCreations: [
+        { component: "file", byteLength: 1, acknowledged: false, parent: { path: "D:\\fixture" } },
+      ],
+      sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+    });
+    expect(report.fileCreations![0].operationId).toBe(
+      report.sessionOperations!.failure!.outstanding!.operation_id
+    );
+  });
+  it("retains creation intent when the acknowledgment is missing, without retry", async () => {
+    state.mode = "directory-create-silent";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      { ...options(), handshakeTimeoutMs: 500 },
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.createFile("file", Buffer.from("a"));
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "operation_timeout",
+      fileCreations: [{ acknowledged: false }],
+      directory: { filesCreated: 0 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(3);
+    expect(Object.isFrozen(report.fileCreations)).toBe(true);
+    expect(Object.isFrozen(report.fileCreations![0])).toBe(true);
+    expect(Object.isFrozen(report.fileCreations![0].parent)).toBe(true);
+  });
+  it.each([
+    "wrong-length",
+    "noncanonical",
+    "wrong-digest",
+    "wrong-token",
+    "wrong-volume",
+    "wrong-operation",
+    "wrong-kind",
+    "over-bound",
+  ])("rejects file %s before delivering content", async (mode) => {
+    state.mode = `directory-file-${mode}`;
+    let delivered = false;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.readFile("file", mode === "over-bound" ? 0 : 1);
+        delivered = true;
+      }
+    );
+    expect(delivered).toBe(false);
+    expect(report).toMatchObject({
+      reason: "protocol_error",
+      directory: { filesRead: 0, bytesRead: 0, releaseAcknowledged: false },
+      sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+    });
+  });
+  it("retains an unanswered file request without retry", async () => {
+    state.mode = "directory-file-silent";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      { ...options(), handshakeTimeoutMs: 500 },
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.readFile("file", 1);
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "operation_timeout",
+      directory: { filesRead: 0 },
+      sessionOperations: {
+        requested: 2,
+        correlated: 1,
+        failure: { outstanding: { operation_id: expect.any(String) } },
+      },
+    });
+    expect(state.write).toHaveBeenCalledTimes(3);
+  });
+  it.each(["reused-token", "wrong-path", "false-missing"])(
+    "rejects child %s before exposing a scope",
+    async (mode) => {
+      state.mode = `directory-child-${mode}`;
+      const report = await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture" },
+        async (root) => {
+          await root.openChild("child");
+        }
+      );
+      expect(report).toMatchObject({
+        reason: "protocol_error",
+        directory: { childrenAcquired: 0, releaseAcknowledged: false },
+        sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+      });
+    }
+  );
+  it("does not claim all scopes released when a child release reply is lost", async () => {
+    state.mode = "directory-child-lost-release";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      { ...options(), handshakeTimeoutMs: 500 },
+      { path: "D:\\fixture" },
+      async (root) => {
+        await root.openChild("child");
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "operation_timeout",
+      directory: { childrenAcquired: 1, childrenReleased: 0, releaseAcknowledged: false },
+      sessionOperations: { requested: 3, correlated: 2 },
+      cleanup: { exitCode: 0 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(4);
+  });
+  it.each(["wrong-status", "changed-identity", "wrong-token"])(
+    "rejects directory %s before acknowledging it",
+    async (mode) => {
+      state.mode = `directory-${mode}`;
+      const report = await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture" },
+        async (scope) => {
+          await scope.assertCurrent();
+        }
+      );
+      expect(report).toMatchObject({
+        outcome: "failed",
+        reason: "protocol_error",
+        directory: { releaseAcknowledged: false },
+        sessionOperations: {
+          failure: {
+            disposition: "reconciliation_required",
+            outstanding: { operation_id: expect.any(String) },
+          },
+        },
+      });
+    }
+  );
+  it("retains a lost release request instead of treating clean exit as acknowledgment", async () => {
+    state.mode = "directory-lost-release";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      { ...options(), handshakeTimeoutMs: 500 },
+      { path: "D:\\fixture" },
+      async () => {}
+    );
+    expect(report).toMatchObject({
+      reason: "operation_timeout",
+      directory: { acquired: true, releaseAcknowledged: false },
+      sessionOperations: {
+        requested: 2,
+        correlated: 1,
+        failure: { outstanding: { operation_id: expect.any(String) } },
+      },
+      cleanup: { exitCode: 0 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(3);
+  });
+  it("rejects invalid directory options before spawning", async () => {
+    expect(
+      await withOwnedWindowsBoundaryDirectory(options(), { path: "relative" }, async () => {})
+    ).toMatchObject({ reason: "invalid_options" });
+    expect(state.calls).toHaveLength(0);
+  });
+  it("times out an unanswered operation and retains its unknown outcome", async () => {
+    // This controlled peer answers hello but deliberately ignores later requests.
+    const report = await probeOwnedWindowsBoundarySession(
+      { ...options(), handshakeTimeoutMs: 500 },
+      2
+    );
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "operation_timeout",
+      sessionOperations: {
+        requested: 2,
+        correlated: 0,
+        failure: {
+          disposition: "reconciliation_required",
+          outstanding: { operation_id: expect.any(String) },
+        },
+      },
+      cleanup: { disposition: "closed", processExited: true },
+    });
+    expect(state.write).toHaveBeenCalledTimes(2); // Hello and one operation; no resend.
+  });
+  it("does not count clean child exit as completion of an outstanding operation", async () => {
+    state.mode = "session-exit";
+    const report = await probeOwnedWindowsBoundarySession(options(), 2);
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "child_exit",
+      sessionOperations: {
+        correlated: 0,
+        failure: { outstanding: { request_id: expect.any(String) } },
+      },
+      cleanup: { exitCode: 0 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(2);
+  });
+  it("rejects session budgets before spawning", async () => {
+    expect(await probeOwnedWindowsBoundarySession(options(), 16)).toMatchObject({
+      reason: "invalid_options",
+    });
+    expect(state.calls).toHaveLength(0);
+  });
   it("checks the elapsed deadline even before the timer callback runs", async () => {
     const now = performance.now();
     const clock = vi.spyOn(performance, "now").mockReturnValue(now);
@@ -152,7 +474,6 @@ describe("owned Windows boundary development handshake", () => {
     ["partial", "protocol_error"],
     ["garbage", "protocol_error"],
     ["early-exit", "child_exit"],
-    ["nonzero-exit", "child_exit"],
     ["stderr-overflow", "output_limit"],
   ])("rejects %s and waits for cleanup", async (mode, reason) => {
     state.mode = mode;
@@ -164,9 +485,27 @@ describe("owned Windows boundary development handshake", () => {
       cleanup: { disposition: "closed", processExited: true },
     });
   });
+  it("rejects a natural nonzero exit without requesting termination", async () => {
+    state.mode = "nonzero-exit";
+    expect(await probeOwnedWindowsBoundaryHandshake(options())).toMatchObject({
+      outcome: "failed",
+      reason: "child_exit",
+      verification: "not_performed",
+      helloMatched: true,
+      cleanup: {
+        disposition: "closed",
+        processExited: true,
+        terminationRequested: false,
+        exitCode: 7,
+        signal: null,
+      },
+    });
+  });
   it("retains a matched hello as evidence but fails if graceful shutdown needs termination", async () => {
     state.mode = "ignore-eof";
-    expect(await probeOwnedWindowsBoundaryHandshake(options())).toMatchObject({
+    expect(
+      await probeOwnedWindowsBoundaryHandshake({ ...options(), closeTimeoutMs: 100 })
+    ).toMatchObject({
       outcome: "failed",
       reason: "cleanup_forced",
       helloMatched: true,

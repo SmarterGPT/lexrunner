@@ -7,7 +7,24 @@ import { canonicalJSONStringify } from "../util/canonicalJson.js";
 export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "1.0.0" as const;
 export const WINDOWS_BOUNDARY_CONTROL_BYTES = 4_096;
 export const WINDOWS_BOUNDARY_NEGOTIATION_FRAMES = 16;
-const MAX_STREAM_BYTES = WINDOWS_BOUNDARY_NEGOTIATION_FRAMES * (4 + WINDOWS_BOUNDARY_CONTROL_BYTES);
+export const WINDOWS_BOUNDARY_FILE_BYTES = 65_536;
+export const WINDOWS_BOUNDARY_SESSION_BYTES = 98_304;
+export const WINDOWS_BOUNDARY_PROCESS_BYTES = 768 * 1024;
+const ProcessArgument = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("literal"),
+    value: z
+      .string()
+      .max(2048)
+      .refine((s) => !s.includes("\0")),
+  }),
+  z.strictObject({
+    kind: z.literal("directory"),
+    lease_token: z.string().regex(/^[a-f0-9]{64}$/u),
+    prefix: z.string().max(64),
+    relative_to_cwd: z.boolean(),
+  }),
+]);
 const Nonce = z.string().regex(/^[a-f0-9]{64}$/u);
 const RequestId = z
   .string()
@@ -35,6 +52,159 @@ export const WindowsBoundaryHelloResult = z.strictObject({
 });
 const Message = z.discriminatedUnion("kind", [WindowsBoundaryHello, WindowsBoundaryHelloResult]);
 export type WindowsBoundaryControlMessage = z.infer<typeof Message>;
+const OperationCommon = {
+  ...Common,
+  session_nonce: Nonce,
+  operation_id: RequestId,
+  request_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+};
+export const WindowsBoundaryStatusRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("session_request"),
+  operation: z.literal("session-status"),
+});
+export const WindowsBoundaryStatusResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("session_result"),
+  status: z.literal("alive"),
+});
+export const WindowsBoundaryDirectoryRequest = z
+  .strictObject({
+    ...OperationCommon,
+    kind: z.literal("directory_request"),
+    operation: z.enum([
+      "acquire",
+      "assert",
+      "release",
+      "open-child",
+      "try-open-child",
+      "create-child",
+    ]),
+    component: z.string().min(1).max(255).optional(),
+    path: z.string().min(3).max(1024).optional(),
+    lease_token: Nonce.optional(),
+  })
+  .superRefine((value, context) => {
+    const child = ["open-child", "try-open-child", "create-child"].includes(value.operation);
+    if (child ? value.component === undefined : value.component !== undefined)
+      context.addIssue({ code: "custom", message: "Invalid child operation arguments" });
+    if (
+      value.operation === "acquire"
+        ? !value.path || value.lease_token !== undefined
+        : value.path !== undefined || value.lease_token === undefined
+    )
+      context.addIssue({ code: "custom", message: "Invalid directory operation arguments" });
+  });
+export const WindowsBoundaryDirectoryResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("directory_result"),
+  lease_token: Nonce,
+  path: z.string().min(3).max(2048),
+  chain_length: z.number().int().min(1).max(33),
+  file_id: z.string().regex(/^[a-f0-9]{32}$/u),
+  volume_serial_number: z.string().regex(/^[a-f0-9]{16}$/u),
+  filesystem: z.enum(["NTFS", "ReFS"]),
+  status: z.enum([
+    "acquired",
+    "current",
+    "released",
+    "child-opened",
+    "child-created",
+    "child-missing",
+  ]),
+});
+export const WindowsBoundaryFileRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_request"),
+  operation: z.literal("read-file"),
+  lease_token: Nonce,
+  component: z.string().min(1).max(255),
+  max_bytes: z.number().int().min(0).max(WINDOWS_BOUNDARY_FILE_BYTES),
+});
+export const WindowsBoundaryFileResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_result"),
+  lease_token: Nonce,
+  byte_length: z.number().int().min(0).max(WINDOWS_BOUNDARY_FILE_BYTES),
+  content_base64: z
+    .string()
+    .max(4 * Math.ceil(WINDOWS_BOUNDARY_FILE_BYTES / 3))
+    .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u),
+  content_sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  file_id: z.string().regex(/^[a-f0-9]{32}$/u),
+  volume_serial_number: z.string().regex(/^[a-f0-9]{16}$/u),
+});
+export const WindowsBoundaryFileCreateRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_create_request"),
+  operation: z.literal("create-file"),
+  lease_token: Nonce,
+  component: z.string().min(1).max(255),
+  content_base64: WindowsBoundaryFileResult.shape.content_base64,
+  content_sha256: WindowsBoundaryFileResult.shape.content_sha256,
+});
+export const WindowsBoundaryFileCreateResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_create_result"),
+  status: z.literal("created"),
+  lease_token: Nonce,
+  byte_length: WindowsBoundaryFileResult.shape.byte_length,
+  content_sha256: WindowsBoundaryFileResult.shape.content_sha256,
+  file_id: WindowsBoundaryFileResult.shape.file_id,
+  volume_serial_number: WindowsBoundaryFileResult.shape.volume_serial_number,
+});
+export const WindowsBoundaryProcessRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("process_request"),
+  operation: z.literal("run-process"),
+  lease_token: Nonce,
+  executable: z.string().min(1).max(1024),
+  args: z.array(ProcessArgument).max(64),
+  environment: z.enum(["inherit-helper", "replace"]),
+  env: z
+    .array(z.strictObject({ name_base64: z.string(), value_base64: z.string() }))
+    .max(256)
+    .optional(),
+  timeout_ms: z.number().int().min(1).max(30_000),
+  max_output_bytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(256 * 1024),
+});
+const ProcessOutput = z
+  .string()
+  .max(4 * Math.ceil((256 * 1024) / 3))
+  .regex(/^[A-Za-z0-9+/]*={0,2}$/u);
+export const WindowsBoundaryProcessResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("process_result"),
+  lease_token: Nonce,
+  process_id: z.number().int().positive().max(0xffffffff),
+  exit_code: z.number().int().min(0).max(0xffffffff),
+  status: z.enum(["exited", "nonzero_exit", "timeout", "output_limit"]),
+  job_empty: z.literal(true),
+  duration_ms: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  stdout_base64: ProcessOutput,
+  stderr_base64: ProcessOutput,
+  stdout_truncated: z.boolean(),
+  stderr_truncated: z.boolean(),
+});
+const SessionMessage = z.discriminatedUnion("kind", [
+  WindowsBoundaryHello,
+  WindowsBoundaryHelloResult,
+  WindowsBoundaryStatusRequest,
+  WindowsBoundaryStatusResult,
+  WindowsBoundaryDirectoryRequest,
+  WindowsBoundaryDirectoryResult,
+  WindowsBoundaryFileRequest,
+  WindowsBoundaryFileResult,
+  WindowsBoundaryFileCreateRequest,
+  WindowsBoundaryFileCreateResult,
+  WindowsBoundaryProcessRequest,
+  WindowsBoundaryProcessResult,
+]);
+type SessionMessage = z.infer<typeof SessionMessage>;
 
 export class WindowsBoundaryProtocolError extends Error {
   constructor(
@@ -47,10 +217,27 @@ export class WindowsBoundaryProtocolError extends Error {
 
 /** Four-byte unsigned big-endian UTF-8 byte length, then exact canonical JSON. */
 export function encodeWindowsBoundaryControl(value: unknown): Buffer {
-  const parsed = Message.safeParse(value);
+  return encodeFrame(value, false);
+}
+
+/** Explicit bounded development session profile; negotiation stays strict by default. */
+export function encodeWindowsBoundarySession(value: unknown): Buffer {
+  return encodeFrame(value, true);
+}
+
+function encodeFrame(value: unknown, sessionMode: boolean): Buffer {
+  const parsed = (sessionMode ? SessionMessage : Message).safeParse(value);
   if (!parsed.success) throw new WindowsBoundaryProtocolError("invalid_frame");
   const bytes = Buffer.from(canonicalJSONStringify(parsed.data), "utf8");
-  if (bytes.length === 0 || bytes.length > WINDOWS_BOUNDARY_CONTROL_BYTES) {
+  if (
+    bytes.length === 0 ||
+    bytes.length >
+      (sessionMode
+        ? parsed.data.kind === "process_result"
+          ? WINDOWS_BOUNDARY_PROCESS_BYTES
+          : WINDOWS_BOUNDARY_SESSION_BYTES
+        : WINDOWS_BOUNDARY_CONTROL_BYTES)
+  ) {
     throw new WindowsBoundaryProtocolError("invalid_frame");
   }
   const frame = Buffer.alloc(4 + bytes.length);
@@ -59,10 +246,14 @@ export function encodeWindowsBoundaryControl(value: unknown): Buffer {
   return frame;
 }
 
-/** Fixed storage; malformed input and budget exhaustion permanently close the decoder. */
+/** Bounded storage; malformed input and budget exhaustion permanently close the decoder. */
 export class WindowsBoundaryControlDecoder {
+  constructor(private readonly sessionMode = false) {}
+  private readonly frameLimit = this.sessionMode
+    ? WINDOWS_BOUNDARY_PROCESS_BYTES
+    : WINDOWS_BOUNDARY_CONTROL_BYTES;
   private readonly header = Buffer.alloc(4);
-  private readonly payload = Buffer.alloc(WINDOWS_BOUNDARY_CONTROL_BYTES);
+  private payload = Buffer.alloc(WINDOWS_BOUNDARY_CONTROL_BYTES);
   private headerUsed = 0;
   private payloadUsed = 0;
   private payloadLength = 0;
@@ -70,11 +261,15 @@ export class WindowsBoundaryControlDecoder {
   private frames = 0;
   private closed = false;
 
-  push(chunk: Uint8Array): WindowsBoundaryControlMessage[] {
+  push(chunk: Uint8Array): SessionMessage[] {
     if (this.closed) throw new WindowsBoundaryProtocolError("stream_closed");
-    if (chunk.byteLength > MAX_STREAM_BYTES - this.streamBytes) return this.fail("stream_limit");
+    if (
+      chunk.byteLength >
+      WINDOWS_BOUNDARY_NEGOTIATION_FRAMES * (4 + this.frameLimit) - this.streamBytes
+    )
+      return this.fail("stream_limit");
     this.streamBytes += chunk.byteLength;
-    const messages: WindowsBoundaryControlMessage[] = [];
+    const messages: SessionMessage[] = [];
     let offset = 0;
     while (offset < chunk.byteLength) {
       if (this.headerUsed < 4) {
@@ -84,10 +279,12 @@ export class WindowsBoundaryControlDecoder {
         offset += count;
         if (this.headerUsed < 4) continue;
         this.payloadLength = this.header.readUInt32BE();
-        if (this.payloadLength === 0 || this.payloadLength > WINDOWS_BOUNDARY_CONTROL_BYTES) {
+        if (this.payloadLength === 0 || this.payloadLength > this.frameLimit) {
           return this.fail("invalid_frame");
         }
         if (this.frames >= WINDOWS_BOUNDARY_NEGOTIATION_FRAMES) return this.fail("stream_limit");
+        if (this.payload.length < this.payloadLength)
+          this.payload = Buffer.alloc(this.payloadLength);
       }
       const count = Math.min(this.payloadLength - this.payloadUsed, chunk.byteLength - offset);
       this.payload.set(chunk.subarray(offset, offset + count), this.payloadUsed);
@@ -97,7 +294,13 @@ export class WindowsBoundaryControlDecoder {
       try {
         const bytes = this.payload.subarray(0, this.payloadLength);
         const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-        const parsed = Message.parse(JSON.parse(text));
+        const parsed = (this.sessionMode ? SessionMessage : Message).parse(JSON.parse(text));
+        if (
+          this.sessionMode &&
+          parsed.kind !== "process_result" &&
+          this.payloadLength > WINDOWS_BOUNDARY_SESSION_BYTES
+        )
+          return this.fail("invalid_frame");
         // Reject duplicate keys, alternate encodings/BOM and noncanonical JSON on the wire.
         if (!bytes.equals(Buffer.from(canonicalJSONStringify(parsed), "utf8"))) {
           return this.fail("invalid_frame");

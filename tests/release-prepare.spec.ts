@@ -262,8 +262,8 @@ Initial release.
     expect(output).toContain("git diff CHANGELOG.md package.json");
     expect(output).toContain("Commit the changes");
     expect(output).toContain("Create a signed tag");
-    expect(output).toContain("git tag -s lexrunner-v1.1.0");
-    expect(output).toContain("git push origin lexrunner-v1.1.0");
+    expect(output).toContain("git tag -s v1.1.0");
+    expect(output).toContain("git push origin v1.1.0");
     expect(output).toContain("Push the changes and tag");
   });
 });

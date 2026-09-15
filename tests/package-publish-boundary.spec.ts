@@ -54,7 +54,7 @@ describe("npm publication boundary", () => {
   });
 
   it("uses the repository-scoped release tag prefix", () => {
-    expect(releaseTagForVersion("1.2.1")).toBe("lexrunner-v1.2.1");
+    expect(releaseTagForVersion("1.2.1")).toBe("v1.2.1");
   });
 
   it("rejects a return to restricted package access", () => {

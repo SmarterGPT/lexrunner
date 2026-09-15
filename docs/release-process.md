@@ -1,5 +1,10 @@
 # Release and public npm publishing
 
+New release tags use `vX.Y.Z` (decision accepted 2026-09-15). Historical
+`lexrunner-v*` tags and release links remain unchanged. The drift check recognizes
+known pre-migration versions through 2.4.0; that compatibility does not authorize
+new publication under the old prefix or retagging already published versions.
+
 LexRunner is prepared for public npm distribution as `@smartergpt/lexrunner`.
 The registry access transition and first Apache-2.0 package release are separate from
 merging these source changes; earlier versions retain their applicable license terms. The release path
@@ -18,7 +23,7 @@ trusted-publisher configuration and any explicit recovery action.
 
 - **Canary candidate:** each merge to `main` validates a version shaped like
   `X.Y.Z-canary.<commit>`. Canary npm publication remains disabled.
-- **Stable release:** a `lexrunner-vX.Y.Z` annotated tag and its target commit must both be signed
+- **Stable release:** a `vX.Y.Z` annotated tag and its target commit must both be signed
   by the authorized release-owner GPG fingerprint. Once that commit is contained in `main`, the
   workflow validates the matching package version and permits `.github/workflows/release.yml` to
   publish with the `latest` dist-tag through npm trusted publishing before creating the GitHub
@@ -75,9 +80,9 @@ git add CHANGELOG.md package.json package-lock.json README.md docs/AX.md
 git commit -S -m "chore(release): prepare X.Y.Z"
 git verify-commit HEAD
 # Merge the reviewed commit into main before tagging it.
-git tag -s lexrunner-vX.Y.Z -m "Release X.Y.Z"
-git tag -v lexrunner-vX.Y.Z
-git push origin lexrunner-vX.Y.Z
+git tag -s vX.Y.Z -m "Release X.Y.Z"
+git tag -v vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 Wait for the release workflow to finish. It rejects workflow dispatch, verifies the annotated tag
@@ -158,7 +163,7 @@ not silently retarget an existing version or rewrite a published tag.
 ## Automation boundary
 
 Only the `stable-release` job in `.github/workflows/release.yml` receives `id-token: write`, and it
-runs only for push events on `lexrunner-v*.*.*` tags. The job requires a GitHub-verified annotated
+runs only for push events on `v*.*.*` tags. The job requires a GitHub-verified annotated
 tag and exact API-reported target commit, both signed by release-owner primary fingerprint
 `65C94BA03E88F53D365C36CF7145A1CE635B1902`, containment of that commit in `origin/main`, exact
 tag/manifest version agreement, `npm test`, deterministic source, the package boundary, and the
