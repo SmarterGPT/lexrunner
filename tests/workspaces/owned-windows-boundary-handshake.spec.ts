@@ -1,3 +1,4 @@
+import { WindowsBoundaryControlDecoder } from "../../src/workspaces/windows-boundary-protocol.js";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -353,6 +354,38 @@ describe("owned Windows boundary development handshake", () => {
       directory: { releaseAcknowledged: true },
     });
     expect(state.write).toHaveBeenCalledTimes(4); // hello, acquire, create, release
+  });
+  it("rejects a release acknowledgment decoded past the absolute grace deadline", async () => {
+    state.mode = "directory-valid";
+    const original = WindowsBoundaryControlDecoder.prototype.push;
+    let delayed = false;
+    vi.spyOn(WindowsBoundaryControlDecoder.prototype, "push").mockImplementation(function (chunk) {
+      const messages = original.call(this, chunk);
+      if (
+        messages.some(
+          (message) => message.kind === "directory_result" && message.status === "released"
+        )
+      ) {
+        delayed = true;
+        const until = performance.now() + 150;
+        while (performance.now() < until) {
+          /* delay validation beyond grace */
+        }
+      }
+      return messages;
+    });
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 50, deadlineGraceMs: 100 },
+      async () => new Promise<void>(() => {})
+    );
+    expect(delayed).toBe(true);
+    expect(report).toMatchObject({
+      reason: "work_timeout",
+      deadline: { graceExpired: true },
+      directory: { releaseAcknowledged: false },
+      sessionOperations: { requested: 2, correlated: 1 },
+    });
   });
   it("bounds a lost release during deadline grace and preserves its unanswered request", async () => {
     state.mode = "directory-lost-release";

@@ -508,6 +508,12 @@ async function runOwnedWindowsBoundary(
         filesystem: reply.filesystem,
         chain_length: reply.chain_length,
       });
+    const stopExpiredGrace = () => {
+      if (!deadlineDraining || performance.now() < graceDeadline) return false;
+      graceExpired = true;
+      fail("work_timeout");
+      return true;
+    };
     const sendDirectory = (
       operation: DirectoryOperation,
       target = directoryReply,
@@ -523,6 +529,7 @@ async function runOwnedWindowsBoundary(
         sentCount >= 15
       )
         throw new Error("Directory session unavailable");
+      if (stopExpiredGrace()) throw new Error("Directory session expired");
       const payload = operation === "create-file" ? Buffer.from(content!) : undefined;
       const contentDigest = payload
         ? `sha256:${createHash("sha256").update(payload).digest("hex")}`
@@ -551,6 +558,7 @@ async function runOwnedWindowsBoundary(
       };
       const requestDigest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
       const frame = encodeWindowsBoundarySession({ ...body, request_digest: requestDigest });
+      if (stopExpiredGrace()) throw new Error("Directory session expired");
       exchange!.reserve(
         {
           request_id: body.request_id,
@@ -728,6 +736,7 @@ async function runOwnedWindowsBoundary(
               const digest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
               const wire = WindowsBoundaryProcessRequest.parse({ ...body, request_digest: digest });
               const frame = encodeWindowsBoundarySession(wire);
+              if (stopExpiredGrace()) throw new Error("Directory session expired");
               exchange!.reserve(
                 {
                   request_id: body.request_id,
@@ -891,6 +900,7 @@ async function runOwnedWindowsBoundary(
         session_nonce: sessionNonce!,
       };
       const requestDigest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
+      if (stopExpiredGrace()) throw new Error("Directory session expired");
       exchange!.reserve(
         {
           request_id: body.request_id,
@@ -950,6 +960,7 @@ async function runOwnedWindowsBoundary(
               (result.status === "nonzero_exit" && result.exit_code === 0)
             )
               throw new Error("Invalid process result");
+            if (stopExpiredGrace()) return;
             const match = exchange!.correlate({
               client_nonce: result.client_nonce,
               session_nonce: result.session_nonce,
@@ -1014,6 +1025,7 @@ async function runOwnedWindowsBoundary(
               fail("protocol_error");
               return;
             }
+            if (stopExpiredGrace()) return;
             const match = exchange!.correlate({
               client_nonce: message.client_nonce,
               session_nonce: message.session_nonce,
@@ -1071,6 +1083,7 @@ async function runOwnedWindowsBoundary(
               fail("protocol_error");
               return;
             }
+            if (stopExpiredGrace()) return;
             const match = exchange!.correlate({
               client_nonce: message.client_nonce,
               session_nonce: message.session_nonce,
@@ -1142,6 +1155,7 @@ async function runOwnedWindowsBoundary(
               fail("protocol_error");
               return;
             }
+            if (stopExpiredGrace()) return;
             const match = exchange!.correlate({
               client_nonce: message.client_nonce,
               session_nonce: message.session_nonce,
@@ -1189,6 +1203,7 @@ async function runOwnedWindowsBoundary(
               protocol_version: _version,
               ...correlation
             } = message;
+            if (stopExpiredGrace()) return;
             const match = exchange!.correlate(correlation);
             if (!match.correlated) {
               fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
