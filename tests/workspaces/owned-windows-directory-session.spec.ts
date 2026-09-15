@@ -1,3 +1,4 @@
+import { projectOwnedWindowsFileCreationReceipt } from "../../src/workspaces/owned-windows-file-receipt.js";
 import { projectOwnedWindowsProcessReceipt } from "../../src/workspaces/owned-windows-process-receipt.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -100,7 +101,10 @@ describe.skipIf(process.platform !== "win32" || !executable)(
       if (!acquired.ok) throw new Error("acquisition failed");
       const { session } = acquired;
       const child = await session.run((scope) => scope.createChild("worker"));
-      await session.run(() => child.createFile("marker", Buffer.from("durable observation")));
+      const startedAt = new Date().toISOString();
+      const creation = await session.run(() =>
+        child.createFile("marker", Buffer.from("durable observation"))
+      );
       const bytes = await session.run(() => child.readFile("marker", 100));
       expect(Buffer.from(bytes.bytes).toString()).toBe("durable observation");
       const closed = session.close();
@@ -114,6 +118,12 @@ describe.skipIf(process.platform !== "win32" || !executable)(
         directory: { releaseAcknowledged: true, childrenReleased: 1 },
         cleanup: { disposition: "closed" },
       });
+      const projected = projectOwnedWindowsFileCreationReceipt(
+        { leaseId: "test-association", startedAt, completedAt: new Date().toISOString() },
+        report.fileCreations![0],
+        creation
+      );
+      expect(projected).toMatchObject({ ok: true, receipt: { durability: "not_requested" } });
       expect(await session.completion).toBe(report);
       await expect(child.assertCurrent()).rejects.toThrow();
     });

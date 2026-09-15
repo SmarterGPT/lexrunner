@@ -184,6 +184,9 @@ const ProcessOptions = z.strictObject({
 });
 export interface OwnedWindowsFileCreated {
   readonly kind: "file_created";
+  readonly requestId: string;
+  readonly operationId: string;
+  readonly requestDigest: string;
   readonly byteLength: number;
   readonly contentSha256: string;
   readonly fileId: string;
@@ -1054,6 +1057,9 @@ async function runOwnedWindowsBoundary(
             waiter.resolve(
               Object.freeze({
                 kind: "file_created",
+                requestId: message.request_id,
+                operationId: message.operation_id,
+                requestDigest: message.request_digest,
                 byteLength: message.byte_length,
                 contentSha256: message.content_sha256,
                 fileId: message.file_id,
