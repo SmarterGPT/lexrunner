@@ -7,7 +7,8 @@ import { canonicalJSONStringify } from "../util/canonicalJson.js";
 export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "1.0.0" as const;
 export const WINDOWS_BOUNDARY_CONTROL_BYTES = 4_096;
 export const WINDOWS_BOUNDARY_NEGOTIATION_FRAMES = 16;
-const MAX_STREAM_BYTES = WINDOWS_BOUNDARY_NEGOTIATION_FRAMES * (4 + WINDOWS_BOUNDARY_CONTROL_BYTES);
+export const WINDOWS_BOUNDARY_FILE_BYTES = 65_536;
+export const WINDOWS_BOUNDARY_SESSION_BYTES = 98_304;
 const Nonce = z.string().regex(/^[a-f0-9]{64}$/u);
 const RequestId = z
   .string()
@@ -102,16 +103,16 @@ export const WindowsBoundaryFileRequest = z.strictObject({
   operation: z.literal("read-file"),
   lease_token: Nonce,
   component: z.string().min(1).max(255),
-  max_bytes: z.number().int().min(0).max(1024),
+  max_bytes: z.number().int().min(0).max(WINDOWS_BOUNDARY_FILE_BYTES),
 });
 export const WindowsBoundaryFileResult = z.strictObject({
   ...OperationCommon,
   kind: z.literal("file_result"),
   lease_token: Nonce,
-  byte_length: z.number().int().min(0).max(1024),
+  byte_length: z.number().int().min(0).max(WINDOWS_BOUNDARY_FILE_BYTES),
   content_base64: z
     .string()
-    .max(1368)
+    .max(4 * Math.ceil(WINDOWS_BOUNDARY_FILE_BYTES / 3))
     .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u),
   content_sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
   file_id: z.string().regex(/^[a-f0-9]{32}$/u),
@@ -173,7 +174,10 @@ function encodeFrame(value: unknown, sessionMode: boolean): Buffer {
   const parsed = (sessionMode ? SessionMessage : Message).safeParse(value);
   if (!parsed.success) throw new WindowsBoundaryProtocolError("invalid_frame");
   const bytes = Buffer.from(canonicalJSONStringify(parsed.data), "utf8");
-  if (bytes.length === 0 || bytes.length > WINDOWS_BOUNDARY_CONTROL_BYTES) {
+  if (
+    bytes.length === 0 ||
+    bytes.length > (sessionMode ? WINDOWS_BOUNDARY_SESSION_BYTES : WINDOWS_BOUNDARY_CONTROL_BYTES)
+  ) {
     throw new WindowsBoundaryProtocolError("invalid_frame");
   }
   const frame = Buffer.alloc(4 + bytes.length);
@@ -185,8 +189,11 @@ function encodeFrame(value: unknown, sessionMode: boolean): Buffer {
 /** Fixed storage; malformed input and budget exhaustion permanently close the decoder. */
 export class WindowsBoundaryControlDecoder {
   constructor(private readonly sessionMode = false) {}
+  private readonly frameLimit = this.sessionMode
+    ? WINDOWS_BOUNDARY_SESSION_BYTES
+    : WINDOWS_BOUNDARY_CONTROL_BYTES;
   private readonly header = Buffer.alloc(4);
-  private readonly payload = Buffer.alloc(WINDOWS_BOUNDARY_CONTROL_BYTES);
+  private readonly payload = Buffer.alloc(this.frameLimit);
   private headerUsed = 0;
   private payloadUsed = 0;
   private payloadLength = 0;
@@ -196,7 +203,11 @@ export class WindowsBoundaryControlDecoder {
 
   push(chunk: Uint8Array): SessionMessage[] {
     if (this.closed) throw new WindowsBoundaryProtocolError("stream_closed");
-    if (chunk.byteLength > MAX_STREAM_BYTES - this.streamBytes) return this.fail("stream_limit");
+    if (
+      chunk.byteLength >
+      WINDOWS_BOUNDARY_NEGOTIATION_FRAMES * (4 + this.frameLimit) - this.streamBytes
+    )
+      return this.fail("stream_limit");
     this.streamBytes += chunk.byteLength;
     const messages: SessionMessage[] = [];
     let offset = 0;
@@ -208,7 +219,7 @@ export class WindowsBoundaryControlDecoder {
         offset += count;
         if (this.headerUsed < 4) continue;
         this.payloadLength = this.header.readUInt32BE();
-        if (this.payloadLength === 0 || this.payloadLength > WINDOWS_BOUNDARY_CONTROL_BYTES) {
+        if (this.payloadLength === 0 || this.payloadLength > this.frameLimit) {
           return this.fail("invalid_frame");
         }
         if (this.frames >= WINDOWS_BOUNDARY_NEGOTIATION_FRAMES) return this.fail("stream_limit");

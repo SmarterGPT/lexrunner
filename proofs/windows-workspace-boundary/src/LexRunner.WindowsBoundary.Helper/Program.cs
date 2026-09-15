@@ -9,6 +9,8 @@ internal static class Program
 {
   private const string Version = "1.0.0";
   private const int Limit = 4096;
+  internal const int FileLimit = 65_536;
+  private const int SessionLimit = 98_304;
 
   private static int Main(string[] args)
   {
@@ -105,7 +107,7 @@ internal static class Program
       header[0] = (byte)first;
       input.ReadExactly(header.AsSpan(1));
       var length = BinaryPrimitives.ReadUInt32BigEndian(header);
-      if (length is 0 or > Limit) throw new InvalidDataException();
+      if (length is 0 or > SessionLimit) throw new InvalidDataException();
       var bytes = new byte[(int)length];
       input.ReadExactly(bytes);
       using var document = JsonDocument.Parse(new UTF8Encoding(false, true).GetString(bytes),
@@ -120,7 +122,7 @@ internal static class Program
           kind.GetString() == "file_request" ?
           directories.ReadFile(root, bytes, nonce, sessionNonce, requests, operations) :
           directories.Execute(root, bytes, nonce, sessionNonce, requests, operations);
-        if (directoryReply.Length > Limit) throw new InvalidDataException();
+        if (directoryReply.Length > SessionLimit) throw new InvalidDataException();
         BinaryPrimitives.WriteUInt32BigEndian(header, (uint)directoryReply.Length);
         output.Write(header);
         output.Write(directoryReply);

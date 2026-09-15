@@ -245,18 +245,40 @@ async function setup() {
 }
 
 describe.skipIf(process.platform !== "win32" || !executable)("real native directory lease", () => {
-  it.each([0, 1, 257, 1024])("creates and reads back exactly %i bytes", async (size) => {
+  it("rejects one extra decoded byte even when its base64 has the maximum encoded length", async () => {
     const f = await setup();
-    const data = Buffer.from(Array.from({ length: size }, (_, i) => i % 256));
     const root = await f.operation("acquire", f.directory);
-    const created = await f.create(root.lease_token, "créé.bin", data);
-    expect(await readFile(path.join(f.directory, "créé.bin"))).toEqual(data);
-    const observed = await f.read(root.lease_token, "créé.bin", size);
-    expect(observed.content).toEqual(data);
-    expect(observed.reply.file_id).toBe(created.file_id);
-    await rename(path.join(f.directory, "créé.bin"), path.join(f.directory, "closed.bin"));
-    await f.operation("release", root.lease_token);
+    await expect(f.create(root.lease_token, "too-large", Buffer.alloc(65_537))).rejects.toThrow();
+    await f.closed;
+    expect(f.child.exitCode).toBe(3);
+    await expect(stat(path.join(f.directory, "too-large"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
+  it("rejects content one byte above the maximum read without partial delivery", async () => {
+    const f = await setup();
+    await writeFile(path.join(f.directory, "large"), Buffer.alloc(65_537));
+    const root = await f.operation("acquire", f.directory);
+    await expect(f.read(root.lease_token, "large", 65_536)).rejects.toThrow();
+    await f.closed;
+    expect(f.child.exitCode).toBe(3);
+    await rename(f.parent, f.parent + "-released");
+  });
+  it.each([0, 1, 257, 1024, 16_384, 65_536])(
+    "creates and reads back exactly %i bytes",
+    async (size) => {
+      const f = await setup();
+      const data = Buffer.from(Array.from({ length: size }, (_, i) => i % 256));
+      const root = await f.operation("acquire", f.directory);
+      const created = await f.create(root.lease_token, "créé.bin", data);
+      expect(await readFile(path.join(f.directory, "créé.bin"))).toEqual(data);
+      const observed = await f.read(root.lease_token, "créé.bin", size);
+      expect(observed.content).toEqual(data);
+      expect(observed.reply.file_id).toBe(created.file_id);
+      await rename(path.join(f.directory, "créé.bin"), path.join(f.directory, "closed.bin"));
+      await f.operation("release", root.lease_token);
+    }
+  );
   it("preserves an existing file when creation collides", async () => {
     const f = await setup();
     const target = path.join(f.directory, "existing");
@@ -302,7 +324,7 @@ describe.skipIf(process.platform !== "win32" || !executable)("real native direct
       await rename(f.parent, f.parent + "-released");
     }
   );
-  it.each([0, 1, 257, 1024])(
+  it.each([0, 1, 257, 1024, 16_384, 65_536])(
     "reads exactly %i binary bytes and closes the file handle",
     async (size) => {
       const f = await setup();

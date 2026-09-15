@@ -41,7 +41,7 @@ The supplied expected digest is consistency data. The result explicitly retains
 `verification: not_performed`. No certificate or trusted installation is needed
 for this development-only test; production deployment remains separately gated.
 
-The peer bounds request allocation to4096bytes, rejects noncanonical JSON,
+The peer bounds hello allocation to 4 KiB and subsequent session requests to 96 KiB, rejects noncanonical JSON,
 duplicate/unknown fields, malformed UTF-8, truncation and extra frames, and writes
 no stdout diagnostics. The hello-only profile waits for EOF after replying; the
 session profile accepts up to 15 subsequent requests. The owning parent provides

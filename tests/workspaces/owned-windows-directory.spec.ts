@@ -36,6 +36,24 @@ afterEach(async () => {
   }
 });
 describe.skipIf(process.platform !== "win32" || !executable)("owned native directory scope", () => {
+  it.each([16_384, 65_536])("round trips %i bytes through the owned transport", async (size) => {
+    const f = await fixture();
+    const data = Buffer.from(Array.from({ length: size }, (_, i) => i % 256));
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory },
+      async (scope) => {
+        const created = await scope.createFile("marker", data);
+        const read = await scope.readFile("marker", size);
+        expect(Buffer.from(read.bytes)).toEqual(data);
+        expect(read.contentSha256).toBe(created.contentSha256);
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "matched",
+      directory: { filesCreated: 1, filesRead: 1, releaseAcknowledged: true },
+    });
+  });
   it("creates from a private byte copy through a child scope", async () => {
     const f = await fixture();
     const original = Buffer.from([0, 255, 1]);
@@ -97,7 +115,7 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned native direc
       f.options,
       { path: f.directory },
       async (root) => {
-        await root.createFile("large", new Uint8Array(1025));
+        await root.createFile("large", new Uint8Array(65_537));
       }
     );
     expect(report).toMatchObject({

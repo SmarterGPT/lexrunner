@@ -96,7 +96,7 @@ internal sealed class DirectoryLease : IDisposable
   internal FileObservation ReadBoundedFile(string component, int maximum)
   {
     ValidateComponent(component);
-    if (maximum is < 0 or > 1024) throw new InvalidDataException();
+    if (maximum is < 0 or > Program.FileLimit) throw new InvalidDataException();
     AssertCurrent();
     var path = System.IO.Path.Combine(Leaf.Path, component);
     if (path.Length > 1024) throw new InvalidDataException();
@@ -138,7 +138,7 @@ internal sealed class DirectoryLease : IDisposable
   internal FileObservation CreateBoundedFile(string component, byte[] content)
   {
     ValidateComponent(component);
-    if (content.Length > 1024) throw new InvalidDataException();
+    if (content.Length > Program.FileLimit) throw new InvalidDataException();
     AssertCurrent();
     var path = System.IO.Path.Combine(Leaf.Path, component);
     if (path.Length > 1024) throw new InvalidDataException();

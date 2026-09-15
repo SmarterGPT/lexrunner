@@ -7,7 +7,7 @@ or establish hostile-agent containment. Creation is an operation within a suppli
 live directory scope, not a new approval ceremony.
 
 `file_create_request` carries `create-file`, a live directory token, one component,
-canonical base64 content and its SHA-256. Payloads are at most1024bytes. Canonical
+canonical base64 content and its SHA-256. Payloads are at most 65,536 bytes. Canonical
 request/digest, content encoding/digest, component and parent checks precede creation.
 The request shares session nonces, operation identities, replay rejection and the
 existing 15-operation budget. The structural codec alone does not validate the
@@ -31,7 +31,7 @@ terminates the session without automatic deletion, rollback or retry. A missing
 acknowledgment is not proof that no file was created. Existing-file collisions also
 terminate this development session; typed recoverable error replies are still pending.
 
-Nine real-native tests cover empty/1/257/1024-byte creation, independent filesystem
+Real-native tests cover empty/1/257/1024/16384/65536-byte creation, independent filesystem
 readback and native read identity, handle release, preservation of existing content,
 creation via a child whose parent token was released, and malformed content/component
 rejection before creation. Tests do not inject partial writes, disk-full, flush/close
@@ -39,7 +39,7 @@ failures, process kill or power loss. Those remain qualification work, not impli
 by a successful flush or the test count.
 
 Owned initial and child scopes now expose `createFile(component, content)`. Input
-must be a Uint8Array of at most1024bytes. The owner copies the bytes synchronously
+must be a Uint8Array of at most 65,536 bytes. The owner copies the bytes synchronously
 before encoding/hashing and dispatch, so later caller edits do not change the
 request. Acknowledgment must match request correlation, parent token/volume and
 the exact submitted length/digest before the caller receives frozen `file_created`

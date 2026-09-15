@@ -5,6 +5,7 @@ import {
   encodeWindowsBoundaryControl,
   encodeWindowsBoundarySession,
   WINDOWS_BOUNDARY_CONTROL_BYTES,
+  WINDOWS_BOUNDARY_SESSION_BYTES,
   WINDOWS_BOUNDARY_NEGOTIATION_FRAMES,
   WindowsBoundaryControlDecoder,
   WindowsBoundaryProtocolError,
@@ -43,6 +44,44 @@ const response = {
     process_id: 42,
   },
 };
+it("frames a maximum binary payload across fragmented input while keeping negotiation small", () => {
+  const result = {
+    ...request,
+    kind: "file_result",
+    session_nonce: "b".repeat(64),
+    operation_id: "read",
+    request_digest: `sha256:${"c".repeat(64)}`,
+    lease_token: "d".repeat(64),
+    byte_length: 65_536,
+    content_base64: Buffer.alloc(65_536, 255).toString("base64"),
+    content_sha256: `sha256:${"e".repeat(64)}`,
+    file_id: "f".repeat(32),
+    volume_serial_number: "a".repeat(16),
+  };
+  const frame = encodeWindowsBoundarySession(result);
+  expect(frame.length).toBeGreaterThan(WINDOWS_BOUNDARY_CONTROL_BYTES);
+  expect(frame.length).toBeLessThan(WINDOWS_BOUNDARY_SESSION_BYTES);
+  expect(() => new WindowsBoundaryControlDecoder().push(frame.subarray(0, 4))).toThrow();
+  const decoder = new WindowsBoundaryControlDecoder(true);
+  const messages = [];
+  for (let i = 0; i < frame.length; i += 997)
+    messages.push(...decoder.push(frame.subarray(i, i + 997)));
+  decoder.end();
+  expect(messages).toEqual([result]);
+  expect(() => encodeWindowsBoundarySession({ ...result, byte_length: 65_537 })).toThrow();
+});
+it("rejects oversized session frames from the header and retains the stream budget", () => {
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(WINDOWS_BOUNDARY_SESSION_BYTES + 1);
+  const decoder = new WindowsBoundaryControlDecoder(true);
+  expect(() => decoder.push(header)).toThrow(expect.objectContaining({ code: "invalid_frame" }));
+  expect(() => decoder.push(header)).toThrow(expect.objectContaining({ code: "stream_closed" }));
+  expect(() =>
+    new WindowsBoundaryControlDecoder(true).push(
+      Buffer.alloc(16 * (4 + WINDOWS_BOUNDARY_SESSION_BYTES) + 1)
+    )
+  ).toThrow(expect.objectContaining({ code: "stream_limit" }));
+});
 function raw(text: string | Buffer): Buffer {
   const bytes = Buffer.isBuffer(text) ? text : Buffer.from(text);
   const frame = Buffer.alloc(bytes.length + 4);

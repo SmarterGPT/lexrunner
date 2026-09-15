@@ -59,7 +59,7 @@ Paths must be absolute native drive paths, at most 1024 characters and 32 tail
 components. UNC/device paths, dot segments, alternate streams, trailing dots/spaces
 and reparse traversal are outside this profile. NTFS and ReFS are explicit code
 profiles; tests qualify only their actual host, not all supported filesystems.
-The existing 4096-byte frame budget also applies to escaped paths and replies.
+The 96 KiB session frame budget also applies to escaped paths and replies.
 
 These handles constrain renames; they do not freeze directory contents or supply
 CoW isolation. Sequential identity observations are not atomic namespace evidence,

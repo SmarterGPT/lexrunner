@@ -10,8 +10,8 @@ also supports the separate [directory lease profile](windows-boundary-directory.
 This uses fixed `--boundary-session 1.0.0` arguments. The original
 `--boundary-protocol 1.0.0` remains hello-only and rejects extra input. The Node
 decoder accepts session frames only when explicitly constructed in session mode;
-negotiation parsing remains closed to these messages by default. Both profiles
-retain the existing4096-byte frame and16-frame lifetime budgets. This is a bounded
+negotiation parsing remains closed to these messages by default. Negotiation retains its 4 KiB frame limit; explicit session mode allows 96 KiB
+frames and at most 16 frames (1,572,928 framed bytes per direction). This is a bounded
 development conversation, not the final unbounded worker operations service.
 
 Each `session_request` binds client/session nonces, request ID, operation ID,

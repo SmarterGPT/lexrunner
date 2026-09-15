@@ -1,8 +1,8 @@
 # Bounded native file reads
 
 The development session accepts `file_request` with operation `read-file`, a live
-directory token, one `component` and integer `max_bytes` from 0 through 1024. This
-small binary read profile fits the existing 4096-byte frame limit. It is not the
+directory token, one `component` and integer `max_bytes` from 0 through 65,536. The
+96 KiB session frame budget accommodates base64 and metadata. It is not the
 final arbitrary-size file transport or production WorkspaceBoundary adapter.
 File requests share the directory/status replay sets and 15-operation budget.
 
@@ -32,7 +32,7 @@ on the held file handle; content continuity after close is not promised. Access
 may affect OS access metadata. The file can be renamed again after the read handle
 closes, while directory/ancestor handles remain held.
 
-Eleven real native tests cover 0/1/257/1024 binary bytes, Unicode filenames, file
+Real native tests cover 0/1/257/1024/16384/65536 binary bytes, Unicode filenames, file
 handle release, missing/oversized targets, directories and junctions, stream and
 traversal rejection, and an already-open writer. Tests run on the actual ReFS host;
 they do not qualify all NTFS/ReFS versions or file-symlink/forced-close failure cases.
@@ -66,3 +66,12 @@ through the explicit client and owned scopes. Next implement
 remaining write semantics, process operations and existing verifier receipt
 mapping. Production resolution remains `helper_missing`; launch trust and full
 operation guarantees remain independently required.
+
+The 64 KiB bound covers the broker's 64 KiB attempt-marker reads and 16 KiB .git
+reads. Exclusive creation uses the same byte limit. This is an explicit bound,
+not a truncation policy: larger input or files exceeding the requested maximum
+fail without returning partial content. Session storage is fixed at 96 KiB per
+decoder, with transient base64/JSON and copied payload allocations also incurred.
+The development profile has no deployed compatibility promise; the native helper
+and Node adapter must be used from the same reviewed build. Permission mapping,
+process execution, durable receipt mapping and qualified launch remain pending.

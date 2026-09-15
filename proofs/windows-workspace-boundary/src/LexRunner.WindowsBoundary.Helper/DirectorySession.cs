@@ -17,8 +17,8 @@ internal sealed class DirectorySession : IDisposable
     var component = root.GetProperty("component").GetString()!;
     var encoded = root.GetProperty("content_base64").GetString()!;
     var contentDigest = root.GetProperty("content_sha256").GetString()!;
-    var buffer = new byte[1024];
-    if (encoded.Length > 1368 || !Convert.TryFromBase64String(encoded, buffer, out var size)) throw new InvalidDataException();
+    var buffer = new byte[Program.FileLimit];
+    if (encoded.Length > 4 * ((Program.FileLimit + 2) / 3) || !Convert.TryFromBase64String(encoded, buffer, out var size)) throw new InvalidDataException();
     var content = buffer.AsSpan(0, size).ToArray();
     if (Convert.ToBase64String(content) != encoded ||
         "sha256:" + Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant() != contentDigest ||
@@ -75,7 +75,7 @@ internal sealed class DirectorySession : IDisposable
     var digest = root.GetProperty("request_digest").GetString()!;
     var token = root.GetProperty("lease_token").GetString()!;
     var component = root.GetProperty("component").GetString()!;
-    if (!root.GetProperty("max_bytes").TryGetInt32(out var maximum) || maximum is < 0 or > 1024 ||
+    if (!root.GetProperty("max_bytes").TryGetInt32(out var maximum) || maximum is < 0 or > Program.FileLimit ||
         !Program.IsId(request) || !Program.IsId(operation) ||
         root.GetProperty("protocol_version").GetString() != "1.0.0" ||
         root.GetProperty("operation").GetString() != "read-file" ||

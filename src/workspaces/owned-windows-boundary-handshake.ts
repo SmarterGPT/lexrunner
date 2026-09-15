@@ -13,6 +13,7 @@ import {
   encodeWindowsBoundaryControl,
   encodeWindowsBoundarySession,
   WINDOWS_BOUNDARY_PROTOCOL_VERSION,
+  WINDOWS_BOUNDARY_FILE_BYTES,
   WindowsBoundaryControlDecoder,
   WindowsBoundaryHelloResult,
   WindowsBoundaryDirectoryResult,
@@ -475,14 +476,16 @@ async function runOwnedWindowsBoundary(
           const child = ["open-child", "try-open-child", "create-child"].includes(operation);
           if (
             operation === "create-file" &&
-            (!(content instanceof Uint8Array) || content.byteLength > 1024)
+            (!(content instanceof Uint8Array) || content.byteLength > WINDOWS_BOUNDARY_FILE_BYTES)
           ) {
             fail("work_failed");
             throw new Error("Invalid creation content");
           }
           if (
             operation === "read-file" &&
-            (!Number.isSafeInteger(maxBytes) || maxBytes! < 0 || maxBytes! > 1024)
+            (!Number.isSafeInteger(maxBytes) ||
+              maxBytes! < 0 ||
+              maxBytes! > WINDOWS_BOUNDARY_FILE_BYTES)
           ) {
             fail("work_failed");
             throw new Error("Invalid read bound");
