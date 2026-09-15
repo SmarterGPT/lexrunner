@@ -11,8 +11,9 @@ exposes status; a scoped owned Node adapter and an explicit test client exercise
 Native [bounded reads](../architecture/windows-boundary-file-read.md) are tested
 through the explicit client and owned Node scopes. Native
 [exclusive file creation](../architecture/windows-boundary-file-create.md) uses
-the explicit client and owned Node scopes. General writes, process
-execution and production readiness remain pending. The production
+the explicit client and owned Node scopes. [Bound process execution](../architecture/windows-boundary-process.md)
+is available through the explicit client. General writes, owned Node process invocation
+and production readiness remain pending. The production
 resolver remains unavailable.
 
 From `proofs/windows-workspace-boundary` (so global.json selects the pinned SDK):

@@ -5,6 +5,105 @@ internal sealed class DirectorySession : IDisposable
 {
   private readonly Dictionary<string, DirectoryLease> leases = [];
 
+  internal byte[] RunProcess(JsonElement root, byte[] bytes, string nonce, string sessionNonce,
+      HashSet<string> requests, HashSet<string> operations)
+  {
+    var fields = root.EnumerateObject().ToArray();
+    if (fields.Length != 14 || fields.Any(p => p.Value.ValueKind != (p.Name == "args" ? JsonValueKind.Array :
+        p.Name is "timeout_ms" or "max_output_bytes" ? JsonValueKind.Number : JsonValueKind.String)))
+      throw new InvalidDataException();
+    var request = root.GetProperty("request_id").GetString()!;
+    var operation = root.GetProperty("operation_id").GetString()!;
+    var digest = root.GetProperty("request_digest").GetString()!;
+    var token = root.GetProperty("lease_token").GetString()!;
+    var executable = root.GetProperty("executable").GetString()!;
+    var timeout = root.GetProperty("timeout_ms").GetInt32();
+    var maximum = root.GetProperty("max_output_bytes").GetInt32();
+    var args = root.GetProperty("args");
+    if (!Program.IsId(request) || !Program.IsId(operation) || args.GetArrayLength() > 64 ||
+        executable.Length > 1024 || root.GetProperty("protocol_version").GetString() != "1.0.0" ||
+        root.GetProperty("operation").GetString() != "run-process" ||
+        root.GetProperty("environment").GetString() != "inherit-helper" ||
+        root.GetProperty("client_nonce").GetString() != nonce ||
+        root.GetProperty("session_nonce").GetString() != sessionNonce) throw new InvalidDataException();
+    void Body(Utf8JsonWriter writer, bool includeDigest)
+    {
+      writer.WriteStartArray("args");
+      foreach (var arg in args.EnumerateArray())
+      {
+        if (arg.ValueKind != JsonValueKind.Object || arg.EnumerateObject().Any(p =>
+            p.Value.ValueKind != (p.Name == "relative_to_cwd" ?
+              (p.Value.ValueKind == JsonValueKind.True ? JsonValueKind.True : JsonValueKind.False) : JsonValueKind.String)))
+          throw new InvalidDataException();
+        writer.WriteStartObject();
+        var kind = arg.GetProperty("kind").GetString();
+        writer.WriteString("kind", kind);
+        if (kind == "literal") writer.WriteString("value", arg.GetProperty("value").GetString());
+        else if (kind == "directory")
+        {
+          writer.WriteString("lease_token", arg.GetProperty("lease_token").GetString());
+          writer.WriteString("prefix", arg.GetProperty("prefix").GetString());
+          writer.WriteBoolean("relative_to_cwd", arg.GetProperty("relative_to_cwd").GetBoolean());
+        }
+        else throw new InvalidDataException();
+        writer.WriteEndObject();
+      }
+      writer.WriteEndArray();
+      writer.WriteString("client_nonce", nonce);
+      writer.WriteString("environment", "inherit-helper");
+      writer.WriteString("executable", executable);
+      writer.WriteString("kind", "process_request");
+      writer.WriteString("lease_token", token);
+      writer.WriteNumber("max_output_bytes", maximum);
+      writer.WriteString("operation", "run-process");
+      writer.WriteString("operation_id", operation);
+      writer.WriteString("protocol_version", "1.0.0");
+      if (includeDigest) writer.WriteString("request_digest", digest);
+      writer.WriteString("request_id", request);
+      writer.WriteString("session_nonce", sessionNonce);
+      writer.WriteNumber("timeout_ms", timeout);
+    }
+    var expected = "sha256:" + Convert.ToHexString(SHA256.HashData(Program.Json(w => Body(w, false)))).ToLowerInvariant();
+    if (digest != expected || !bytes.AsSpan().SequenceEqual(Program.Json(w => Body(w, true))) ||
+        !requests.Add(request) || !operations.Add(operation) || !leases.TryGetValue(token, out var cwd))
+      throw new InvalidDataException();
+    var bound = new HashSet<DirectoryLease> { cwd };
+    var rendered = args.EnumerateArray().Select(arg =>
+    {
+      if (arg.GetProperty("kind").GetString() == "literal") return arg.GetProperty("value").GetString()!;
+      if (!leases.TryGetValue(arg.GetProperty("lease_token").GetString()!, out var directory))
+        throw new InvalidDataException();
+      var prefix = arg.GetProperty("prefix").GetString()!;
+      if (prefix.Length > 64 || prefix.Any(c => c < 32 || c is '\\' or '/' or '"')) throw new InvalidDataException();
+      if (arg.GetProperty("relative_to_cwd").GetBoolean() && directory != cwd) throw new InvalidDataException();
+      bound.Add(directory);
+      return prefix + (arg.GetProperty("relative_to_cwd").GetBoolean() ? "." : directory.Leaf.Path);
+    }).ToArray();
+    foreach (var directory in bound) directory.AssertCurrent();
+    var result = NativeProcess.Run(executable, rendered, cwd.Leaf.Path, timeout, maximum);
+    foreach (var directory in bound) directory.AssertCurrent();
+    return Program.Json(writer =>
+    {
+      writer.WriteString("client_nonce", nonce);
+      writer.WriteNumber("duration_ms", result.DurationMs);
+      writer.WriteNumber("exit_code", result.ExitCode);
+      writer.WriteBoolean("job_empty", true);
+      writer.WriteString("kind", "process_result");
+      writer.WriteString("lease_token", token);
+      writer.WriteString("operation_id", operation);
+      writer.WriteNumber("process_id", result.ProcessId);
+      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("request_digest", digest);
+      writer.WriteString("request_id", request);
+      writer.WriteString("session_nonce", sessionNonce);
+      writer.WriteString("status", result.Status);
+      writer.WriteString("stderr_base64", Convert.ToBase64String(result.Stderr));
+      writer.WriteBoolean("stderr_truncated", result.StderrTruncated);
+      writer.WriteString("stdout_base64", Convert.ToBase64String(result.Stdout));
+      writer.WriteBoolean("stdout_truncated", result.StdoutTruncated);
+    });
+  }
+
   internal byte[] CreateFile(JsonElement root, byte[] bytes, string nonce, string sessionNonce,
       HashSet<string> requests, HashSet<string> operations)
   {

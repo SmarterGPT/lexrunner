@@ -88,13 +88,13 @@ async function setup() {
       child.kill();
     }
   });
-  async function send(message: unknown) {
+  async function send(message: unknown, timeoutMs = 2000) {
     const frame = encodeWindowsBoundarySession(message);
     return await new Promise<any>((resolve, reject) => {
       const timer = setTimeout(() => {
         child.kill();
         reject(new Error("helper request timed out"));
-      }, 2000);
+      }, timeoutMs);
       pending = {
         resolve: (value) => {
           clearTimeout(timer);
@@ -241,8 +241,254 @@ async function setup() {
     });
     return reply;
   }
-  return { root, parent, directory, child, closed, operation, read, create };
+  async function run(
+    token: string,
+    args: unknown[],
+    options: { timeout_ms?: number; max_output_bytes?: number; executable?: string } = {}
+  ) {
+    const body = {
+      kind: "process_request",
+      protocol_version: "1.0.0",
+      operation: "run-process",
+      client_nonce: nonce,
+      session_nonce: hello.session_nonce,
+      request_id: randomUUID(),
+      operation_id: randomUUID(),
+      lease_token: token,
+      args,
+      executable: process.execPath,
+      environment: "inherit-helper",
+      timeout_ms: 1000,
+      max_output_bytes: 256 * 1024,
+      ...options,
+    };
+    const digest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
+    exchange.reserve(
+      { request_id: body.request_id, operation_id: body.operation_id, request_digest: digest },
+      body.timeout_ms + 8000
+    );
+    const reply = await send({ ...body, request_digest: digest }, body.timeout_ms + 8000);
+    expect(reply.kind).toBe("process_result");
+    expect(
+      exchange.correlate({
+        client_nonce: reply.client_nonce,
+        session_nonce: reply.session_nonce,
+        request_id: reply.request_id,
+        operation_id: reply.operation_id,
+        request_digest: reply.request_digest,
+      }).correlated
+    ).toBe(true);
+    expect(reply.lease_token).toBe(token);
+    expect(reply.job_empty).toBe(true);
+    for (const field of ["stdout", "stderr"]) {
+      const content = Buffer.from(reply[`${field}_base64`], "base64");
+      expect(content.length).toBeLessThanOrEqual(body.max_output_bytes);
+      expect(content.toString("base64")).toBe(reply[`${field}_base64`]);
+    }
+    return {
+      ...reply,
+      stdout: Buffer.from(reply.stdout_base64, "base64"),
+      stderr: Buffer.from(reply.stderr_base64, "base64"),
+    };
+  }
+  return { root, parent, directory, child, closed, operation, read, create, run };
 }
+
+const literal = (value: string) => ({ kind: "literal", value });
+
+describe.skipIf(process.platform !== "win32" || !executable)(
+  "native bound process execution",
+  () => {
+    it.skipIf(!process.env.LEXRUNNER_TEST_GIT)(
+      "runs real Git initialization and a read through held cwd",
+      async () => {
+        const f = await setup();
+        const root = await f.operation("acquire", f.directory);
+        const options = { executable: process.env.LEXRUNNER_TEST_GIT! };
+        const initialized = await f.run(
+          root.lease_token,
+          [
+            literal("init"),
+            literal("--quiet"),
+            { kind: "directory", lease_token: root.lease_token, prefix: "", relative_to_cwd: true },
+          ],
+          options
+        );
+        expect(initialized.status).toBe("exited");
+        const observed = await f.run(
+          root.lease_token,
+          [literal("rev-parse"), literal("--is-inside-work-tree")],
+          options
+        );
+        expect(observed.status).toBe("exited");
+        expect(observed.stdout.toString().trim()).toBe("true");
+        await f.operation("release", root.lease_token);
+      }
+    );
+    it("reaps a lingering ordinary descendant after the direct command exits", async () => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      const script =
+        "const c=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});console.log(c.pid);c.unref()";
+      const result = await f.run(root.lease_token, [literal("-e"), literal(script)]);
+      expect(result.status).toBe("exited");
+      const pid = Number(result.stdout.toString().trim());
+      expect(pid).toBeGreaterThan(0);
+      expect(() => process.kill(pid, 0)).toThrow();
+      await f.operation("release", root.lease_token);
+    });
+    it("helper loss terminates its job without a completion acknowledgment", async () => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      const marker = path.join(f.directory, "pid");
+      const script =
+        "require('node:fs').writeFileSync('pid',String(process.pid));setInterval(()=>{},1000)";
+      const running = f.run(root.lease_token, [literal("-e"), literal(script)], {
+        timeout_ms: 5000,
+      });
+      const rejection = expect(running).rejects.toThrow("helper closed");
+      let pid = 0;
+      for (let i = 0; i < 100 && !pid; i++) {
+        try {
+          pid = Number(await readFile(marker, "utf8"));
+        } catch {}
+        if (!pid) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(pid).toBeGreaterThan(0);
+      await expect(rename(f.parent, f.parent + "-moved")).rejects.toThrow();
+      f.child.kill();
+      await f.closed;
+      await rejection;
+      let alive = true;
+      for (let i = 0; i < 100 && alive; i++) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          alive = false;
+        }
+        if (alive) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(alive).toBe(false);
+      // Helper loss has no release acknowledgment. Process disappearance is not
+      // proof that every filesystem lock has already finished kernel cleanup.
+      await expect
+        .poll(
+          async () => {
+            try {
+              await rename(f.parent, f.parent + "-released");
+              return true;
+            } catch (error) {
+              if (!["EPERM", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? ""))
+                throw error;
+              return false;
+            }
+          },
+          { timeout: 2000, interval: 10 }
+        )
+        .toBe(true);
+    });
+    it("preserves cwd, empty/quoted/backslash/Unicode argv and capability-rendered arguments", async () => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      const values = ["", "hello world", 'a"b', "ending\\", "café"];
+      const result = await f.run(root.lease_token, [
+        literal("-e"),
+        literal("console.log(JSON.stringify({cwd:process.cwd(),args:process.argv.slice(1)}))"),
+        literal("--"),
+        ...values.map(literal),
+        {
+          kind: "directory",
+          lease_token: root.lease_token,
+          prefix: "--git-dir=",
+          relative_to_cwd: true,
+        },
+      ]);
+      expect(result.status).toBe("exited");
+      expect(JSON.parse(result.stdout.toString())).toEqual({
+        cwd: f.directory,
+        args: [...values, "--git-dir=."],
+      });
+      await f.operation("release", root.lease_token);
+    });
+    it("receives stdin EOF without inheriting the protocol pipe", async () => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      const result = await f.run(root.lease_token, [
+        literal("-e"),
+        literal("process.stdin.resume();process.stdin.on('end',()=>console.log('eof'))"),
+      ]);
+      expect(result.status).toBe("exited");
+      expect(result.stdout.toString()).toBe("eof\n");
+      await f.operation("release", root.lease_token);
+    });
+    it("captures 256KiB independently from both streams", async () => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      const result = await f.run(root.lease_token, [
+        literal("-e"),
+        literal(
+          "process.stdout.write(Buffer.alloc(262144,65));process.stderr.write(Buffer.alloc(262144,66))"
+        ),
+      ]);
+      expect(result.status).toBe("exited");
+      expect(result.stdout).toEqual(Buffer.alloc(262144, 65));
+      expect(result.stderr).toEqual(Buffer.alloc(262144, 66));
+      expect(result.stdout_truncated).toBe(false);
+      expect(result.stderr_truncated).toBe(false);
+      await f.operation("release", root.lease_token);
+    });
+    it.each(["stdout", "stderr"])(
+      "bounds overflowing %s and observes an empty job",
+      async (stream) => {
+        const f = await setup();
+        const root = await f.operation("acquire", f.directory);
+        const result = await f.run(
+          root.lease_token,
+          [
+            literal("-e"),
+            literal(`setInterval(()=>process.${stream}.write(Buffer.alloc(8192)),1)`),
+          ],
+          { max_output_bytes: 1024 }
+        );
+        expect(result.status).toBe("output_limit");
+        expect(result[stream].length).toBe(1024);
+        expect(result[`${stream}_truncated`]).toBe(true);
+        await f.operation("release", root.lease_token);
+      }
+    );
+    it("reports nonzero exit as a command failure without losing the session", async () => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      const result = await f.run(root.lease_token, [literal("-e"), literal("process.exit(7)")]);
+      expect(result.status).toBe("nonzero_exit");
+      expect(result.exit_code).toBe(7);
+      await f.operation("release", root.lease_token);
+    });
+    it("times out a command and retains directory release", async () => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      const result = await f.run(
+        root.lease_token,
+        [literal("-e"), literal("setInterval(()=>{},1000)")],
+        { timeout_ms: 100 }
+      );
+      expect(result.status).toBe("timeout");
+      await f.operation("release", root.lease_token);
+      await rename(f.parent, f.parent + "-released");
+    });
+    it("rejects a foreign argument capability before starting a command", async () => {
+      const f = await setup();
+      const root = await f.operation("acquire", f.directory);
+      await expect(
+        f.run(root.lease_token, [
+          { kind: "directory", lease_token: "0".repeat(64), prefix: "", relative_to_cwd: false },
+        ])
+      ).rejects.toThrow();
+      await f.closed;
+      expect(f.child.exitCode).toBe(3);
+    });
+  }
+);
 
 describe.skipIf(process.platform !== "win32" || !executable)("real native directory lease", () => {
   it("rejects one extra decoded byte even when its base64 has the maximum encoded length", async () => {

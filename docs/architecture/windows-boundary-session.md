@@ -11,7 +11,8 @@ This uses fixed `--boundary-session 1.0.0` arguments. The original
 `--boundary-protocol 1.0.0` remains hello-only and rejects extra input. The Node
 decoder accepts session frames only when explicitly constructed in session mode;
 negotiation parsing remains closed to these messages by default. Negotiation retains its 4 KiB frame limit; explicit session mode allows 96 KiB
-frames and at most 16 frames (1,572,928 framed bytes per direction). This is a bounded
+requests/ordinary replies, and768KiB process-result frames. The decoder permits
+at most16 frames (12,582,976 framed bytes); native requests keep the96KiB limit. This is a bounded
 development conversation, not the final unbounded worker operations service.
 
 Each `session_request` binds client/session nonces, request ID, operation ID,
@@ -48,3 +49,7 @@ The directory profile is also available through a scoped owned Node adapter;
 see its linked contract for deadlines, failure disposition and remaining operations.
 Do not advertise WorkspaceBoundary readiness
 or route the verifier based on this status-only development probe.
+
+[Bound process execution](windows-boundary-process.md) is available through the
+explicit native client. Owned Node process invocation and durable receipt mapping
+remain pending; a process-result frame alone does not activate production routing.

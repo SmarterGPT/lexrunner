@@ -86,7 +86,7 @@ internal static class Program
     }
     catch (Exception error) when (error is IOException or InvalidDataException or JsonException or System.ComponentModel.Win32Exception or
         DecoderFallbackException or InvalidOperationException or KeyNotFoundException or
-        UnauthorizedAccessException)
+        UnauthorizedAccessException or ArgumentException or AggregateException or FormatException or OverflowException)
     {
       Console.Error.WriteLine("boundary negotiation rejected");
       return 3;
@@ -115,14 +115,16 @@ internal static class Program
       var root = document.RootElement;
       if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException();
       if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String &&
-          kind.GetString() is "directory_request" or "file_request" or "file_create_request")
+          kind.GetString() is "directory_request" or "file_request" or "file_create_request" or "process_request")
       {
-        var directoryReply = kind.GetString() == "file_create_request" ?
+        var directoryReply = kind.GetString() == "process_request" ?
+          directories.RunProcess(root, bytes, nonce, sessionNonce, requests, operations) :
+          kind.GetString() == "file_create_request" ?
           directories.CreateFile(root, bytes, nonce, sessionNonce, requests, operations) :
           kind.GetString() == "file_request" ?
           directories.ReadFile(root, bytes, nonce, sessionNonce, requests, operations) :
           directories.Execute(root, bytes, nonce, sessionNonce, requests, operations);
-        if (directoryReply.Length > SessionLimit) throw new InvalidDataException();
+        if (directoryReply.Length > (kind.GetString() == "process_request" ? 768 * 1024 : SessionLimit)) throw new InvalidDataException();
         BinaryPrimitives.WriteUInt32BigEndian(header, (uint)directoryReply.Length);
         output.Write(header);
         output.Write(directoryReply);

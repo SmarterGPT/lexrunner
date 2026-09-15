@@ -9,6 +9,22 @@ export const WINDOWS_BOUNDARY_CONTROL_BYTES = 4_096;
 export const WINDOWS_BOUNDARY_NEGOTIATION_FRAMES = 16;
 export const WINDOWS_BOUNDARY_FILE_BYTES = 65_536;
 export const WINDOWS_BOUNDARY_SESSION_BYTES = 98_304;
+export const WINDOWS_BOUNDARY_PROCESS_BYTES = 768 * 1024;
+const ProcessArgument = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("literal"),
+    value: z
+      .string()
+      .max(2048)
+      .refine((s) => !s.includes("\0")),
+  }),
+  z.strictObject({
+    kind: z.literal("directory"),
+    lease_token: z.string().regex(/^[a-f0-9]{64}$/u),
+    prefix: z.string().max(64),
+    relative_to_cwd: z.boolean(),
+  }),
+]);
 const Nonce = z.string().regex(/^[a-f0-9]{64}$/u);
 const RequestId = z
   .string()
@@ -137,6 +153,39 @@ export const WindowsBoundaryFileCreateResult = z.strictObject({
   file_id: WindowsBoundaryFileResult.shape.file_id,
   volume_serial_number: WindowsBoundaryFileResult.shape.volume_serial_number,
 });
+export const WindowsBoundaryProcessRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("process_request"),
+  operation: z.literal("run-process"),
+  lease_token: Nonce,
+  executable: z.string().min(1).max(1024),
+  args: z.array(ProcessArgument).max(64),
+  environment: z.literal("inherit-helper"),
+  timeout_ms: z.number().int().min(1).max(30_000),
+  max_output_bytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(256 * 1024),
+});
+const ProcessOutput = z
+  .string()
+  .max(4 * Math.ceil((256 * 1024) / 3))
+  .regex(/^[A-Za-z0-9+/]*={0,2}$/u);
+export const WindowsBoundaryProcessResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("process_result"),
+  lease_token: Nonce,
+  process_id: z.number().int().positive().max(0xffffffff),
+  exit_code: z.number().int().min(0).max(0xffffffff),
+  status: z.enum(["exited", "nonzero_exit", "timeout", "output_limit"]),
+  job_empty: z.literal(true),
+  duration_ms: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  stdout_base64: ProcessOutput,
+  stderr_base64: ProcessOutput,
+  stdout_truncated: z.boolean(),
+  stderr_truncated: z.boolean(),
+});
 const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryHello,
   WindowsBoundaryHelloResult,
@@ -148,6 +197,8 @@ const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryFileResult,
   WindowsBoundaryFileCreateRequest,
   WindowsBoundaryFileCreateResult,
+  WindowsBoundaryProcessRequest,
+  WindowsBoundaryProcessResult,
 ]);
 type SessionMessage = z.infer<typeof SessionMessage>;
 
@@ -176,7 +227,12 @@ function encodeFrame(value: unknown, sessionMode: boolean): Buffer {
   const bytes = Buffer.from(canonicalJSONStringify(parsed.data), "utf8");
   if (
     bytes.length === 0 ||
-    bytes.length > (sessionMode ? WINDOWS_BOUNDARY_SESSION_BYTES : WINDOWS_BOUNDARY_CONTROL_BYTES)
+    bytes.length >
+      (sessionMode
+        ? parsed.data.kind === "process_result"
+          ? WINDOWS_BOUNDARY_PROCESS_BYTES
+          : WINDOWS_BOUNDARY_SESSION_BYTES
+        : WINDOWS_BOUNDARY_CONTROL_BYTES)
   ) {
     throw new WindowsBoundaryProtocolError("invalid_frame");
   }
@@ -186,14 +242,14 @@ function encodeFrame(value: unknown, sessionMode: boolean): Buffer {
   return frame;
 }
 
-/** Fixed storage; malformed input and budget exhaustion permanently close the decoder. */
+/** Bounded storage; malformed input and budget exhaustion permanently close the decoder. */
 export class WindowsBoundaryControlDecoder {
   constructor(private readonly sessionMode = false) {}
   private readonly frameLimit = this.sessionMode
-    ? WINDOWS_BOUNDARY_SESSION_BYTES
+    ? WINDOWS_BOUNDARY_PROCESS_BYTES
     : WINDOWS_BOUNDARY_CONTROL_BYTES;
   private readonly header = Buffer.alloc(4);
-  private readonly payload = Buffer.alloc(this.frameLimit);
+  private payload = Buffer.alloc(WINDOWS_BOUNDARY_CONTROL_BYTES);
   private headerUsed = 0;
   private payloadUsed = 0;
   private payloadLength = 0;
@@ -223,6 +279,8 @@ export class WindowsBoundaryControlDecoder {
           return this.fail("invalid_frame");
         }
         if (this.frames >= WINDOWS_BOUNDARY_NEGOTIATION_FRAMES) return this.fail("stream_limit");
+        if (this.payload.length < this.payloadLength)
+          this.payload = Buffer.alloc(this.payloadLength);
       }
       const count = Math.min(this.payloadLength - this.payloadUsed, chunk.byteLength - offset);
       this.payload.set(chunk.subarray(offset, offset + count), this.payloadUsed);
@@ -233,6 +291,12 @@ export class WindowsBoundaryControlDecoder {
         const bytes = this.payload.subarray(0, this.payloadLength);
         const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
         const parsed = (this.sessionMode ? SessionMessage : Message).parse(JSON.parse(text));
+        if (
+          this.sessionMode &&
+          parsed.kind !== "process_result" &&
+          this.payloadLength > WINDOWS_BOUNDARY_SESSION_BYTES
+        )
+          return this.fail("invalid_frame");
         // Reject duplicate keys, alternate encodings/BOM and noncanonical JSON on the wire.
         if (!bytes.equals(Buffer.from(canonicalJSONStringify(parsed), "utf8"))) {
           return this.fail("invalid_frame");

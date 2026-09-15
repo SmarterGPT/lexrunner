@@ -6,6 +6,7 @@ import {
   encodeWindowsBoundarySession,
   WINDOWS_BOUNDARY_CONTROL_BYTES,
   WINDOWS_BOUNDARY_SESSION_BYTES,
+  WINDOWS_BOUNDARY_PROCESS_BYTES,
   WINDOWS_BOUNDARY_NEGOTIATION_FRAMES,
   WindowsBoundaryControlDecoder,
   WindowsBoundaryProtocolError,
@@ -72,13 +73,13 @@ it("frames a maximum binary payload across fragmented input while keeping negoti
 });
 it("rejects oversized session frames from the header and retains the stream budget", () => {
   const header = Buffer.alloc(4);
-  header.writeUInt32BE(WINDOWS_BOUNDARY_SESSION_BYTES + 1);
+  header.writeUInt32BE(WINDOWS_BOUNDARY_PROCESS_BYTES + 1);
   const decoder = new WindowsBoundaryControlDecoder(true);
   expect(() => decoder.push(header)).toThrow(expect.objectContaining({ code: "invalid_frame" }));
   expect(() => decoder.push(header)).toThrow(expect.objectContaining({ code: "stream_closed" }));
   expect(() =>
     new WindowsBoundaryControlDecoder(true).push(
-      Buffer.alloc(16 * (4 + WINDOWS_BOUNDARY_SESSION_BYTES) + 1)
+      Buffer.alloc(16 * (4 + WINDOWS_BOUNDARY_PROCESS_BYTES) + 1)
     )
   ).toThrow(expect.objectContaining({ code: "stream_limit" }));
 });

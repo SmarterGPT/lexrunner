@@ -70,8 +70,8 @@ operation guarantees remain independently required.
 The 64 KiB bound covers the broker's 64 KiB attempt-marker reads and 16 KiB .git
 reads. Exclusive creation uses the same byte limit. This is an explicit bound,
 not a truncation policy: larger input or files exceeding the requested maximum
-fail without returning partial content. Session storage is fixed at 96 KiB per
-decoder, with transient base64/JSON and copied payload allocations also incurred.
+fail without returning partial content. Session storage starts at4KiB and grows to the bounded frame size (up to768KiB
+for process results), with transient base64/JSON and copied payload allocations also incurred.
 The development profile has no deployed compatibility promise; the native helper
 and Node adapter must be used from the same reviewed build. Permission mapping,
 process execution, durable receipt mapping and qualified launch remain pending.
