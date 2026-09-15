@@ -6,6 +6,34 @@ It does not hide another worker's branch, restrict ordinary caller filesystem ac
 or establish hostile-agent containment. Creation is an operation within a supplied
 live directory scope, not a new approval ceremony.
 
+## Creation permissions
+
+The Attempt marker is identity metadata, not a credential or authorization grant.
+The broker requests exclusive creation using backend-default permissions; it no
+longer supplies a POSIX `0600` requirement. Linux still defaults to `0600` (subject
+to its existing operating-system creation semantics). This change does not alter
+the Linux backend or existing files.
+
+The native Windows helper supplies null security attributes to `CreateFileW`.
+Windows therefore applies the default security descriptor with ACL inheritance
+from the parent directory, as described in Microsoft's
+[File Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights).
+The helper does not install or rewrite ACLs, guarantee a particular reader set,
+or claim equivalence to POSIX `0600`. Existing workspace permissions still apply;
+this operation neither broadens them nor requires read isolation between workers.
+The no-sharing flag applies only while the short-lived creation handle is open;
+it is not a persistent read-access policy.
+
+The portable write request's optional `mode` is an explicit POSIX creation request.
+A future Windows WorkspaceBoundary adapter must reject an explicit unsupported
+mode before creating a file; it must not silently discard it. The development
+helper exposes no mode argument. Supporting the broker's default case does not
+require implementing POSIX-mode emulation or another ACL-management surface.
+Permission observations do not authenticate marker contents: existing attempt
+matching, held-directory identity and independent verification remain necessary.
+
+## Bounded operation
+
 `file_create_request` carries `create-file`, a live directory token, one component,
 canonical base64 content and its SHA-256. Payloads are at most 65,536 bytes. Canonical
 request/digest, content encoding/digest, component and parent checks precede creation.

@@ -835,7 +835,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
         directory: gitDirectory,
         component: ATTEMPT_MARKER_FILE,
         content: Buffer.from(`${JSON.stringify(marker)}\n`, "utf8"),
-        mode: 0o600,
+        // Identity metadata uses the backend's creation permissions, not a secrecy policy.
         exclusive: true,
       });
       if (!written.ok) throw new Error(written.error.message);

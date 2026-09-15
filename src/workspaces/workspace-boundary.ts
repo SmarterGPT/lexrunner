@@ -407,6 +407,11 @@ export interface WorkspaceBoundaryWriteFileRequest {
   readonly directory: WorkspaceBoundaryDirectoryCapability;
   readonly component: string;
   readonly content: Uint8Array;
+  /**
+   * Explicit POSIX creation mode, where supported; not a portable ACL or secrecy claim.
+   * Omission uses the backend's documented creation defaults. A backend that cannot
+   * honor an explicit mode must reject it rather than silently treating it as a default.
+   */
   readonly mode?: number;
   readonly exclusive?: boolean;
 }
