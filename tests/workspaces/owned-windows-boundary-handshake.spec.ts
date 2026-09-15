@@ -45,7 +45,9 @@ const options = () => ({
   expectedArtifactSha256: `sha256:${"c".repeat(64)}`,
   architecture: process.arch as "x64" | "arm64",
   handshakeTimeoutMs: 2_000,
-  closeTimeoutMs: 100,
+  // Real peers need scheduling room to report natural exit on a loaded Windows host.
+  // Tests of forced cleanup select their own short deadline below.
+  closeTimeoutMs: 1_000,
   killTimeoutMs: 1_000,
 });
 afterEach(() => {
@@ -375,7 +377,6 @@ describe("owned Windows boundary development handshake", () => {
     ["partial", "protocol_error"],
     ["garbage", "protocol_error"],
     ["early-exit", "child_exit"],
-    ["nonzero-exit", "child_exit"],
     ["stderr-overflow", "output_limit"],
   ])("rejects %s and waits for cleanup", async (mode, reason) => {
     state.mode = mode;
@@ -387,9 +388,27 @@ describe("owned Windows boundary development handshake", () => {
       cleanup: { disposition: "closed", processExited: true },
     });
   });
+  it("rejects a natural nonzero exit without requesting termination", async () => {
+    state.mode = "nonzero-exit";
+    expect(await probeOwnedWindowsBoundaryHandshake(options())).toMatchObject({
+      outcome: "failed",
+      reason: "child_exit",
+      verification: "not_performed",
+      helloMatched: true,
+      cleanup: {
+        disposition: "closed",
+        processExited: true,
+        terminationRequested: false,
+        exitCode: 7,
+        signal: null,
+      },
+    });
+  });
   it("retains a matched hello as evidence but fails if graceful shutdown needs termination", async () => {
     state.mode = "ignore-eof";
-    expect(await probeOwnedWindowsBoundaryHandshake(options())).toMatchObject({
+    expect(
+      await probeOwnedWindowsBoundaryHandshake({ ...options(), closeTimeoutMs: 100 })
+    ).toMatchObject({
       outcome: "failed",
       reason: "cleanup_forced",
       helloMatched: true,
