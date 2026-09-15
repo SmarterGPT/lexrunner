@@ -96,3 +96,26 @@ Process operations and receipt projection are implemented. Next complete remaini
 write semantics, full adapter integration and durable delivery through the existing verifier.
 General overwrite is not implemented by this create operation. Runtime choice and
 production resolver readiness remain unchanged; `helper_missing` remains explicit.
+
+## Portable creation receipt projection
+
+`projectOwnedWindowsFileCreationReceipt` maps recorded owned creation observations
+into the existing `write-owned-file` result/receipt shape. Validated creation results
+now retain request ID, operation ID and request digest; projection checks those
+against the attempt as well as length, content digest, file identity and volume.
+This prevents pairing another operation's result merely because its bytes match.
+
+An acknowledged create is `completed` with `mutation: true` and
+`durability: not_requested`: the current native operation offers bounded flush and
+readback observations, not the portable crash-durability contract. Consumers requiring
+committed durability must not treat this receipt as satisfying that requirement.
+An unanswered attempt is `indeterminate`, with indeterminate durability, unknown
+effects and no automatic retry. It does not assert that dispatch or creation occurred.
+
+This pure development projection accepts explicit caller-supplied lease and time
+association; it does not authenticate those associations or persist anything. Retain
+the source attempt/result with the projected receipt: the existing portable receipt
+binds the parent directory identity but does not encode file content identity. The
+projection neither grants live directory capability nor promises later byte continuity.
+Complete write-option semantics, directory-method mapping, lifecycle binding and
+durable delivery remain outstanding. Production selection is unchanged.

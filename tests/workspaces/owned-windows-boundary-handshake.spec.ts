@@ -1,3 +1,4 @@
+import { WindowsBoundaryControlDecoder } from "../../src/workspaces/windows-boundary-protocol.js";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -93,10 +94,12 @@ describe("owned Windows boundary development handshake", () => {
   ])("preserves unknown process outcome after %s reply", async (mode) => {
     state.mode = `directory-process-${mode}`;
     let delivered = false;
+    let snapshots!: () => readonly import("../../src/workspaces/owned-windows-boundary-handshake.js").OwnedWindowsProcessAttempt[];
     const report = await withOwnedWindowsBoundaryDirectory(
       options(),
       { path: "D:\\fixture", workTimeoutMs: 15_000 },
       async (scope) => {
+        snapshots = scope.snapshotProcessAttempts;
         await scope.runProcess({
           executable: "C:\\fixture.exe",
           args: [],
@@ -108,6 +111,7 @@ describe("owned Windows boundary development handshake", () => {
       }
     );
     expect(delivered).toBe(false);
+    expect(snapshots()).toEqual(report.processAttempts);
     expect(report).toMatchObject({ outcome: "failed", processAttempts: [{ acknowledged: false }] });
     expect(state.write).toHaveBeenCalledTimes(3);
     expect(Number.isFinite(Date.parse(report.processAttempts![0].observedAt!))).toBe(true);
@@ -326,6 +330,102 @@ describe("owned Windows boundary development handshake", () => {
       cleanup: { exitCode: 0 },
     });
     expect(state.write).toHaveBeenCalledTimes(3);
+  });
+  it("retains a late creation acknowledgment during deadline grace, then releases", async () => {
+    state.mode = "directory-create-deadline-delay";
+    let created: unknown;
+    let laterRejected = false;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 50, deadlineGraceMs: 1_000 },
+      async (scope) => {
+        created = await scope.createFile("marker", Buffer.from("x"));
+        try {
+          await scope.assertCurrent();
+        } catch {
+          laterRejected = true;
+        }
+      }
+    );
+    expect(created).toMatchObject({ kind: "file_created" });
+    expect(laterRejected).toBe(true);
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "work_timeout",
+      deadline: { graceMs: 1_000, graceExpired: false },
+      fileCreations: [{ acknowledged: true }],
+      directory: { releaseAcknowledged: true },
+    });
+    expect(state.write).toHaveBeenCalledTimes(4); // hello, acquire, create, release
+  });
+  it("rejects a release acknowledgment decoded past the absolute grace deadline", async () => {
+    state.mode = "directory-valid";
+    const original = WindowsBoundaryControlDecoder.prototype.push;
+    let delayed = false;
+    vi.spyOn(WindowsBoundaryControlDecoder.prototype, "push").mockImplementation(function (chunk) {
+      const messages = original.call(this, chunk);
+      if (
+        messages.some(
+          (message) => message.kind === "directory_result" && message.status === "released"
+        )
+      ) {
+        delayed = true;
+        const until = performance.now() + 150;
+        while (performance.now() < until) {
+          /* delay validation beyond grace */
+        }
+      }
+      return messages;
+    });
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 50, deadlineGraceMs: 100 },
+      async () => new Promise<void>(() => {})
+    );
+    expect(delayed).toBe(true);
+    expect(report).toMatchObject({
+      reason: "work_timeout",
+      deadline: { graceExpired: true },
+      directory: { releaseAcknowledged: false },
+      sessionOperations: { requested: 2, correlated: 1 },
+    });
+  });
+  it("bounds a lost release during deadline grace and preserves its unanswered request", async () => {
+    state.mode = "directory-lost-release";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 50, deadlineGraceMs: 50 },
+      async () => new Promise<void>(() => {})
+    );
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "work_timeout",
+      deadline: { graceMs: 50, graceExpired: true },
+      directory: { releaseAcknowledged: false },
+      sessionOperations: {
+        requested: 2,
+        correlated: 1,
+        failure: { outstanding: { operation_id: expect.any(String) } },
+      },
+    });
+  });
+  it("does not invent a creation result when deadline grace expires", async () => {
+    state.mode = "directory-create-silent";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 50, deadlineGraceMs: 50 },
+      async (scope) => {
+        await scope.createFile("marker", Buffer.from("x"));
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "work_timeout",
+      deadline: { graceExpired: true },
+      fileCreations: [{ acknowledged: false }],
+      directory: { releaseAcknowledged: false },
+    });
+    expect(state.write).toHaveBeenCalledTimes(3); // no overlapping release while create is unanswered
   });
   it("rejects invalid directory options before spawning", async () => {
     expect(
