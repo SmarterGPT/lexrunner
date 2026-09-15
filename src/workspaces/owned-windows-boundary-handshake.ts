@@ -17,6 +17,8 @@ import {
   WindowsBoundaryControlDecoder,
   WindowsBoundaryHelloResult,
   WindowsBoundaryDirectoryResult,
+  WindowsBoundaryProcessRequest,
+  WindowsBoundaryProcessResult,
 } from "./windows-boundary-protocol.js";
 
 const AbsolutePath = z
@@ -66,6 +68,7 @@ export interface WindowsBoundaryHandshakeReport {
   };
   stderrBytes: number;
   fileCreations?: readonly OwnedWindowsFileCreationAttempt[];
+  processAttempts?: readonly OwnedWindowsProcessAttempt[];
   directory?: {
     acquired: boolean;
     releaseAcknowledged: boolean;
@@ -95,7 +98,79 @@ export interface OwnedWindowsDirectoryScope {
   createChild(component: string): Promise<OwnedWindowsDirectoryScope>;
   readFile(component: string, maxBytes: number): Promise<OwnedWindowsFileRead>;
   createFile(component: string, content: Uint8Array): Promise<OwnedWindowsFileCreated>;
+  runProcess(request: OwnedWindowsProcessRequest): Promise<OwnedWindowsProcessResult>;
 }
+export interface OwnedWindowsProcessRequest {
+  readonly executable: string;
+  readonly args: readonly (
+    | { readonly kind: "literal"; readonly value: string }
+    | {
+        readonly kind: "directory";
+        readonly directory: OwnedWindowsDirectoryScope;
+        readonly prefix: string;
+        readonly relativeToCwd: boolean;
+      }
+  )[];
+  readonly environment: "inherit-helper";
+  readonly timeoutMs: number;
+  readonly maxOutputBytes: number;
+}
+export interface OwnedWindowsProcessResult {
+  readonly kind: "process_completed";
+  readonly status: "exited" | "nonzero_exit" | "timeout" | "output_limit";
+  readonly exitCode: number;
+  readonly processId: number;
+  readonly durationMs: number;
+  readonly stdout: Uint8Array;
+  readonly stderr: Uint8Array;
+  readonly stdoutTruncated: boolean;
+  readonly stderrTruncated: boolean;
+}
+export interface OwnedWindowsProcessAttempt {
+  readonly requestId: string;
+  readonly operationId: string;
+  readonly requestDigest: string;
+  readonly cwd: OwnedWindowsDirectoryIdentity;
+  readonly acknowledged: boolean;
+  readonly status?: OwnedWindowsProcessResult["status"];
+}
+const ProcessOptions = z.strictObject({
+  executable: z
+    .string()
+    .min(1)
+    .max(1024)
+    .refine((s) => win32.isAbsolute(s) && /\.exe$/iu.test(s) && !s.includes("\0")),
+  args: z
+    .array(
+      z.discriminatedUnion("kind", [
+        z.strictObject({
+          kind: z.literal("literal"),
+          value: z
+            .string()
+            .max(2048)
+            .refine((s) => !s.includes("\0")),
+        }),
+        z.strictObject({
+          kind: z.literal("directory"),
+          directory: z.custom<OwnedWindowsDirectoryScope>((v) => !!v && typeof v === "object"),
+          prefix: z
+            .string()
+            .max(64)
+            .regex(/^[^\u0000-\u001f/\\"]*$/u),
+          relativeToCwd: z.boolean(),
+        }),
+      ])
+    )
+    .max(64),
+  environment: z.literal("inherit-helper"),
+  // Leave 8 seconds within the existing 30-second exchange ceiling for cleanup/transport.
+  timeoutMs: z.number().int().min(1).max(22_000),
+  maxOutputBytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(256 * 1024),
+});
 export interface OwnedWindowsFileCreated {
   readonly kind: "file_created";
   readonly byteLength: number;
@@ -121,7 +196,12 @@ export interface OwnedWindowsFileRead {
   readonly fileId: string;
   readonly volumeSerialNumber: string;
 }
-type ScopeReply = DirectoryReply | OwnedWindowsFileRead | OwnedWindowsFileCreated | null;
+type ScopeReply =
+  | DirectoryReply
+  | OwnedWindowsFileRead
+  | OwnedWindowsFileCreated
+  | OwnedWindowsProcessResult
+  | null;
 function directoryValue(reply: ScopeReply): DirectoryReply {
   if (!reply || reply.kind !== "directory_result") throw new Error("Unexpected directory response");
   return reply;
@@ -256,6 +336,9 @@ async function runOwnedWindowsBoundary(
     let filesCreated = 0;
     const fileCreations: OwnedWindowsFileCreationAttempt[] = [];
     let currentCreation: number | undefined;
+    const processAttempts: OwnedWindowsProcessAttempt[] = [];
+    const scopes = new WeakMap<OwnedWindowsDirectoryScope, DirectoryReply>();
+    let pendingProcess: { index: number; target: DirectoryReply; limit: number } | undefined;
     let bytesRead = 0;
     let readLimit: number | undefined;
     let releaseAcknowledged = false;
@@ -337,7 +420,12 @@ async function runOwnedWindowsBoundary(
               },
             }
           : {}),
-        ...(directory ? { fileCreations: Object.freeze([...fileCreations]) } : {}),
+        ...(directory
+          ? {
+              fileCreations: Object.freeze([...fileCreations]),
+              processAttempts: Object.freeze([...processAttempts]),
+            }
+          : {}),
         ...(sessionMode
           ? {
               sessionOperations: {
@@ -520,7 +608,101 @@ async function runOwnedWindowsBoundary(
         void converted.catch(() => {});
         return converted;
       };
-      return Object.freeze({
+      const scope: OwnedWindowsDirectoryScope = Object.freeze({
+        runProcess: (input: OwnedWindowsProcessRequest): Promise<OwnedWindowsProcessResult> => {
+          const pending = new Promise<ScopeReply>((resolve, reject) => {
+            try {
+              if (
+                !working ||
+                finished ||
+                failure ||
+                closing ||
+                assertion ||
+                directoryOperation ||
+                pendingProcess
+              )
+                throw new Error("Process session unavailable");
+              const parsed = ProcessOptions.parse(input);
+              const replyBudget = parsed.timeoutMs + 8_000;
+              if (
+                performance.now() + replyBudget >= workDeadline ||
+                sentCount + 1 + liveDirectories.length > 15
+              )
+                throw new Error("Insufficient process session budget");
+              const args = parsed.args.map((arg) => {
+                if (arg.kind === "literal") return arg;
+                const bound = scopes.get(arg.directory);
+                if (
+                  !bound ||
+                  !liveDirectories.includes(bound) ||
+                  (arg.relativeToCwd && bound !== target)
+                )
+                  throw new Error("Foreign directory scope");
+                return {
+                  kind: "directory" as const,
+                  lease_token: bound.lease_token,
+                  prefix: arg.prefix,
+                  relative_to_cwd: arg.relativeToCwd,
+                };
+              });
+              const body = {
+                client_nonce: request.client_nonce,
+                session_nonce: sessionNonce!,
+                protocol_version: WINDOWS_BOUNDARY_PROTOCOL_VERSION,
+                request_id: randomUUID(),
+                operation_id: randomUUID(),
+                kind: "process_request" as const,
+                operation: "run-process" as const,
+                lease_token: target.lease_token,
+                executable: parsed.executable,
+                args,
+                environment: parsed.environment,
+                timeout_ms: parsed.timeoutMs,
+                max_output_bytes: parsed.maxOutputBytes,
+              };
+              const digest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
+              const wire = WindowsBoundaryProcessRequest.parse({ ...body, request_digest: digest });
+              const frame = encodeWindowsBoundarySession(wire);
+              exchange!.reserve(
+                {
+                  request_id: body.request_id,
+                  operation_id: body.operation_id,
+                  request_digest: digest,
+                },
+                replyBudget
+              );
+              assertion = { resolve, reject };
+              pendingProcess = {
+                index: processAttempts.length,
+                target,
+                limit: parsed.maxOutputBytes,
+              };
+              processAttempts.push(
+                Object.freeze({
+                  requestId: body.request_id,
+                  operationId: body.operation_id,
+                  requestDigest: digest,
+                  cwd: identity(target),
+                  acknowledged: false,
+                })
+              );
+              sentCount++;
+              clearTimeout(handshakeTimer);
+              handshakeTimer = setTimeout(() => fail("operation_timeout"), replyBudget);
+              child.stdin.write(frame);
+            } catch {
+              reject(new Error("Process request failed"));
+              fail("work_failed");
+            }
+          });
+          const converted = pending.then((reply) => {
+            if (!reply || reply.kind !== "process_completed")
+              throw new Error("Unexpected process response");
+            return reply;
+          });
+          void converted.catch(() => {});
+          return converted;
+        },
         identity: identity(target),
         assertCurrent: () =>
           invoke("assert", undefined, (reply) => identity(directoryValue(reply))),
@@ -555,6 +737,8 @@ async function runOwnedWindowsBoundary(
             content
           ),
       });
+      scopes.set(scope, target);
+      return scope;
     };
     const releaseNext = () =>
       sendDirectory("release", liveDirectories[liveDirectories.length - 1]!);
@@ -635,6 +819,63 @@ async function runOwnedWindowsBoundary(
       try {
         const messages = decoder.push(chunk);
         for (const message of messages) {
+          if (seenReply && directory && message.kind === "process_result") {
+            if (!pendingProcess || !assertion || directoryOperation)
+              throw new Error("Unexpected process result");
+            const result = WindowsBoundaryProcessResult.parse(message);
+            const stdout = Buffer.from(result.stdout_base64, "base64");
+            const stderr = Buffer.from(result.stderr_base64, "base64");
+            const truncated = result.stdout_truncated || result.stderr_truncated;
+            if (
+              result.lease_token !== pendingProcess.target.lease_token ||
+              stdout.toString("base64") !== result.stdout_base64 ||
+              stderr.toString("base64") !== result.stderr_base64 ||
+              stdout.length > pendingProcess.limit ||
+              stderr.length > pendingProcess.limit ||
+              (result.stdout_truncated && stdout.length !== pendingProcess.limit) ||
+              (result.stderr_truncated && stderr.length !== pendingProcess.limit) ||
+              (result.status === "output_limit") !== truncated ||
+              (result.status === "exited" && result.exit_code !== 0) ||
+              (result.status === "nonzero_exit" && result.exit_code === 0)
+            )
+              throw new Error("Invalid process result");
+            const match = exchange!.correlate({
+              client_nonce: result.client_nonce,
+              session_nonce: result.session_nonce,
+              request_id: result.request_id,
+              operation_id: result.operation_id,
+              request_digest: result.request_digest,
+            });
+            if (!match.correlated) {
+              fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
+              return;
+            }
+            clearTimeout(handshakeTimer);
+            operationCount++;
+            const index = pendingProcess.index;
+            processAttempts[index] = Object.freeze({
+              ...processAttempts[index],
+              acknowledged: true,
+              status: result.status,
+            });
+            pendingProcess = undefined;
+            const waiter = assertion;
+            assertion = undefined;
+            waiter.resolve(
+              Object.freeze({
+                kind: "process_completed",
+                status: result.status,
+                exitCode: result.exit_code,
+                processId: result.process_id,
+                durationMs: result.duration_ms,
+                stdout: Uint8Array.from(stdout),
+                stderr: Uint8Array.from(stderr),
+                stdoutTruncated: result.stdout_truncated,
+                stderrTruncated: result.stderr_truncated,
+              })
+            );
+            continue;
+          }
           if (seenReply && directory && message.kind === "file_create_result") {
             if (
               directoryOperation !== "create-file" ||

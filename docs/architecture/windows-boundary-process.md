@@ -82,3 +82,36 @@ actual Git executable for this suite. Skips without those inputs are not evidenc
 Tests use disposable workspaces and no commits/signing. They do not qualify
 power loss, all Windows filesystems/architectures, deployment or the production
 resolver; helper_missing remains explicit.
+
+## Owned Node development API
+
+`OwnedWindowsDirectoryScope.runProcess` now invokes the native operation through
+its existing owned helper session. Literal arguments are copied into a validated
+request; directory arguments resolve only from scope objects registered in that
+same live session. Environment mode must explicitly be `inherit-helper`; unknown
+options (including portable env overrides) are rejected before dispatch. This
+mode does not imply the command inherits the coordinator's full environment.
+
+A request must fit the remaining work deadline and reserve room for all directory
+releases. The development command timeout is 1–22,000 ms, with another 8,000 ms
+reserved in the existing 30-second exchange ceiling for cleanup and transport.
+This is an explicit development restriction, not full broker timeout parity or a
+measurement proving eight seconds always sufficient. Expiry remains a failure
+with unknown effects. Configure workTimeoutMs explicitly to cover that reservation;
+the default 5-second directory work budget cannot admit process execution.
+
+Before pipe write, the owner records a frozen in-memory attempt with request and
+operation IDs, request digest and cwd identity. Only a correlated reply with valid
+canonical output bytes, per-request bounds, consistent exit/status/truncation and
+job-empty observation acknowledges it. Acknowledgment records a command outcome,
+not task success. Nonzero exit, timeout and overflow remain explicit outcomes.
+Later callback failure retains the acknowledged attempt. A lost/bad reply retains
+the unacknowledged attempt; it never authorizes replay or claims no effects.
+
+The result preserves stdout/stderr bytes in private arrays. Attempt records do not
+include raw arguments/environment/output and are not durable receipts. The next
+adapter must map these observations to existing CommandResult, boundary receipts
+and durable services; it must not invent a second verifier or reconstruct authority
+from these records. Whole-session cancellation uses the existing owner close/kill
+path; command-specific cancellation and confirmed descendant cleanup on that path
+remain unqualified. Production resolution remains helper_missing.

@@ -58,6 +58,102 @@ afterEach(() => {
 });
 
 describe("owned Windows boundary development handshake", () => {
+  it.each(["foreign-scope", "insufficient-budget", "over-timeout"])(
+    "rejects %s before dispatch",
+    async (mode) => {
+      state.mode = "directory-process-valid";
+      const report = await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture", workTimeoutMs: mode === "insufficient-budget" ? 5_000 : 30_000 },
+        async (scope) => {
+          await scope.runProcess({
+            executable: "C:\\fixture.exe",
+            args:
+              mode === "foreign-scope"
+                ? [{ kind: "directory", directory: { ...scope }, prefix: "", relativeToCwd: false }]
+                : [],
+            environment: "inherit-helper",
+            timeoutMs: mode === "over-timeout" ? 30_000 : 100,
+            maxOutputBytes: 1,
+          });
+        }
+      );
+      expect(report).toMatchObject({ reason: "work_failed", processAttempts: [] });
+      expect(state.write).toHaveBeenCalledTimes(2);
+    }
+  );
+  it.each([
+    "wrong-token",
+    "wrong-digest",
+    "noncanonical",
+    "over-bound",
+    "wrong-exit",
+    "wrong-truncation",
+    "lost",
+  ])("preserves unknown process outcome after %s reply", async (mode) => {
+    state.mode = `directory-process-${mode}`;
+    let delivered = false;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 15_000 },
+      async (scope) => {
+        await scope.runProcess({
+          executable: "C:\\fixture.exe",
+          args: [],
+          environment: "inherit-helper",
+          timeoutMs: 100,
+          maxOutputBytes: 1,
+        });
+        delivered = true;
+      }
+    );
+    expect(delivered).toBe(false);
+    expect(report).toMatchObject({ outcome: "failed", processAttempts: [{ acknowledged: false }] });
+    expect(state.write).toHaveBeenCalledTimes(3);
+    expect(Object.isFrozen(report.processAttempts)).toBe(true);
+    expect(Object.isFrozen(report.processAttempts![0])).toBe(true);
+  });
+  it("retains an acknowledged command when subsequent work fails", async () => {
+    state.mode = "directory-process-valid";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 15_000 },
+      async (scope) => {
+        const result = await scope.runProcess({
+          executable: "C:\\fixture.exe",
+          args: [],
+          environment: "inherit-helper",
+          timeoutMs: 100,
+          maxOutputBytes: 1,
+        });
+        expect(Buffer.from(result.stdout).toString()).toBe("a");
+        throw new Error("Later work failed");
+      }
+    );
+    expect(report).toMatchObject({
+      reason: "work_failed",
+      processAttempts: [{ acknowledged: true, status: "exited" }],
+    });
+  });
+  it("rejects unsupported environment options before process dispatch", async () => {
+    state.mode = "directory-process-valid";
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture", workTimeoutMs: 15_000 },
+      async (scope) => {
+        await scope.runProcess({
+          executable: "C:\\fixture.exe",
+          args: [],
+          environment: "inherit-helper",
+          timeoutMs: 100,
+          maxOutputBytes: 1,
+          env: {},
+        } as any);
+      }
+    );
+    expect(report).toMatchObject({ reason: "work_failed", processAttempts: [] });
+    expect(state.write).toHaveBeenCalledTimes(2);
+  });
   it.each([
     "wrong-length",
     "wrong-digest",

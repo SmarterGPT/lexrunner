@@ -41,6 +41,39 @@ process.stdin.on("data", (chunk) => {
       );
       return;
     }
+    if (request.kind === "process_request") {
+      if (mode === "directory-process-lost") {
+        process.exit(0);
+      }
+      const reply = {
+        kind: "process_result",
+        protocol_version: request.protocol_version,
+        client_nonce: request.client_nonce,
+        session_nonce: request.session_nonce,
+        request_id: request.request_id,
+        operation_id: request.operation_id,
+        request_digest: request.request_digest,
+        lease_token: request.lease_token,
+        process_id: 42,
+        exit_code: 0,
+        status: "exited",
+        job_empty: true,
+        duration_ms: 1,
+        stdout_base64: "YQ==",
+        stderr_base64: "",
+        stdout_truncated: false,
+        stderr_truncated: false,
+      };
+      if (mode === "directory-process-wrong-token") reply.lease_token = "e".repeat(64);
+      if (mode === "directory-process-wrong-digest")
+        reply.request_digest = `sha256:${"0".repeat(64)}`;
+      if (mode === "directory-process-noncanonical") reply.stdout_base64 = "YR==";
+      if (mode === "directory-process-over-bound") reply.stdout_base64 = "YWE=";
+      if (mode === "directory-process-wrong-exit") reply.exit_code = 7;
+      if (mode === "directory-process-wrong-truncation") reply.stdout_truncated = true;
+      process.stdout.write(encode(reply));
+      return;
+    }
     if (request.operation === "release" && mode === "directory-lost-release") return;
     if (request.kind === "file_create_request" && mode !== "directory-create-wrong-kind") {
       if (mode === "directory-create-silent") return;

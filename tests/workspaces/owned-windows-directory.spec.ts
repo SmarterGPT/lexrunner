@@ -36,6 +36,79 @@ afterEach(async () => {
   }
 });
 describe.skipIf(process.platform !== "win32" || !executable)("owned native directory scope", () => {
+  it.each([0, 7])(
+    "runs a native command through the owned scope with exit %i",
+    async (exitCode) => {
+      const f = await fixture();
+      const report = await withOwnedWindowsBoundaryDirectory(
+        f.options,
+        { path: f.directory, workTimeoutMs: 25_000 },
+        async (scope) => {
+          const result = await scope.runProcess({
+            executable: process.execPath,
+            args: [
+              { kind: "literal", value: "-e" },
+              {
+                kind: "literal",
+                value: `process.stdout.write(process.cwd());process.exitCode=${exitCode}`,
+              },
+            ],
+            environment: "inherit-helper",
+            timeoutMs: 5_000,
+            maxOutputBytes: 1024,
+          });
+          expect(result.exitCode).toBe(exitCode);
+          expect(result.status).toBe(exitCode ? "nonzero_exit" : "exited");
+          expect(Buffer.from(result.stdout).toString()).toBe(f.directory);
+          await scope.assertCurrent();
+        }
+      );
+      expect(report).toMatchObject({
+        outcome: "matched",
+        processAttempts: [{ acknowledged: true }],
+        directory: { releaseAcknowledged: true },
+      });
+    }
+  );
+  it("renders live directory arguments and permits a later command after timeout", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory, workTimeoutMs: 30_000 },
+      async (scope) => {
+        const timed = await scope.runProcess({
+          executable: process.execPath,
+          args: [
+            { kind: "literal", value: "-e" },
+            { kind: "literal", value: "setInterval(()=>{},1000)" },
+          ],
+          environment: "inherit-helper",
+          timeoutMs: 100,
+          maxOutputBytes: 128,
+        });
+        expect(timed.status).toBe("timeout");
+        const result = await scope.runProcess({
+          executable: process.execPath,
+          args: [
+            { kind: "literal", value: "-e" },
+            { kind: "literal", value: "process.stdout.write(process.argv[1])" },
+            { kind: "directory", directory: scope, prefix: "", relativeToCwd: true },
+          ],
+          environment: "inherit-helper",
+          timeoutMs: 5_000,
+          maxOutputBytes: 128,
+        });
+        expect(Buffer.from(result.stdout).toString()).toBe(".");
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "matched",
+      processAttempts: [
+        { acknowledged: true, status: "timeout" },
+        { acknowledged: true, status: "exited" },
+      ],
+    });
+  });
   it.each([16_384, 65_536])("round trips %i bytes through the owned transport", async (size) => {
     const f = await fixture();
     const data = Buffer.from(Array.from({ length: size }, (_, i) => i % 256));
