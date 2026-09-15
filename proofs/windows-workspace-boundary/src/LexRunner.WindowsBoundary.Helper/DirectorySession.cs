@@ -9,7 +9,7 @@ internal sealed class DirectorySession : IDisposable
       HashSet<string> requests, HashSet<string> operations)
   {
     var fields = root.EnumerateObject().ToArray();
-    if (fields.Length != 14 || fields.Any(p => p.Value.ValueKind != (p.Name == "args" ? JsonValueKind.Array :
+    if (fields.Length != (root.TryGetProperty("env", out var env) ? 15 : 14) || fields.Any(p => p.Value.ValueKind != (p.Name == "env" ? JsonValueKind.Array : p.Name == "args" ? JsonValueKind.Array :
         p.Name is "timeout_ms" or "max_output_bytes" ? JsonValueKind.Number : JsonValueKind.String)))
       throw new InvalidDataException();
     var request = root.GetProperty("request_id").GetString()!;
@@ -20,10 +20,35 @@ internal sealed class DirectorySession : IDisposable
     var timeout = root.GetProperty("timeout_ms").GetInt32();
     var maximum = root.GetProperty("max_output_bytes").GetInt32();
     var args = root.GetProperty("args");
+    var environment = root.GetProperty("environment").GetString();
+    Dictionary<string, string>? variables = null;
+    if (environment == "replace")
+    {
+      if (env.ValueKind != JsonValueKind.Array) throw new InvalidDataException();
+      variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+      string Decode(string value)
+      {
+        var decoded = Convert.FromBase64String(value);
+        if (Convert.ToBase64String(decoded) != value) throw new InvalidDataException();
+        return new System.Text.UTF8Encoding(false, true).GetString(decoded);
+      }
+      foreach (var property in env.EnumerateArray())
+      {
+        if (property.ValueKind != JsonValueKind.Object || property.EnumerateObject().Count() != 2 ||
+            property.GetProperty("name_base64").ValueKind != JsonValueKind.String || property.GetProperty("value_base64").ValueKind != JsonValueKind.String)
+          throw new InvalidDataException();
+        var name = Decode(property.GetProperty("name_base64").GetString()!);
+        var value = Decode(property.GetProperty("value_base64").GetString()!);
+        if (string.IsNullOrEmpty(name) || name[0] is >= '0' and <= '9' || name.Contains('=') || name.Contains('\0') || value.Contains('\0') ||
+            !variables.TryAdd(name, value)) throw new InvalidDataException();
+      }
+      if (variables.Count > 256 || variables.Sum(p => p.Key.Length + p.Value.Length + 2) + 1 > 32767)
+        throw new InvalidDataException();
+    }
+    else if (environment != "inherit-helper" || env.ValueKind != JsonValueKind.Undefined) throw new InvalidDataException();
     if (!Program.IsId(request) || !Program.IsId(operation) || args.GetArrayLength() > 64 ||
         executable.Length > 1024 || root.GetProperty("protocol_version").GetString() != "1.0.0" ||
         root.GetProperty("operation").GetString() != "run-process" ||
-        root.GetProperty("environment").GetString() != "inherit-helper" ||
         root.GetProperty("client_nonce").GetString() != nonce ||
         root.GetProperty("session_nonce").GetString() != sessionNonce) throw new InvalidDataException();
     void Body(Utf8JsonWriter writer, bool includeDigest)
@@ -50,7 +75,19 @@ internal sealed class DirectorySession : IDisposable
       }
       writer.WriteEndArray();
       writer.WriteString("client_nonce", nonce);
-      writer.WriteString("environment", "inherit-helper");
+      if (variables != null)
+      {
+        writer.WriteStartArray("env");
+        foreach (var property in env.EnumerateArray())
+        {
+          writer.WriteStartObject();
+          writer.WriteString("name_base64", property.GetProperty("name_base64").GetString());
+          writer.WriteString("value_base64", property.GetProperty("value_base64").GetString());
+          writer.WriteEndObject();
+        }
+        writer.WriteEndArray();
+      }
+      writer.WriteString("environment", environment);
       writer.WriteString("executable", executable);
       writer.WriteString("kind", "process_request");
       writer.WriteString("lease_token", token);
@@ -80,7 +117,7 @@ internal sealed class DirectorySession : IDisposable
       return prefix + (arg.GetProperty("relative_to_cwd").GetBoolean() ? "." : directory.Leaf.Path);
     }).ToArray();
     foreach (var directory in bound) directory.AssertCurrent();
-    var result = NativeProcess.Run(executable, rendered, cwd.Leaf.Path, timeout, maximum);
+    var result = NativeProcess.Run(executable, rendered, cwd.Leaf.Path, timeout, maximum, variables);
     foreach (var directory in bound) directory.AssertCurrent();
     return Program.Json(writer =>
     {

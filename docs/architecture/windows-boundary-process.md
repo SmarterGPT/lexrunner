@@ -169,3 +169,42 @@ Current tests exercise the store interface with controlled lease records and ret
 actual-native owner timestamp coverage. An actual durable store write/readback and
 crash recovery through the existing services remain pending. Do not treat this lookup
 adapter as another lease authority or a replacement for the existing verifier.
+
+## Explicit command environment transfer
+
+The native request now also supports environment: replace with an explicit list
+of canonical UTF-8 base64 name/value pairs. This avoids Node/.NET JSON escaping
+differences for non-BMP Unicode and avoids object-key ordering/prototype semantics
+on the wire. The helper decodes strictly, rejects malformed/duplicate names, builds
+a sorted UTF-16 environment block, passes CREATE_UNICODE_ENVIRONMENT to CreateProcessW,
+and releases the allocation on every exit. Its own bootstrap environment is unchanged.
+
+The owned API snapshots an explicit env object before dispatch. Missing env in
+replace mode, env in inherit-helper mode, NUL/equal-sign names, invalid Unicode,
+case-ambiguous duplicates and oversized blocks fail. Current bounds are 256 entries
+and 32,767 UTF-16 code units, additionally subject to the existing request-frame bound.
+Names beginning with an ASCII digit are explicitly unsupported: controlled native
+observations did not preserve these through the chosen consumers, including an
+independent ProcessStartInfo control. This is not a universal claim about Windows
+variable-name rules. Further qualification can broaden that support explicitly.
+
+windowsCommandEnvironment implements the portable merge: parent snapshot by default,
+case-insensitive override by env, and exact replacement when extendEnv:false. It
+validates rather than silently dropping ambiguous or unsupported entries. The
+portable boundary adapter must use this function and replace mode; existence of
+this function is not evidence that the still-missing adapter is wired. Values travel
+in the command request and may affect normal program behavior; base64 is not encryption.
+Raw values are not added to attempt/lease receipt metadata. Child output is controlled
+by the child and is not a secret-redaction mechanism.
+
+Tests retain the initial failed environment run. A non-BMP canonicalization mismatch
+was repaired in the wire encoding. Node could not run cleanly with a fully empty
+environment, so an explicit cmd.exe fixture checks the absence of TEMP without
+injecting it or SystemRoot. An inherited-environment control must observe TEMP.
+That control exposed a false positive in the first fixture: unconditional CRT quoting
+made cmd reject the command in both environments. Arguments without whitespace or
+quotes now remain unquoted, preserving CRT argv semantics; this is not a general
+cmd shell-escaping contract. The original failure remains recorded.
+This does not guarantee every program supports an empty
+environment. Production signing, protected launch, full adapter, deadlines and
+cancellation remain separate delivery prerequisites.

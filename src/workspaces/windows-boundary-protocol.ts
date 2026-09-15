@@ -160,7 +160,11 @@ export const WindowsBoundaryProcessRequest = z.strictObject({
   lease_token: Nonce,
   executable: z.string().min(1).max(1024),
   args: z.array(ProcessArgument).max(64),
-  environment: z.literal("inherit-helper"),
+  environment: z.enum(["inherit-helper", "replace"]),
+  env: z
+    .array(z.strictObject({ name_base64: z.string(), value_base64: z.string() }))
+    .max(256)
+    .optional(),
   timeout_ms: z.number().int().min(1).max(30_000),
   max_output_bytes: z
     .number()

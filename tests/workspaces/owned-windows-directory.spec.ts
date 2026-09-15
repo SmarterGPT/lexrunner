@@ -37,6 +37,98 @@ afterEach(async () => {
   }
 });
 describe.skipIf(process.platform !== "win32" || !executable)("owned native directory scope", () => {
+  it("replaces command environment including Unicode and empty values", async () => {
+    const f = await fixture();
+    let output: unknown;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory, workTimeoutMs: 25_000 },
+      async (scope) => {
+        const env = { VALUE: "café 🐦", EMPTY: "", SystemRoot: process.env.SystemRoot! };
+        const run = scope.runProcess({
+          executable: process.execPath,
+          args: [
+            { kind: "literal", value: "-e" },
+            {
+              kind: "literal",
+              value:
+                "process.stdout.write(JSON.stringify([process.env.VALUE,process.env.EMPTY,process.env.TEMP ?? null]))",
+            },
+          ],
+          environment: "replace",
+          env,
+          timeoutMs: 5_000,
+          maxOutputBytes: 1024,
+        });
+        env.VALUE = "changed after dispatch";
+        const result = await run;
+        output = JSON.parse(Buffer.from(result.stdout).toString());
+      }
+    );
+    expect(report, JSON.stringify(report)).toMatchObject({ outcome: "matched" });
+    expect(output).toEqual(["café 🐦", "", null]);
+    expect(JSON.stringify(report)).not.toContain("café 🐦");
+  });
+  it("rejects a numeric environment name before process dispatch", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory, workTimeoutMs: 25_000 },
+      async (scope) => {
+        await scope.runProcess({
+          executable: process.execPath,
+          args: [],
+          environment: "replace",
+          env: { "2": "two" },
+          timeoutMs: 5_000,
+          maxOutputBytes: 1024,
+        });
+      }
+    );
+    expect(report).toMatchObject({ outcome: "failed", reason: "work_failed", processAttempts: [] });
+  });
+  it("supports an explicitly empty command environment", async () => {
+    expect(process.env.TEMP).toBeTruthy();
+    const f = await fixture();
+    let inherited: Awaited<ReturnType<OwnedWindowsDirectoryScope["runProcess"]>> | undefined;
+    let result: Awaited<ReturnType<OwnedWindowsDirectoryScope["runProcess"]>> | undefined;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory, workTimeoutMs: 25_000 },
+      async (scope) => {
+        result = await scope.runProcess({
+          executable: process.env.ComSpec!,
+          args: [
+            { kind: "literal", value: "/d" },
+            { kind: "literal", value: "/c" },
+            { kind: "literal", value: "set" },
+            { kind: "literal", value: "TEMP" },
+          ],
+          environment: "replace",
+          env: {},
+          timeoutMs: 5_000,
+          maxOutputBytes: 1024,
+        });
+        inherited = await scope.runProcess({
+          executable: process.env.ComSpec!,
+          args: [
+            { kind: "literal", value: "/d" },
+            { kind: "literal", value: "/c" },
+            { kind: "literal", value: "set" },
+            { kind: "literal", value: "TEMP" },
+          ],
+          environment: "inherit-helper",
+          timeoutMs: 5_000,
+          maxOutputBytes: 1024,
+        });
+      }
+    );
+    expect(report, JSON.stringify(report)).toMatchObject({ outcome: "matched" });
+    expect(result).toMatchObject({ status: "nonzero_exit", exitCode: 1 });
+    expect(Buffer.from(result!.stdout).toString()).not.toMatch(/^TEMP=/im);
+    expect(Buffer.from(inherited!.stdout).toString()).toMatch(/^TEMP=/im);
+    expect(inherited).toMatchObject({ status: "exited", exitCode: 0 });
+  });
   it.each([0, 7])(
     "runs a native command through the owned scope with exit %i",
     async (exitCode) => {

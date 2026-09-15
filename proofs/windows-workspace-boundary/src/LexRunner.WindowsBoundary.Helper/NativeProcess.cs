@@ -13,7 +13,7 @@ internal static class NativeProcess
       bool StdoutTruncated, bool StderrTruncated, long DurationMs, uint ProcessId);
   private sealed record Capture(byte[] Bytes, bool Truncated);
 
-  internal static Result Run(string executable, string[] arguments, string cwd, int timeoutMs, int maximum)
+  internal static Result Run(string executable, string[] arguments, string cwd, int timeoutMs, int maximum, IReadOnlyDictionary<string, string>? environment = null)
   {
     if (!Path.IsPathFullyQualified(executable) || executable.Contains('\0') ||
         !executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
@@ -38,6 +38,7 @@ internal static class NativeProcess
     var jobs = Marshal.AllocHGlobal(IntPtr.Size);
     var initialized = false;
     ProcessInformation process = default;
+    IntPtr environmentBlock = IntPtr.Zero;
     try
     {
       if (!InitializeProcThreadAttributeList(attributes, 2, 0, ref size))
@@ -62,8 +63,13 @@ internal static class NativeProcess
         },
         Attributes = attributes
       };
+      if (environment != null)
+      {
+        var block = string.Join('\0', environment.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase).Select(p => p.Key + "=" + p.Value)) + "\0\0";
+        environmentBlock = Marshal.StringToHGlobalUni(block);
+      }
       if (!CreateProcessW(executable, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, true,
-          0x08080000, IntPtr.Zero, cwd, ref startup, out process))
+          0x08080400, environmentBlock, cwd, ref startup, out process))
         throw new Win32Exception(Marshal.GetLastWin32Error());
       stdout.DisposeLocalCopyOfClientHandle();
       stderr.DisposeLocalCopyOfClientHandle();
@@ -118,6 +124,7 @@ internal static class NativeProcess
       if (process.Thread != IntPtr.Zero) closed &= CloseHandle(process.Thread);
       if (process.Process != IntPtr.Zero) closed &= CloseHandle(process.Process);
       if (initialized) DeleteProcThreadAttributeList(attributes);
+      if (environmentBlock != IntPtr.Zero) Marshal.FreeHGlobal(environmentBlock);
       Marshal.FreeHGlobal(attributes);
       Marshal.FreeHGlobal(handles);
       Marshal.FreeHGlobal(jobs);
@@ -144,6 +151,7 @@ internal static class NativeProcess
   // Windows CRT argv quoting, including empty arguments and backslashes before quotes/end.
   private static string Quote(string value)
   {
+    if (value.Length > 0 && !value.Any(c => char.IsWhiteSpace(c) || c == '"')) return value;
     var result = new StringBuilder("\"");
     var slashes = 0;
     foreach (var c in value)

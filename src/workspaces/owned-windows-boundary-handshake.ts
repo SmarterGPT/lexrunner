@@ -111,7 +111,8 @@ export interface OwnedWindowsProcessRequest {
         readonly relativeToCwd: boolean;
       }
   )[];
-  readonly environment: "inherit-helper";
+  readonly environment: "inherit-helper" | "replace";
+  readonly env?: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
 }
@@ -168,7 +169,8 @@ const ProcessOptions = z.strictObject({
       ])
     )
     .max(64),
-  environment: z.literal("inherit-helper"),
+  environment: z.enum(["inherit-helper", "replace"]),
+  env: z.record(z.string(), z.string()).optional(),
   // Leave 8 seconds within the existing 30-second exchange ceiling for cleanup/transport.
   timeoutMs: z.number().int().min(1).max(22_000),
   maxOutputBytes: z
@@ -638,6 +640,26 @@ async function runOwnedWindowsBoundary(
               )
                 throw new Error("Process session unavailable");
               const parsed = ProcessOptions.parse(input);
+              if ((parsed.environment === "replace") !== (parsed.env !== undefined))
+                throw new Error("Invalid environment mode");
+              if (parsed.env) {
+                const keys = Object.keys(parsed.env);
+                if (
+                  keys.length > 256 ||
+                  new Set(keys.map((k) => k.toUpperCase())).size !== keys.length ||
+                  keys.some(
+                    (k) =>
+                      !k ||
+                      /^[0-9]/u.test(k) ||
+                      Buffer.from(k, "utf8").toString("utf8") !== k ||
+                      Buffer.from(parsed.env![k], "utf8").toString("utf8") !== parsed.env![k] ||
+                      /[=\0]/u.test(k) ||
+                      parsed.env![k].includes("\0")
+                  ) ||
+                  keys.reduce((n, k) => n + k.length + parsed.env![k].length + 2, 1) > 32_767
+                )
+                  throw new Error("Invalid environment block");
+              }
               const replyBudget = parsed.timeoutMs + 8_000;
               if (
                 performance.now() + replyBudget >= workDeadline ||
@@ -672,6 +694,14 @@ async function runOwnedWindowsBoundary(
                 executable: parsed.executable,
                 args,
                 environment: parsed.environment,
+                ...(parsed.env === undefined
+                  ? {}
+                  : {
+                      env: Object.entries(parsed.env).map(([name, value]) => ({
+                        name_base64: Buffer.from(name, "utf8").toString("base64"),
+                        value_base64: Buffer.from(value, "utf8").toString("base64"),
+                      })),
+                    }),
                 timeout_ms: parsed.timeoutMs,
                 max_output_bytes: parsed.maxOutputBytes,
               };
