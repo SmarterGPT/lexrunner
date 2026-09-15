@@ -1,6 +1,6 @@
 # Windows operation exchange bookkeeping
 
-`WindowsBoundaryExchange` is local correlation state for the next persistent
+`WindowsBoundaryExchange` is local correlation state used by the persistent
 owned-helper transport. It does not open that transport, extend the current hello
 wire format, expose a native lease, perform operations, or change the resolver.
 The [bounded development session](windows-boundary-session.md) now uses it in the
@@ -39,6 +39,6 @@ must call `disconnect` on loss/cancellation and enforce idle/no-reply timers and
 process cleanup; this class has no timers or I/O. A failure with no outstanding
 operation still says nothing about previously acquired native resources.
 
-Next integrate these rules with a separately bounded persistent operation codec
-and native lease handling, retaining the existing process-ownership and receipt
-contracts. Production readiness and the protected deployment profile remain gated.
+The owned transport integrates these rules with bounded operation codecs and native
+lease handling. Full portable adapter integration and durable receipt delivery remain
+pending, retaining the existing process-ownership and receipt contracts. Production readiness and the protected deployment profile remain gated.

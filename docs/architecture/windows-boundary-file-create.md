@@ -92,7 +92,7 @@ oversized input before dispatch and later work failure. Seven controlled reply
 cases cover mismatched fields/kind and lost acknowledgments, including preserved
 request identity without resend. They do not establish forced-failure durability.
 
-Next implement remaining
-write semantics, process operations and the existing verifier receipt mapping.
+Process operations and receipt projection are implemented. Next complete remaining
+write semantics, full adapter integration and durable delivery through the existing verifier.
 General overwrite is not implemented by this create operation. Runtime choice and
 production resolver readiness remain unchanged; `helper_missing` remains explicit.

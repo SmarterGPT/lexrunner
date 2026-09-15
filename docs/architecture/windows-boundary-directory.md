@@ -102,8 +102,9 @@ wrong status, changed identity/token and lost release replies. These observation
 do not qualify forced termination, close failure or authenticated loading.
 
 The [bounded read profile](windows-boundary-file-read.md) is implemented in the
-native helper and owned Node scopes. Next complete writes and process operations required
-by WorkspaceBoundary and map them to the existing receipt/verifier contract.
+native helper and owned Node scopes, alongside exclusive file creation and bounded
+process operations. Next complete the WorkspaceBoundary adapter and durable delivery
+of projected receipts through the existing verifier.
 Production resolution remains `helper_missing` until operations and the separately
 reviewed launch/trust profile satisfy the actual verifier contract. This local
 development executable is not authenticated installation or a release candidate.

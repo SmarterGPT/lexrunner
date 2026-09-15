@@ -51,5 +51,5 @@ Do not advertise WorkspaceBoundary readiness
 or route the verifier based on this status-only development probe.
 
 [Bound process execution](windows-boundary-process.md) is available through the
-explicit native client. Owned Node process invocation and durable receipt mapping
-remain pending; a process-result frame alone does not activate production routing.
+explicit native client and owned Node scopes. Receipt projection is implemented;
+full adapter integration and durable receipt delivery remain pending; a process-result frame alone does not activate production routing.

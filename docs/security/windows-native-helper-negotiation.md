@@ -12,8 +12,8 @@ Native [bounded reads](../architecture/windows-boundary-file-read.md) are tested
 through the explicit client and owned Node scopes. Native
 [exclusive file creation](../architecture/windows-boundary-file-create.md) uses
 the explicit client and owned Node scopes. [Bound process execution](../architecture/windows-boundary-process.md)
-is available through the explicit client. General writes, owned Node process invocation
-and production readiness remain pending. The production
+is available through the explicit client and owned Node scopes. General writes,
+full adapter integration and production readiness remain pending. The production
 resolver remains unavailable.
 
 From `proofs/windows-workspace-boundary` (so global.json selects the pinned SDK):
@@ -47,7 +47,8 @@ duplicate/unknown fields, malformed UTF-8, truncation and extra frames, and writ
 no stdout diagnostics. The hello-only profile waits for EOF after replying; the
 session profile accepts up to 15 subsequent requests. The owning parent provides
 the deadline and termination behavior; standalone partial-input invocations have
-no internal timer and are not a public launcher. No descendants are created.
+no internal timer and are not a public launcher. Hello/status operations create no
+descendants; explicit process operations use the bounded job-ownership profile.
 
 The first actual native run exposed Windows writer newline differences and an
 uncaught InvalidDataException rejection. Normalize canonical output toLF and catch

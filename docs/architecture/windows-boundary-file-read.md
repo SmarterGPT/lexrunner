@@ -62,9 +62,9 @@ wrong length/digest/token/volume/operation/kind, noncanonical base64, over-bound
 and unanswered requests. Existing raw native tests remain regression evidence.
 
 Native [exclusive file creation](windows-boundary-file-create.md) is now implemented
-through the explicit client and owned scopes. Next implement
-remaining write semantics, process operations and existing verifier receipt
-mapping. Production resolution remains `helper_missing`; launch trust and full
+through the explicit client and owned scopes. Process operations and receipt
+projection are also implemented; remaining write semantics, full adapter integration
+and durable delivery through the existing verifier are pending. Production resolution remains `helper_missing`; launch trust and full
 operation guarantees remain independently required.
 
 The 64 KiB bound covers the broker's 64 KiB attempt-marker reads and 16 KiB .git
@@ -74,4 +74,4 @@ fail without returning partial content. Session storage starts at4KiB and grows 
 for process results), with transient base64/JSON and copied payload allocations also incurred.
 The development profile has no deployed compatibility promise; the native helper
 and Node adapter must be used from the same reviewed build. Permission mapping,
-process execution, durable receipt mapping and qualified launch remain pending.
+durable receipt delivery and qualified launch remain pending.

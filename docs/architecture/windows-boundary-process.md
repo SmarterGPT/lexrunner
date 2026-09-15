@@ -4,8 +4,8 @@ The development session now accepts `process_request` / `run-process`. It runs
 an explicit absolute .exe through CreateProcessW without a shell. The cwd is a
 live directory token; arguments are literal strings or live directory tokens with
 an optional prefix represented explicitly on the wire. `relative_to_cwd` renders
-`.` only for the exact cwd token. Child-component/suffix rendering and arbitrary
-environment overrides are not yet exposed. Unknown/expired tokens and malformed
+`.` only for the exact cwd token. Child-component/suffix rendering is not exposed.
+Explicit inherited or replacement command environments are supported as described below. Unknown/expired tokens and malformed
 or noncanonical requests fail before process creation. Literal arguments are
 trusted command input; this is not an arbitrary-command filesystem sandbox.
 
@@ -47,8 +47,9 @@ timeout/output_limit. Output is byte-preserving base64 with per-stream truncatio
 flags. Command nonzero exit, timeout and overflow remain command outcomes, not
 successful work or verification. Spawn/protocol/cleanup errors still end this
 bounded development session without a typed operation reply; partial effects must
-remain unresolved rather than being retried. The owned Node process method,
-explicit cancellation message, stable error mapping and durable receipts are next.
+remain unresolved rather than being retried. The owned Node process method and
+receipt projection are implemented below; explicit cancellation messages, stable
+error mapping and durable receipt delivery remain pending.
 EOF during a synchronous operation is read only after it completes or times out;
 the owner may terminate the helper for cancellation. No responsive EOF cancellation
 or durable recovery is claimed yet.
@@ -60,9 +61,9 @@ or durable recovery is claimed yet.
 - Explicit timeout1–30,000ms. This development cap is not full broker-timeout parity.
 - Output bound1–262,144 bytes per stream; bytes beyond the limit cause an explicit
   output_limit result, retaining only the bounded prefix.
-- The explicit environment mode is inherit-helper. It inherits the helper's
-  environment; no raw environment values are emitted as evidence. This is not yet
-  the portable env/extendEnv contract or a provider launch profile.
+- Environment mode is explicitly inherit-helper or replace with validated name/value
+  pairs. Raw environment values are omitted from attempt metadata. The portable
+  env/extendEnv merge utility exists but awaits full boundary-adapter integration.
 - Requests and ordinary replies remain96KiB, negotiation4KiB. Process results allow
   768KiB for two base64-encoded256KiB streams plus metadata.
 - Session decoder payload storage starts4KiB and grows on a validated length header
@@ -88,9 +89,9 @@ resolver; helper_missing remains explicit.
 `OwnedWindowsDirectoryScope.runProcess` now invokes the native operation through
 its existing owned helper session. Literal arguments are copied into a validated
 request; directory arguments resolve only from scope objects registered in that
-same live session. Environment mode must explicitly be `inherit-helper`; unknown
-options (including portable env overrides) are rejected before dispatch. This
-mode does not imply the command inherits the coordinator's full environment.
+same live session. Environment mode is explicitly `inherit-helper` or `replace`
+with a private copy of `env`. Unknown options are rejected before dispatch. Inherited
+mode uses the helper environment; replacement mode uses the supplied block.
 
 A request must fit the remaining work deadline and reserve room for all directory
 releases. The development command timeout is 1–22,000 ms, with another 8,000 ms
@@ -109,9 +110,9 @@ Later callback failure retains the acknowledged attempt. A lost/bad reply retain
 the unacknowledged attempt; it never authorizes replay or claims no effects.
 
 The result preserves stdout/stderr bytes in private arrays. Attempt records do not
-include raw arguments/environment/output and are not durable receipts. The next
-adapter must map these observations to existing CommandResult, boundary receipts
-and durable services; it must not invent a second verifier or reconstruct authority
+include raw arguments/environment/output and are not durable receipts. The projection
+below maps observations to existing CommandResult and boundary receipts. The full
+adapter must connect those projections to durable services; it must not invent a second verifier or reconstruct authority
 from these records. Whole-session cancellation uses the existing owner close/kill
 path; command-specific cancellation and confirmed descendant cleanup on that path
 remain unqualified. Production resolution remains helper_missing.
