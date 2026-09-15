@@ -117,7 +117,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
       ).toMatchObject({ ok: false, report: { outcome: "failed", reason: "cancelled" } });
     });
 
-    it("ends a hung caller when the existing owner expires, without a release claim", async () => {
+    it("ends a hung caller at expiry while acknowledging idle native release", async () => {
       const f = await fixture();
       const acquired = await acquireOwnedWindowsDirectorySession(f.options, {
         path: f.root,
@@ -130,7 +130,8 @@ describe.skipIf(process.platform !== "win32" || !executable)(
       expect(await acquired.session.close()).toMatchObject({
         outcome: "failed",
         reason: "work_timeout",
-        directory: { releaseAcknowledged: false },
+        deadline: { graceExpired: false },
+        directory: { releaseAcknowledged: true },
       });
     });
 

@@ -513,11 +513,63 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned native direc
     );
     expect(report).toMatchObject({
       reason: "work_timeout",
-      directory: { releaseAcknowledged: false },
+      deadline: { graceExpired: false },
+      directory: { releaseAcknowledged: true },
       cleanup: { disposition: "closed" },
     });
     await expect(retained!.assertCurrent()).rejects.toThrow();
     await rename(f.directory, f.directory + "-released");
+  });
+  it("releases child and root capabilities gracefully at the work deadline", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory, workTimeoutMs: 100 },
+      async (scope) => {
+        await scope.createChild("child");
+        await new Promise<void>(() => {});
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "work_timeout",
+      deadline: { graceExpired: false },
+      directory: { childrenReleased: 1, releaseAcknowledged: true },
+      cleanup: { terminationRequested: false, exitCode: 0 },
+    });
+  });
+  it("supports zero grace without claiming native release acknowledgment", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory, workTimeoutMs: 50, deadlineGraceMs: 0 },
+      async () => new Promise<void>(() => {})
+    );
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "work_timeout",
+      deadline: { graceMs: 0, graceExpired: true },
+      directory: { releaseAcknowledged: false },
+    });
+  });
+  it("does not restart the grace budget after a blocked event loop", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory, workTimeoutMs: 20, deadlineGraceMs: 20 },
+      async () => {
+        const until = performance.now() + 100;
+        while (performance.now() < until) {
+          /* controlled event-loop delay */
+        }
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: "work_timeout",
+      deadline: { graceExpired: true },
+      directory: { releaseAcknowledged: false },
+    });
   });
   it("cancels an acquired scope and observes helper cleanup", async () => {
     const f = await fixture();

@@ -67,6 +67,7 @@ export interface WindowsBoundaryHandshakeReport {
     descendants: "not_assessed";
   };
   stderrBytes: number;
+  deadline?: { graceMs: number; graceExpired: boolean };
   fileCreations?: readonly OwnedWindowsFileCreationAttempt[];
   processAttempts?: readonly OwnedWindowsProcessAttempt[];
   directory?: {
@@ -231,6 +232,7 @@ const DirectoryOptions = z.strictObject({
     .regex(/^[a-z]:\\/iu)
     .refine((s) => !s.includes("\0")),
   workTimeoutMs: z.number().int().min(1).max(30_000).default(5_000),
+  deadlineGraceMs: z.number().int().min(0).max(5_000).default(1_000),
 });
 type DirectoryWork = (scope: OwnedWindowsDirectoryScope) => Promise<void>;
 type DirectoryRun = z.output<typeof DirectoryOptions> & { work: DirectoryWork };
@@ -355,6 +357,11 @@ async function runOwnedWindowsBoundary(
     let working = false;
     let workDeadline = 0;
     let workTimer: ReturnType<typeof setTimeout> | undefined;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineExceeded = false;
+    let deadlineDraining = false;
+    let graceExpired = false;
+    let graceDeadline = 0;
     let assertion:
       | {
           resolve: (reply: ScopeReply) => void;
@@ -395,6 +402,7 @@ async function runOwnedWindowsBoundary(
       clearTimeout(closeTimer);
       clearTimeout(killTimer);
       clearTimeout(workTimer);
+      clearTimeout(graceTimer);
       working = false;
       assertion?.reject(new Error("Directory session ended"));
       assertion = undefined;
@@ -423,6 +431,9 @@ async function runOwnedWindowsBoundary(
           descendants: "not_assessed",
         },
         stderrBytes,
+        ...(deadlineExceeded
+          ? { deadline: { graceMs: directory!.deadlineGraceMs, graceExpired } }
+          : {}),
         ...(directory
           ? {
               directory: {
@@ -472,6 +483,7 @@ async function runOwnedWindowsBoundary(
     const close = () => {
       if (finished || closing) return;
       closing = true;
+      clearTimeout(graceTimer);
       clearTimeout(handshakeTimer);
       closeTimer = setTimeout(terminate, settings.closeTimeoutMs);
       child.stdin.end();
@@ -479,6 +491,8 @@ async function runOwnedWindowsBoundary(
     const fail = (reason: Failure) => {
       if (finished) return;
       failure ??= reason;
+      deadlineDraining = false;
+      clearTimeout(graceTimer);
       working = false;
       clearTimeout(workTimer);
       assertion?.reject(new Error("Directory session failed"));
@@ -501,7 +515,13 @@ async function runOwnedWindowsBoundary(
       maxBytes?: number,
       content?: Uint8Array
     ) => {
-      if (finished || closing || failure || directoryOperation || sentCount >= 15)
+      if (
+        finished ||
+        closing ||
+        (failure && !(deadlineDraining && operation === "release")) ||
+        directoryOperation ||
+        sentCount >= 15
+      )
         throw new Error("Directory session unavailable");
       const payload = operation === "create-file" ? Buffer.from(content!) : undefined;
       const contentDigest = payload
@@ -575,7 +595,7 @@ async function runOwnedWindowsBoundary(
         const pending = new Promise<ScopeReply>((resolveAssertion, reject) => {
           if (!working || finished || failure || closing) throw new Error("Directory scope ended");
           if (performance.now() >= workDeadline) {
-            fail("work_timeout");
+            expireWork();
             throw new Error("Directory work timed out");
           }
           const child = ["open-child", "try-open-child", "create-child"].includes(operation);
@@ -789,10 +809,47 @@ async function runOwnedWindowsBoundary(
     };
     const releaseNext = () =>
       sendDirectory("release", liveDirectories[liveDirectories.length - 1]!);
+    const drainDeadline = () => {
+      if (
+        !deadlineDraining ||
+        finished ||
+        closing ||
+        assertion ||
+        directoryOperation ||
+        pendingProcess
+      )
+        return;
+      try {
+        if (liveDirectories.length) releaseNext();
+        else close();
+      } catch {
+        fail("protocol_error");
+      }
+    };
+    const expireWork = () => {
+      if (finished || closing || failure) return;
+      deadlineExceeded = true;
+      working = false;
+      clearTimeout(workTimer);
+      failure = "work_timeout";
+      graceDeadline = workDeadline + directory!.deadlineGraceMs;
+      const remaining = graceDeadline - performance.now();
+      if (remaining <= 0) {
+        graceExpired = true;
+        fail("work_timeout");
+        return;
+      }
+      deadlineDraining = true;
+      graceTimer = setTimeout(() => {
+        graceExpired = true;
+        fail("work_timeout");
+      }, remaining);
+      drainDeadline();
+    };
     const startWork = () => {
       working = true;
       workDeadline = performance.now() + directory!.workTimeoutMs;
-      workTimer = setTimeout(() => fail("work_timeout"), directory!.workTimeoutMs);
+      workTimer = setTimeout(expireWork, directory!.workTimeoutMs);
       const scope = scopeFor(directoryReply!);
       Promise.resolve()
         .then(() => {
@@ -803,7 +860,7 @@ async function runOwnedWindowsBoundary(
           () => {
             if (!working || failure || finished) return;
             if (performance.now() >= workDeadline) {
-              fail("work_timeout");
+              expireWork();
               return;
             }
             working = false;
@@ -818,7 +875,9 @@ async function runOwnedWindowsBoundary(
               fail("protocol_error");
             }
           },
-          () => fail("work_failed")
+          () => {
+            if (!deadlineDraining) fail("work_failed");
+          }
         );
     };
     const sendStatus = () => {
@@ -858,7 +917,12 @@ async function runOwnedWindowsBoundary(
       child.stdin.write(encodeWindowsBoundaryControl(request));
     });
     child.stdout.on("data", (chunk: Buffer) => {
-      if (finished || failure) return;
+      if (finished || (failure && !deadlineDraining)) return;
+      if (deadlineDraining && performance.now() >= graceDeadline) {
+        graceExpired = true;
+        fail("work_timeout");
+        return;
+      }
       if (!seenReply && performance.now() >= handshakeDeadline) {
         fail("handshake_timeout");
         return;
@@ -927,6 +991,7 @@ async function runOwnedWindowsBoundary(
                 stderrTruncated: result.stderr_truncated,
               })
             );
+            drainDeadline();
             continue;
           }
           if (seenReply && directory && message.kind === "file_create_result") {
@@ -980,6 +1045,7 @@ async function runOwnedWindowsBoundary(
                 volumeSerialNumber: message.volume_serial_number,
               })
             );
+            drainDeadline();
             continue;
           }
           if (seenReply && directory && message.kind === "file_result") {
@@ -1032,6 +1098,7 @@ async function runOwnedWindowsBoundary(
                 volumeSerialNumber: message.volume_serial_number,
               })
             );
+            drainDeadline();
             continue;
           }
           if (seenReply && directory && message.kind === "directory_result") {
@@ -1103,6 +1170,7 @@ async function runOwnedWindowsBoundary(
               const waiter = assertion;
               assertion = undefined;
               waiter!.resolve(missing ? null : message);
+              drainDeadline();
             } else {
               const released = liveDirectories.pop()!;
               if (released !== directoryReply) childrenReleased++;

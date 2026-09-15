@@ -98,7 +98,9 @@ process.stdin.on("data", (chunk) => {
       if (mode === "directory-create-wrong-token") reply.lease_token = "e".repeat(64);
       if (mode === "directory-create-wrong-volume") reply.volume_serial_number = "e".repeat(16);
       if (mode === "directory-create-wrong-operation") reply.operation_id = "wrong";
-      process.stdout.write(encode(reply));
+      if (mode === "directory-create-deadline-delay") {
+        setTimeout(() => process.stdout.write(encode(reply)), 150);
+      } else process.stdout.write(encode(reply));
       return;
     }
     if (request.kind === "file_request" && mode !== "directory-file-wrong-kind") {
