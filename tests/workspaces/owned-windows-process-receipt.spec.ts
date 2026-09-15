@@ -52,6 +52,9 @@ describe("owned process receipt projection", () => {
         durability: "not_applicable",
       },
     });
+    expect(projected.ok ? "" : projected.error.message).toContain(
+      "dispatch and effects are unconfirmed"
+    );
     expect(
       WorkspaceBoundaryOperationReceipt_v1.parse(JSON.parse(JSON.stringify(projected.receipt)))
     ).toEqual(projected.receipt);

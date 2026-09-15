@@ -125,8 +125,8 @@ projection rejects a result from another attempt. It preserves text/newline beha
 at the CommandResult boundary; raw byte observations remain available to its caller.
 
 A completed operation receipt means the command outcome was observed. Nonzero exit,
-timeout and output limit still produce failed CommandResult values. A dispatched
-attempt without acknowledgment produces an indeterminate operation receipt with
+timeout and output limit still produce failed CommandResult values. A recorded
+attempt without acknowledgment does not prove dispatch and produces an indeterminate operation receipt with
 non-retryable effect_unknown. The schema now permits that spawn-process case with
 not_applicable durability: managed filesystem durability and unknown command effects
 are separate concerns. Existing valid receipts stay valid. The historical mutation

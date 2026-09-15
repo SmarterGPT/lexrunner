@@ -42,7 +42,8 @@ export function projectOwnedWindowsProcessReceipt(
     const error = {
       schema_version: WORKSPACE_BOUNDARY_CONTRACT_VERSION,
       code: "operation_failed" as const,
-      message: "Process was dispatched without a validated completion acknowledgment",
+      message:
+        "Process attempt has no validated completion acknowledgment; dispatch and effects are unconfirmed",
       retryable: false,
       effect_state: "effect_unknown" as const,
       operation_id: attempt.operationId,
