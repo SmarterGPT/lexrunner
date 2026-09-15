@@ -115,3 +115,27 @@ and durable services; it must not invent a second verifier or reconstruct author
 from these records. Whole-session cancellation uses the existing owner close/kill
 path; command-specific cancellation and confirmed descendant cleanup on that path
 remain unqualified. Production resolution remains helper_missing.
+
+## Command and receipt projection
+
+The pure development adapter `projectOwnedWindowsProcessReceipt` maps an owned
+attempt and its correlated result to existing CommandResult and operation receipt
+schemas. Results now carry request ID, operation ID and request digest so the
+projection rejects a result from another attempt. It preserves text/newline behavior
+at the CommandResult boundary; raw byte observations remain available to its caller.
+
+A completed operation receipt means the command outcome was observed. Nonzero exit,
+timeout and output limit still produce failed CommandResult values. A dispatched
+attempt without acknowledgment produces an indeterminate operation receipt with
+non-retryable effect_unknown. The schema now permits that spawn-process case with
+not_applicable durability: managed filesystem durability and unknown command effects
+are separate concerns. Existing valid receipts stay valid. The historical mutation
+field classifies managed filesystem operations; false on spawn-process never means
+a command cannot write files. Other indeterminate-operation rules remain unchanged.
+
+The projection receives lease ID and timestamps from its caller and records the cwd
+identity. This is not authenticated lease association, a complete command filesystem
+footprint, persistence, verification or launch qualification. Wiring the durable
+service must supply and validate its real lease/time association and retain request
+provenance alongside the existing receipt; a valid receipt digest alone does not
+prove those facts. No store writes or automatic replay are introduced here.

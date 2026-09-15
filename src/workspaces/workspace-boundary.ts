@@ -602,9 +602,23 @@ function requireValidOperationReceipt(
     );
   }
   if (!receipt.mutation && receipt.durability !== "not_applicable") {
-    addIssue(context, ["durability"], "read-only operations use not_applicable durability");
+    addIssue(
+      context,
+      ["durability"],
+      "operations without managed filesystem mutation use not_applicable durability"
+    );
   }
-  if (receipt.outcome === "indeterminate" && receipt.durability !== "indeterminate") {
+  // Process effects can be unknown without a filesystem durability transaction.
+  const unknownProcess =
+    receipt.operation === "spawn-process" && receipt.outcome === "indeterminate";
+  if (unknownProcess && receipt.error?.effect_state !== "effect_unknown") {
+    addIssue(context, ["error", "effect_state"], "indeterminate processes require unknown effects");
+  }
+  if (
+    receipt.outcome === "indeterminate" &&
+    !unknownProcess &&
+    receipt.durability !== "indeterminate"
+  ) {
     addIssue(context, ["durability"], "indeterminate operations require indeterminate durability");
   }
   if (receipt.outcome === "completed" && receipt.durability === "indeterminate") {

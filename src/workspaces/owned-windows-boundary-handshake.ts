@@ -117,6 +117,9 @@ export interface OwnedWindowsProcessRequest {
 }
 export interface OwnedWindowsProcessResult {
   readonly kind: "process_completed";
+  readonly requestId: string;
+  readonly operationId: string;
+  readonly requestDigest: string;
   readonly status: "exited" | "nonzero_exit" | "timeout" | "output_limit";
   readonly exitCode: number;
   readonly processId: number;
@@ -864,6 +867,9 @@ async function runOwnedWindowsBoundary(
             waiter.resolve(
               Object.freeze({
                 kind: "process_completed",
+                requestId: result.request_id,
+                operationId: result.operation_id,
+                requestDigest: result.request_digest,
                 status: result.status,
                 exitCode: result.exit_code,
                 processId: result.process_id,

@@ -1,3 +1,4 @@
+import { projectOwnedWindowsProcessReceipt } from "../../src/workspaces/owned-windows-process-receipt.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
@@ -39,6 +40,7 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned native direc
   it.each([0, 7])(
     "runs a native command through the owned scope with exit %i",
     async (exitCode) => {
+      let command: Awaited<ReturnType<OwnedWindowsDirectoryScope["runProcess"]>> | undefined;
       const f = await fixture();
       const report = await withOwnedWindowsBoundaryDirectory(
         f.options,
@@ -57,12 +59,27 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned native direc
             timeoutMs: 5_000,
             maxOutputBytes: 1024,
           });
+          command = result;
           expect(result.exitCode).toBe(exitCode);
           expect(result.status).toBe(exitCode ? "nonzero_exit" : "exited");
           expect(Buffer.from(result.stdout).toString()).toBe(f.directory);
           await scope.assertCurrent();
         }
       );
+      const projection = projectOwnedWindowsProcessReceipt(
+        {
+          leaseId: "development-lease",
+          startedAt: "2026-09-15T05:00:00.000Z",
+          completedAt: "2026-09-15T05:01:00.000Z",
+        },
+        report.processAttempts![0],
+        command
+      );
+      expect(projection).toMatchObject({
+        ok: true,
+        value: { ok: exitCode === 0, exitCode },
+        receipt: { outcome: "completed" },
+      });
       expect(report).toMatchObject({
         outcome: "matched",
         processAttempts: [{ acknowledged: true }],
