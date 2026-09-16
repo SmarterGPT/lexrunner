@@ -1,3 +1,4 @@
+import { sameWorkspaceBoundaryIdentity } from "./workspace-boundary-identity.js";
 import path from "node:path";
 
 import type { WorkspaceObservation } from "../store/workspace-lifecycle-store.js";
@@ -29,11 +30,13 @@ import {
   type DirectoryIdentity,
 } from "./linux-directory-identity.js";
 import { resolveWorkspaceBoundary } from "./workspace-boundary-resolver.js";
-import type {
-  WorkspaceBoundary,
-  WorkspaceBoundaryDirectoryCapability,
-  WorkspaceBoundaryLease,
-  WorkspaceBoundaryProcessArgument,
+import {
+  createWorkspaceBoundaryDirectoryIdentity,
+  type WorkspaceBoundaryDirectoryIdentity_v1,
+  type WorkspaceBoundary,
+  type WorkspaceBoundaryDirectoryCapability,
+  type WorkspaceBoundaryLease,
+  type WorkspaceBoundaryProcessArgument,
 } from "./workspace-boundary.js";
 
 const FULL_GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -112,9 +115,9 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
   private readonly defaultTimeoutMs: number;
   private readonly maxDirtyPaths: number;
   private readonly testOnlyAllowUnboundBoundaryAuthority: boolean;
-  private readonly repositoryIdentity: DirectoryIdentity;
-  private readonly repositoryGitIdentity: DirectoryIdentity;
-  private readonly worktreeRootIdentity: DirectoryIdentity;
+  private readonly repositoryIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
+  private readonly repositoryGitIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
+  private readonly worktreeRootIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
 
   constructor(options: NodeGitWorktreeBrokerOptions) {
     if (
@@ -169,13 +172,16 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       );
     }
     this.boundary = resolution.boundary;
-    this.repositoryIdentity = captureDirectoryIdentity(options.repositoryRoot, "repositoryRoot");
-    this.worktreeRootIdentity = captureDirectoryIdentity(options.worktreeRoot, "worktreeRoot");
-    const repository = reopenDirectoryIdentity(this.repositoryIdentity, "repositoryRoot");
+    const repositoryIdentity = captureDirectoryIdentity(options.repositoryRoot, "repositoryRoot");
+    this.repositoryIdentity = portableLinuxIdentity(repositoryIdentity);
+    this.worktreeRootIdentity = portableLinuxIdentity(
+      captureDirectoryIdentity(options.worktreeRoot, "worktreeRoot")
+    );
+    const repository = reopenDirectoryIdentity(repositoryIdentity, "repositoryRoot");
     try {
       const repositoryGit = openChildDirectory(repository, ".git", "repository Git directory");
       try {
-        this.repositoryGitIdentity = identityOf(repositoryGit);
+        this.repositoryGitIdentity = portableLinuxIdentity(identityOf(repositoryGit));
       } finally {
         repositoryGit.close();
       }
@@ -184,8 +190,8 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
     }
 
     this.repositoryId = options.repositoryId;
-    this.repositoryRoot = this.repositoryIdentity.path;
-    this.worktreeRoot = this.worktreeRootIdentity.path;
+    this.repositoryRoot = this.repositoryIdentity.canonical_path;
+    this.worktreeRoot = this.worktreeRootIdentity.canonical_path;
     this.hostId = options.hostId;
     this.gitRuntime = options.gitRuntime;
     this.pathComparison = options.pathComparison;
@@ -761,7 +767,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       ...args.map(boundaryArgument),
     ];
     const evidenceArgs = [
-      `--git-dir=${this.repositoryGitIdentity.path}`,
+      `--git-dir=${this.repositoryGitIdentity.canonical_path}`,
       `--work-tree=${this.repositoryRoot}`,
       ...args.map(evidenceArgument),
     ];
@@ -799,7 +805,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
     ];
     const evidenceArgs = [
       `--git-dir=${path.join(
-        this.repositoryGitIdentity.path,
+        this.repositoryGitIdentity.canonical_path,
         "worktrees",
         path.basename(boundary.target.identity.canonical_path)
       )}`,
@@ -941,7 +947,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       );
     }
     const normalized = path.resolve(gitDirectoryPath);
-    const relative = path.relative(this.repositoryGitIdentity.path, normalized);
+    const relative = path.relative(this.repositoryGitIdentity.canonical_path, normalized);
     if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`)) {
       return this.failure(
         operation,
@@ -1168,18 +1174,24 @@ function evidenceArgument(argument: string | WorkspaceBoundaryProcessArgument): 
   return `${argument.prefix ?? ""}${rendered}${argument.suffix ?? ""}`;
 }
 
-function sameBoundaryIdentity(
-  capability: WorkspaceBoundaryDirectoryCapability,
-  identity: DirectoryIdentity
-): boolean {
-  const observed = capability.identity;
-  return (
-    observed.identity_kind === "linux-device-inode" &&
-    observed.device === identity.device.toString(10) &&
-    observed.inode === identity.inode.toString(10)
-  );
+function portableLinuxIdentity(identity: DirectoryIdentity): WorkspaceBoundaryDirectoryIdentity_v1 {
+  return createWorkspaceBoundaryDirectoryIdentity({
+    schema_version: "1.0.0",
+    backend_kind: "linux-native",
+    identity_kind: "linux-device-inode",
+    canonical_path: identity.path,
+    path_comparison: "case-sensitive",
+    device: identity.device.toString(10),
+    inode: identity.inode.toString(10),
+  });
 }
 
+function sameBoundaryIdentity(
+  capability: WorkspaceBoundaryDirectoryCapability,
+  identity: WorkspaceBoundaryDirectoryIdentity_v1
+): boolean {
+  return sameWorkspaceBoundaryIdentity(capability.identity, identity);
+}
 function nativePathsOverlap(
   left: string,
   right: string,
