@@ -808,14 +808,14 @@ export class SqliteWorkspaceLifecycleStore
       const branch = this.db
         .prepare(
           `SELECT 1 FROM workspace_leases WHERE repositoryId = ? AND branch = ?
-           AND status IN (${sqlEnumValues(LIVE_WORKSPACE_LEASE_STATUSES)})`
+           AND (status IN (${sqlEnumValues(LIVE_WORKSPACE_LEASE_STATUSES)}) OR status = 'quarantined')`
         )
         .get(input.repositoryId, input.branch);
       if (branch) return this.failure("branch_conflict", attempt!);
       const tree = this.db
         .prepare(
           `SELECT 1 FROM workspace_leases WHERE hostId = ? AND gitRuntime = ? AND worktreePath = ?
-           AND status IN (${sqlEnumValues(LIVE_WORKSPACE_LEASE_STATUSES)})`
+           AND (status IN (${sqlEnumValues(LIVE_WORKSPACE_LEASE_STATUSES)}) OR status = 'quarantined')`
         )
         .get(input.hostId, input.gitRuntime, input.worktreePath);
       if (tree) return this.failure("worktree_conflict", attempt!);

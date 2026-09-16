@@ -3,6 +3,15 @@
 Status: current broker guard implemented; removal transition remains unqualified.
 Tracking: [#997](https://github.com/SmarterGPT/lexrunner/issues/997).
 
+Allocation conflict checks retain quarantined leases as branch/path occupants in
+both lifecycle stores. Quarantine stops execution; it does not free unresolved data
+for another Attempt to adopt. A fresh branch/path remains available. This enforces
+ADR-010's no-silent-reuse rule through store APIs, including SQLite's transactional
+acquisition checks; it does not add an OS namespace lock or change terminal-state
+reconciliation. Existing live-only database indexes remain unchanged. Historical
+duplicate allocations are not rewritten. Full removal intent and reservation across
+all removal/recovery phases remain pending.
+
 The current native profile opens directories without delete sharing. A disposable
 Windows/ReFS experiment demonstrated that Git can empty and unregister a worktree
 before failing to delete its held directory. Retrying after release then reports
