@@ -16,7 +16,7 @@ describe("owned Windows root planning", () => {
       anchorPath: "D:\\project",
       setupOperations: 3,
       releaseOperations: 3,
-      remainingOperations: 9,
+      remainingOperations: 122,
     });
     expect(Object.isFrozen(plan.roots[0].components)).toBe(true);
     expect(() =>
@@ -25,7 +25,7 @@ describe("owned Windows root planning", () => {
           { role: "a", absolutePath: "D:\\a" },
           { role: "b", absolutePath: "D:\\b" },
         ],
-        10
+        123
       )
     ).toThrow("insufficient_root_budget");
   });

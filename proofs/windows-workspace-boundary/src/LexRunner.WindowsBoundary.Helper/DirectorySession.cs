@@ -47,7 +47,7 @@ internal sealed class DirectorySession : IDisposable
     }
     else if (environment != "inherit-helper" || env.ValueKind != JsonValueKind.Undefined) throw new InvalidDataException();
     if (!Program.IsId(request) || !Program.IsId(operation) || args.GetArrayLength() > 64 ||
-        executable.Length > 1024 || root.GetProperty("protocol_version").GetString() != "1.0.0" ||
+        executable.Length > 1024 || root.GetProperty("protocol_version").GetString() != Program.Version ||
         root.GetProperty("operation").GetString() != "run-process" ||
         root.GetProperty("client_nonce").GetString() != nonce ||
         root.GetProperty("session_nonce").GetString() != sessionNonce) throw new InvalidDataException();
@@ -94,7 +94,7 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteNumber("max_output_bytes", maximum);
       writer.WriteString("operation", "run-process");
       writer.WriteString("operation_id", operation);
-      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("protocol_version", Program.Version);
       if (includeDigest) writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);
@@ -129,7 +129,7 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteString("lease_token", token);
       writer.WriteString("operation_id", operation);
       writer.WriteNumber("process_id", result.ProcessId);
-      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("protocol_version", Program.Version);
       writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);
@@ -159,7 +159,7 @@ internal sealed class DirectorySession : IDisposable
     if (Convert.ToBase64String(content) != encoded ||
         "sha256:" + Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant() != contentDigest ||
         !Program.IsId(request) || !Program.IsId(operation) ||
-        root.GetProperty("protocol_version").GetString() != "1.0.0" ||
+        root.GetProperty("protocol_version").GetString() != Program.Version ||
         root.GetProperty("operation").GetString() != "create-file" ||
         root.GetProperty("client_nonce").GetString() != nonce ||
         root.GetProperty("session_nonce").GetString() != sessionNonce) throw new InvalidDataException();
@@ -173,7 +173,7 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteString("lease_token", token);
       writer.WriteString("operation", "create-file");
       writer.WriteString("operation_id", operation);
-      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("protocol_version", Program.Version);
       if (includeDigest) writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);
@@ -191,7 +191,7 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteString("kind", "file_create_result");
       writer.WriteString("lease_token", token);
       writer.WriteString("operation_id", operation);
-      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("protocol_version", Program.Version);
       writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);
@@ -213,7 +213,7 @@ internal sealed class DirectorySession : IDisposable
     var component = root.GetProperty("component").GetString()!;
     if (!root.GetProperty("max_bytes").TryGetInt32(out var maximum) || maximum is < 0 or > Program.FileLimit ||
         !Program.IsId(request) || !Program.IsId(operation) ||
-        root.GetProperty("protocol_version").GetString() != "1.0.0" ||
+        root.GetProperty("protocol_version").GetString() != Program.Version ||
         root.GetProperty("operation").GetString() != "read-file" ||
         root.GetProperty("client_nonce").GetString() != nonce ||
         root.GetProperty("session_nonce").GetString() != sessionNonce) throw new InvalidDataException();
@@ -226,7 +226,7 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteNumber("max_bytes", maximum);
       writer.WriteString("operation", "read-file");
       writer.WriteString("operation_id", operation);
-      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("protocol_version", Program.Version);
       if (includeDigest) writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);
@@ -245,7 +245,7 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteString("kind", "file_result");
       writer.WriteString("lease_token", token);
       writer.WriteString("operation_id", operation);
-      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("protocol_version", Program.Version);
       writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);
@@ -270,7 +270,7 @@ internal sealed class DirectorySession : IDisposable
     var argument = root.GetProperty(acquire ? "path" : "lease_token").GetString()!;
     var component = childOperation ? root.GetProperty("component").GetString()! : null;
     if (!Program.IsId(request) || !Program.IsId(operationId) ||
-        root.GetProperty("protocol_version").GetString() != "1.0.0" ||
+        root.GetProperty("protocol_version").GetString() != Program.Version ||
         root.GetProperty("client_nonce").GetString() != nonce ||
         root.GetProperty("session_nonce").GetString() != sessionNonce)
       throw new InvalidDataException();
@@ -283,7 +283,7 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteString("operation", operation);
       writer.WriteString("operation_id", operationId);
       if (acquire) writer.WriteString("path", argument);
-      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("protocol_version", Program.Version);
       if (includeDigest) writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);
@@ -337,7 +337,7 @@ internal sealed class DirectorySession : IDisposable
       writer.WriteString("lease_token", replyToken);
       writer.WriteString("operation_id", operationId);
       writer.WriteString("path", leaf.Path);
-      writer.WriteString("protocol_version", "1.0.0");
+      writer.WriteString("protocol_version", Program.Version);
       writer.WriteString("request_digest", digest);
       writer.WriteString("request_id", request);
       writer.WriteString("session_nonce", sessionNonce);

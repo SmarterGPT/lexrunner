@@ -1,3 +1,4 @@
+import { WINDOWS_BOUNDARY_SESSION_REQUESTS } from "./windows-boundary-protocol.js";
 import { win32 } from "node:path";
 import {
   acquireOwnedWindowsDirectorySession,
@@ -16,7 +17,7 @@ export function planOwnedWindowsRoots(
     roots.length > 16 ||
     !Number.isSafeInteger(workOperations) ||
     workOperations < 1 ||
-    workOperations > 13
+    workOperations > WINDOWS_BOUNDARY_SESSION_REQUESTS - 2
   )
     throw new Error("invalid_root_budget");
   const roles = new Set<string>();
@@ -81,7 +82,7 @@ export function planOwnedWindowsRoots(
   });
   const setupOperations = 1 + edges.size;
   const releaseOperations = setupOperations;
-  if (setupOperations + releaseOperations + workOperations > 15)
+  if (setupOperations + releaseOperations + workOperations > WINDOWS_BOUNDARY_SESSION_REQUESTS)
     throw new Error("insufficient_root_budget");
   return Object.freeze({
     anchorPath,
@@ -89,7 +90,7 @@ export function planOwnedWindowsRoots(
     setupOperations,
     releaseOperations,
     workOperations,
-    remainingOperations: 15 - setupOperations - releaseOperations,
+    remainingOperations: WINDOWS_BOUNDARY_SESSION_REQUESTS - setupOperations - releaseOperations,
   });
 }
 

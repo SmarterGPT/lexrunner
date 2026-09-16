@@ -23,11 +23,13 @@ unit tests alone does not satisfy this target.
    operation IDs to owned native observations and existing receipts. Explicitly handle
    unsupported options, cancellation and unknown effects. A projected receipt is not
    durable delivery, and `not_requested` durability is not `committed`.
-3. **Workload budgets.** The helper currently permits 15 requests and the owner caps
-   work at 30 seconds/process requests at 22 seconds. The broker defaults each Git
-   command to 30 seconds and executes several commands per lifecycle operation. These
-   limits are incompatible without an explicit negotiated or qualified session policy.
-   Do not silently reduce command budgets, reset deadlines or split native custody.
+3. **Workload budgets — v2 profile implemented, broker workload qualification pending.**
+   Protocol 2.0.0 permits 128 requests, 30-second command budgets plus reply reserve,
+   and an explicitly selected work window up to five minutes. Defaults are unchanged.
+   See [v2 bounds and qualification](windows-boundary-budget-v2.md). Exercise actual
+   broker command sequences before claiming fit; do not silently shorten command
+   budgets, reset deadlines or split custody. The previous signed v1 artifact does
+   not qualify this version.
 4. **Runtime launch.** Select an approved signed artifact and qualify the protected
    launch path. The existing Azure signing run proves artifact qualification only;
    it does not establish an installed runtime selection or launch guarantee.

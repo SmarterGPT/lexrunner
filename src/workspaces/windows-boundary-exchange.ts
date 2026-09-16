@@ -1,3 +1,4 @@
+import { WINDOWS_BOUNDARY_REPLY_TIMEOUT_MS } from "./windows-boundary-protocol.js";
 import { z } from "zod";
 
 const Id = z
@@ -49,7 +50,11 @@ export class WindowsBoundaryExchange {
     if (this.failure) throw new Error("exchange_terminal");
     if (this.pending) throw new Error("exchange_busy");
     const parsed = Operation.parse(identity);
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000)
+    if (
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 1 ||
+      timeoutMs > WINDOWS_BOUNDARY_REPLY_TIMEOUT_MS
+    )
       throw new Error("invalid_timeout");
     if (this.requests.has(parsed.request_id) || this.operations.has(parsed.operation_id))
       throw new Error("operation_reuse");
@@ -103,7 +108,7 @@ export class WindowsBoundaryExchange {
     if (
       !Number.isFinite(value) ||
       value < 0 ||
-      value > Number.MAX_SAFE_INTEGER - 30_000 ||
+      value > Number.MAX_SAFE_INTEGER - WINDOWS_BOUNDARY_REPLY_TIMEOUT_MS ||
       value < this.lastTime
     ) {
       this.fail("clock_invalid");

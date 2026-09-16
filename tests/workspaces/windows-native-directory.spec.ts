@@ -58,7 +58,7 @@ async function setup() {
   const parent = path.join(root, "parent");
   const directory = path.join(parent, "café");
   await mkdir(directory, { recursive: true });
-  const child = spawn(executable!, ["--boundary-session", "1.0.0"], {
+  const child = spawn(executable!, ["--boundary-session", "2.0.0"], {
     windowsHide: true,
     stdio: "pipe",
   });
@@ -111,7 +111,7 @@ async function setup() {
   const nonce = randomBytes(32).toString("hex");
   const hello = await send({
     kind: "hello",
-    protocol_version: "1.0.0",
+    protocol_version: "2.0.0",
     request_id: randomUUID(),
     client_nonce: nonce,
   });
@@ -131,7 +131,7 @@ async function setup() {
   ) {
     const body = {
       kind: "directory_request",
-      protocol_version: "1.0.0",
+      protocol_version: "2.0.0",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
       request_id: randomUUID(),
@@ -161,7 +161,7 @@ async function setup() {
   async function read(token: string, component: string, maximum: number) {
     const body = {
       kind: "file_request",
-      protocol_version: "1.0.0",
+      protocol_version: "2.0.0",
       operation: "read-file",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
@@ -205,7 +205,7 @@ async function setup() {
   ) {
     const body = {
       kind: "file_create_request",
-      protocol_version: "1.0.0",
+      protocol_version: "2.0.0",
       operation: "create-file",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
@@ -248,7 +248,7 @@ async function setup() {
   ) {
     const body = {
       kind: "process_request",
-      protocol_version: "1.0.0",
+      protocol_version: "2.0.0",
       operation: "run-process",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,

@@ -1,3 +1,4 @@
+import { WINDOWS_BOUNDARY_PROTOCOL_VERSION } from "./windows-boundary-protocol.js";
 import { randomUUID } from "node:crypto";
 import { arch, platform } from "node:os";
 
@@ -117,7 +118,7 @@ export function resolveWorkspaceBoundary(
           transport: "native_helper",
           implementation: "windows-workspace-boundary",
           implementation_version: WORKSPACE_BOUNDARY_CONTRACT_VERSION,
-          protocol_version: WORKSPACE_BOUNDARY_CONTRACT_VERSION,
+          protocol_version: WINDOWS_BOUNDARY_PROTOCOL_VERSION,
           signature: { status: "not_available" },
         },
         claims: EMPTY_CLAIMS,

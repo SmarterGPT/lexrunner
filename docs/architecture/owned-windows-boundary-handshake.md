@@ -1,5 +1,8 @@
 # Owned Windows boundary handshake probe
 
+> Version note: the v1 limits/launch examples below are historical. Current protocol
+> 2.0.0 requires a new helper; see [v2 session budgets](windows-boundary-budget-v2.md).
+
 This is an explicit development transport probe for ADR-011 / #890. It composes
 the [negotiation codec](windows-boundary-protocol.md) with one owned stdio child.
 It is not the production native helper, a persistent boundary lease, executable

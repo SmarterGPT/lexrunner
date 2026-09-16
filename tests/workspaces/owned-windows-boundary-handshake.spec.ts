@@ -74,7 +74,7 @@ describe("owned Windows boundary development handshake", () => {
                 ? [{ kind: "directory", directory: { ...scope }, prefix: "", relativeToCwd: false }]
                 : [],
             environment: "inherit-helper",
-            timeoutMs: mode === "over-timeout" ? 30_000 : 100,
+            timeoutMs: mode === "over-timeout" ? 30_001 : 100,
             maxOutputBytes: 1,
           });
         }
@@ -427,6 +427,16 @@ describe("owned Windows boundary development handshake", () => {
     });
     expect(state.write).toHaveBeenCalledTimes(3); // no overlapping release while create is unanswered
   });
+  it("rejects work windows beyond the v2 ceiling before spawning", async () => {
+    expect(
+      await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture", workTimeoutMs: 300_001 },
+        async () => {}
+      )
+    ).toMatchObject({ reason: "invalid_options" });
+    expect(state.calls).toHaveLength(0);
+  });
   it("rejects invalid directory options before spawning", async () => {
     expect(
       await withOwnedWindowsBoundaryDirectory(options(), { path: "relative" }, async () => {})
@@ -469,7 +479,7 @@ describe("owned Windows boundary development handshake", () => {
     expect(state.write).toHaveBeenCalledTimes(2);
   });
   it("rejects session budgets before spawning", async () => {
-    expect(await probeOwnedWindowsBoundarySession(options(), 16)).toMatchObject({
+    expect(await probeOwnedWindowsBoundarySession(options(), 129)).toMatchObject({
       reason: "invalid_options",
     });
     expect(state.calls).toHaveLength(0);
@@ -552,7 +562,7 @@ describe("owned Windows boundary development handshake", () => {
     vi.stubEnv("LD_PRELOAD", "/do-not-load-this");
     vi.stubEnv("PRIVATE_TEST_SECRET", "must-not-be-forwarded");
     expect((await probeOwnedWindowsBoundaryHandshake(options())).outcome).toBe("matched");
-    expect(state.calls[0][1]).toEqual(["--boundary-protocol", "1.0.0"]);
+    expect(state.calls[0][1]).toEqual(["--boundary-protocol", "2.0.0"]);
     const launch = state.calls[0][2] as any;
     expect(launch).toMatchObject({
       shell: false,
