@@ -275,7 +275,7 @@ export async function probeOwnedWindowsBoundaryHandshake(
   return runOwnedWindowsBoundary(options, signal, 0);
 }
 
-/** Up to fifteen status round trips on one owned process; no filesystem operations. */
+/** Status round trips up to the versioned request ceiling; no filesystem operations. */
 export async function probeOwnedWindowsBoundarySession(
   options: OwnedWindowsBoundaryHandshakeOptions,
   rounds: number,
