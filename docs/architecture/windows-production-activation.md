@@ -1,0 +1,42 @@
+# Windows production activation path
+
+This is an implementation checklist for #890/#894, not an activation or capability
+claim. The delivery target is the real NodeGitWorktreeBroker create → observe →
+preserve/remove flow on a disposable Windows repository, followed by interruption
+and restart reconciliation through the existing receipt verifier. Passing helper
+unit tests alone does not satisfy this target.
+
+## Remaining gates
+
+1. **Portable broker bootstrap.** The broker stores portable directory observations
+   and compares backend-specific physical IDs, but its synchronous constructor still
+   captures Linux directories. Replace that initialization with native boundary root
+   acquisition, including `.git`, without accepting caller-supplied identities as live
+   authority. Retain Linux behavior and run the existing Git-backed integration suite.
+2. **Complete adapter.** Map all broker-used directory/file/process operations and
+   operation IDs to owned native observations and existing receipts. Explicitly handle
+   unsupported options, cancellation and unknown effects. A projected receipt is not
+   durable delivery, and `not_requested` durability is not `committed`.
+3. **Workload budgets.** The helper currently permits 15 requests and the owner caps
+   work at 30 seconds/process requests at 22 seconds. The broker defaults each Git
+   command to 30 seconds and executes several commands per lifecycle operation. These
+   limits are incompatible without an explicit negotiated or qualified session policy.
+   Do not silently reduce command budgets, reset deadlines or split native custody.
+4. **Runtime launch.** Select an approved signed artifact and qualify the protected
+   launch path. The existing Azure signing run proves artifact qualification only;
+   it does not establish an installed runtime selection or launch guarantee.
+5. **End-to-end outcomes.** Exercise create, exact retry/observe, dirty preservation,
+   and safe removal against disposable native Git repositories. Check isolation,
+   marker/receipt provenance, bounded graceful deadlines and cleanup observations.
+6. **Recovery.** Interrupt before/after dispatch, mutation, acknowledgment and receipt
+   delivery. Reconcile through durable state and the existing verifier without replaying
+   an unknown mutation or inferring success from process exit.
+
+## Activation condition
+
+Only report native readiness after the selected artifact, adapter, broker lifecycle
+and recovery checks pass for the qualified host/profile. Keep unsupported hosts and
+options explicit. No production enable flag or manually supplied digest may stand
+in for these results. Record exact source/artifact identities, command evidence and
+known limitations; retain failed observations. No release is implied by completing
+an individual gate.
