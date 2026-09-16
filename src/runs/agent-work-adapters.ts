@@ -25,7 +25,7 @@ import {
 } from "./agent-work-launch-bundle.js";
 import {
   AgentWorkRuntimeConfigSchema,
-  createAgentWorkRuntime,
+  openAgentWorkRuntime,
   type AgentWorkRuntimeConfig,
 } from "./agent-work-runtime.js";
 import { SqliteWorkspaceLifecycleStore } from "../store/sqlite/workspace-lifecycle-store.js";
@@ -347,7 +347,7 @@ export function createAttemptLifecycleHandlers(): AttemptLifecycleHandlers &
       if (mismatch) return invalid([mismatch]);
       let runtime;
       try {
-        runtime = createAgentWorkRuntime(parsed.data.runtime);
+        runtime = await openAgentWorkRuntime(parsed.data.runtime);
       } catch (error) {
         return operationFailed(error);
       }
@@ -418,7 +418,7 @@ export function createAttemptLifecycleHandlers(): AttemptLifecycleHandlers &
       if (mismatch) return invalid([mismatch]);
       let runtime;
       try {
-        runtime = createAgentWorkRuntime(parsed.data.runtime);
+        runtime = await openAgentWorkRuntime(parsed.data.runtime);
       } catch (error) {
         return operationFailed(error);
       }

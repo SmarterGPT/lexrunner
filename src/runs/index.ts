@@ -324,7 +324,11 @@ export type {
   WorkerAuthorityBinding,
   WorkerAuthorityCommandExecutor,
 } from "./agent-work-authority-service.js";
-export { AgentWorkRuntimeConfigSchema, createAgentWorkRuntime } from "./agent-work-runtime.js";
+export {
+  AgentWorkRuntimeConfigSchema,
+  createAgentWorkRuntime,
+  openAgentWorkRuntime,
+} from "./agent-work-runtime.js";
 export type { AgentWorkRuntime, AgentWorkRuntimeConfig } from "./agent-work-runtime.js";
 export type {
   RunProjection,
