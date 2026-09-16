@@ -12,6 +12,8 @@ internal static class Program
 
   private static int Main(string[] args)
   {
+    if (args.Length == 3 && args[0] == "--interrupt-child" && OperatingSystem.IsWindows())
+      return WorktreeRemovalProbe.InterruptChild(args[1], args[2]);
     if (args.Length is < 1 or > 2 || !OperatingSystem.IsWindows()) return 2;
     var root = Path.Combine(Path.GetFullPath(args[0]), "removal-probe-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(root);
@@ -105,7 +107,11 @@ internal static class Program
         Check(!owner.Released && owner.ReleaseUncertain);
         Check(File.ReadAllText(Path.Combine(path, "file")) == "preserve");
       });
-      if (args.Length == 2) WorktreeRemovalProbe.Run(root, args[1], results);
+      if (args.Length == 2)
+      {
+        WorktreeRemovalProbe.Run(root, args[1], results);
+        WorktreeRemovalProbe.Run(root, args[1], results, interrupted: true);
+      }
       using var output = new MemoryStream();
       using (var json = new Utf8JsonWriter(output))
       {

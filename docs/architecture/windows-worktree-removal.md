@@ -65,11 +65,21 @@ the native owner; exact known fixture files use ordinary file deletion. Final Gi
 registration cleanup preserves a second worktree. A repeated observation confirms
 completion without dispatching removal again.
 
-These are planned stops within one process, not abrupt process termination, power-loss
-durability, authenticated intent, concurrent allocation exclusion or product recovery.
-The fixture file is not a production receipt or authority grant. No arbitrary recursive
-content deletion is qualified. The signing qualification lane runs these cases, but
-the helper protocol still cannot invoke this primitive.
+Three additional cases launch a separate probe child, which reads the flushed fixture
+intent and holds the native owner while reaching the same boundaries. The parent waits
+for a phase marker, forcibly terminates the child, confirms its nonzero exit and checks
+that its managed `finally` marker was not written. It then reloads the fixture intent
+and inspects/resumes the remaining work. Root removal precedes registration cleanup;
+the second worktree remains intact. This tests actual process termination at selected
+post-operation boundaries, not termination inside the native disposition call.
+
+The phase marker proves fixture progress, not an authenticated receipt. Confirmed child
+termination does not manufacture native close acknowledgements. No power-loss durability,
+authenticated intent, concurrent allocation exclusion or production recovery is claimed.
+The fixture file is not a production receipt or authority grant; restart ingestion through
+the existing verifier remains pending. No arbitrary recursive content deletion is qualified.
+The signing qualification lane runs these cases, but the helper protocol still cannot
+invoke this primitive.
 
 This primitive is not reachable through the helper protocol or production resolver.
 It does not upgrade an existing read lease; that lease must already be absent before
