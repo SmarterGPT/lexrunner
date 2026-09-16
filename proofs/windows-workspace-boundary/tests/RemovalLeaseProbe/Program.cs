@@ -12,7 +12,7 @@ internal static class Program
 
   private static int Main(string[] args)
   {
-    if (args.Length != 1 || !OperatingSystem.IsWindows()) return 2;
+    if (args.Length is < 1 or > 2 || !OperatingSystem.IsWindows()) return 2;
     var root = Path.Combine(Path.GetFullPath(args[0]), "removal-probe-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(root);
     var results = new List<string>();
@@ -105,6 +105,7 @@ internal static class Program
         Check(!owner.Released && owner.ReleaseUncertain);
         Check(File.ReadAllText(Path.Combine(path, "file")) == "preserve");
       });
+      if (args.Length == 2) WorktreeRemovalProbe.Run(root, args[1], results);
       using var output = new MemoryStream();
       using (var json = new Utf8JsonWriter(output))
       {
@@ -122,6 +123,10 @@ internal static class Program
     finally
     {
       // Only this freshly created, exact fixture root is removed.
+      if (Path.GetDirectoryName(root) != Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[0])))
+        throw new InvalidDataException("Unexpected fixture cleanup root");
+      foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        File.SetAttributes(file, File.GetAttributes(file) & ~FileAttributes.ReadOnly);
       Directory.Delete(root, true);
     }
   }
