@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/LexRunner.WindowsBoundary.Helper/DirectoryLease.cs" Link="DirectoryLease.cs" />
+    <Compile Include="../../src/LexRunner.WindowsBoundary.Helper/OwnedDirectoryRemoval.cs" Link="OwnedDirectoryRemoval.cs" />
+  </ItemGroup>
+</Project>

@@ -33,12 +33,27 @@ registration removal, content removal, residual directory and uncertain effects.
 Recovery uses those observations and the existing verifier, not an automatic retry
 of `git worktree remove`.
 
-The next native feasibility experiment should assess an explicit owner-operated
-deletion primitive and handle lifecycle, including whether a deletion-capable handle
-can be retained while preserving the intended directory identity guarantees. It
-must cover descendant leases, files, nonempty directories, sharing failures and
-interruption. This is not an accepted implementation design or authorization to
-change the current profile's claims.
+A development-only `OwnedDirectoryRemoval` now acquires an explicit DELETE-capable
+leaf handle beneath a held parent chain and checks it against an expected physical
+identity. The expected identity is association data, not an authority grant. Tracked
+leaf/direct-child readers keep the owner alive and prevent disposition until closed.
+The primitive requests only empty-directory removal. It caches the first disposition
+observation, separates handle release from subsequent name observation, and never
+resends against a replacement at that name. Nonempty rejection is terminal too.
+
+Run its disposable native lifecycle probe from `proofs/windows-workspace-boundary`:
+
+```powershell
+dotnet run --project tests/RemovalLeaseProbe -c Release -- ../../artifacts
+```
+
+This primitive is not reachable through the helper protocol or production resolver.
+It does not upgrade an existing read lease; that lease must already be absent before
+acquisition. It is not recursive deletion, a Git registration transition, durable
+receipt delivery, or crash recovery. Close failure paths retain uncertainty, but
+native close-failure injection and interruption qualification remain outstanding.
+The existing broker guard stays in place. Full worktree removal still needs the
+durable intent, preservation, effect verification and recovery design above.
 
 Two tempting shortcuts are not justified by the API contract. Microsoft documents
 that reopening an object cannot request access conflicting with an existing open
