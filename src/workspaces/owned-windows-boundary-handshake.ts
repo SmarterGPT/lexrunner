@@ -75,6 +75,7 @@ export interface WindowsBoundaryHandshakeReport {
   stderrBytes: number;
   deadline?: { graceMs: number; graceExpired: boolean };
   fileCreations?: readonly OwnedWindowsFileCreationAttempt[];
+  directoryAttempts?: readonly OwnedWindowsDirectoryAttempt[];
   processAttempts?: readonly OwnedWindowsProcessAttempt[];
   directory?: {
     acquired: boolean;
@@ -101,6 +102,8 @@ export interface OwnedWindowsDirectoryScope {
   readonly identity: OwnedWindowsDirectoryIdentity;
   /** Owner-wide historical observations; reading does not assert liveness or acknowledge work. */
   snapshotProcessAttempts(): readonly OwnedWindowsProcessAttempt[];
+  snapshotDirectoryAttempts(): readonly OwnedWindowsDirectoryAttempt[];
+  snapshotFileCreations(): readonly OwnedWindowsFileCreationAttempt[];
   assertCurrent(): Promise<OwnedWindowsDirectoryIdentity>;
   openChild(component: string): Promise<OwnedWindowsDirectoryScope>;
   tryOpenChild(component: string): Promise<OwnedWindowsDirectoryScope | null>;
@@ -226,7 +229,7 @@ function directoryValue(reply: ScopeReply): DirectoryReply {
   if (!reply || reply.kind !== "directory_result") throw new Error("Unexpected directory response");
   return reply;
 }
-type DirectoryOperation =
+export type DirectoryOperation =
   | "acquire"
   | "assert"
   | "release"
@@ -235,6 +238,13 @@ type DirectoryOperation =
   | "create-child"
   | "read-file"
   | "create-file";
+export interface OwnedWindowsDirectoryAttempt {
+  readonly requestId: string;
+  readonly operationId: string;
+  readonly requestDigest: string;
+  readonly operation: DirectoryOperation;
+  readonly acknowledged: boolean;
+}
 const DirectoryOptions = z.strictObject({
   path: z
     .string()
@@ -361,6 +371,15 @@ async function runOwnedWindowsBoundary(
     let filesRead = 0;
     let filesCreated = 0;
     const fileCreations: OwnedWindowsFileCreationAttempt[] = [];
+    const directoryAttempts: OwnedWindowsDirectoryAttempt[] = [];
+    const acknowledgeDirectory = (requestId: string) => {
+      const index = directoryAttempts.findIndex((item) => item.requestId === requestId);
+      if (index >= 0)
+        directoryAttempts[index] = Object.freeze({
+          ...directoryAttempts[index],
+          acknowledged: true,
+        });
+    };
     let currentCreation: number | undefined;
     const processAttempts: OwnedWindowsProcessAttempt[] = [];
     const processBoundaryLeaseId = randomUUID();
@@ -467,6 +486,7 @@ async function runOwnedWindowsBoundary(
         ...(directory
           ? {
               fileCreations: Object.freeze([...fileCreations]),
+              directoryAttempts: Object.freeze([...directoryAttempts]),
               processAttempts: Object.freeze([...processAttempts]),
             }
           : {}),
@@ -584,6 +604,15 @@ async function runOwnedWindowsBoundary(
         settings.handshakeTimeoutMs
       );
       directoryOperation = operation;
+      directoryAttempts.push(
+        Object.freeze({
+          requestId: body.request_id,
+          operationId: body.operation_id,
+          requestDigest,
+          operation,
+          acknowledged: false,
+        })
+      );
       directoryTarget = target;
       childComponent = component;
       readLimit = maxBytes;
@@ -675,6 +704,8 @@ async function runOwnedWindowsBoundary(
       };
       const scope: OwnedWindowsDirectoryScope = Object.freeze({
         snapshotProcessAttempts: () => Object.freeze([...processAttempts]),
+        snapshotDirectoryAttempts: () => Object.freeze([...directoryAttempts]),
+        snapshotFileCreations: () => Object.freeze([...fileCreations]),
         runProcess: (input: OwnedWindowsProcessRequest): Promise<OwnedWindowsProcessResult> => {
           const pending = new Promise<ScopeReply>((resolve, reject) => {
             try {
@@ -994,6 +1025,7 @@ async function runOwnedWindowsBoundary(
               return;
             }
             clearTimeout(handshakeTimer);
+            acknowledgeDirectory(message.request_id);
             operationCount++;
             const index = pendingProcess.index;
             processAttempts[index] = Object.freeze({
@@ -1059,6 +1091,7 @@ async function runOwnedWindowsBoundary(
               return;
             }
             clearTimeout(handshakeTimer);
+            acknowledgeDirectory(message.request_id);
             operationCount++;
             filesCreated++;
             fileCreations[currentCreation] = Object.freeze({
@@ -1120,6 +1153,7 @@ async function runOwnedWindowsBoundary(
               return;
             }
             clearTimeout(handshakeTimer);
+            acknowledgeDirectory(message.request_id);
             operationCount++;
             filesRead++;
             bytesRead += bytes.length;
@@ -1192,6 +1226,7 @@ async function runOwnedWindowsBoundary(
               return;
             }
             clearTimeout(handshakeTimer);
+            acknowledgeDirectory(message.request_id);
             operationCount++;
             const operation = directoryOperation;
             directoryOperation = undefined;
@@ -1233,6 +1268,7 @@ async function runOwnedWindowsBoundary(
               fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
               return;
             }
+            acknowledgeDirectory(message.request_id);
             operationCount++;
             if (operationCount === rounds) close();
             else sendStatus();

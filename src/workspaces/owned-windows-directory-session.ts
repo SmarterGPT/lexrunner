@@ -4,6 +4,8 @@ import {
   type OwnedWindowsDirectoryIdentity,
   type OwnedWindowsDirectoryScope,
   type OwnedWindowsProcessAttempt,
+  type OwnedWindowsDirectoryAttempt,
+  type OwnedWindowsFileCreationAttempt,
   type WindowsBoundaryHandshakeReport,
 } from "./owned-windows-boundary-handshake.js";
 
@@ -13,6 +15,8 @@ export interface OwnedWindowsDirectorySession {
   readonly completion: Promise<WindowsBoundaryHandshakeReport>;
   /** Immutable owner-wide history, available during work and after closure. */
   snapshotProcessAttempts(): readonly OwnedWindowsProcessAttempt[];
+  snapshotDirectoryAttempts(): readonly OwnedWindowsDirectoryAttempt[];
+  snapshotFileCreations(): readonly OwnedWindowsFileCreationAttempt[];
   /** One caller operation at a time; callers must await all scope work. */
   run<T>(work: (scope: OwnedWindowsDirectoryScope) => Promise<T>): Promise<T>;
   /** Stops admitting work, drains the current callback, then awaits owned cleanup. */
@@ -53,6 +57,8 @@ export function acquireOwnedWindowsDirectorySession(
         const session: OwnedWindowsDirectorySession = Object.freeze({
           identity: scope.identity,
           snapshotProcessAttempts: () => scope.snapshotProcessAttempts(),
+          snapshotDirectoryAttempts: () => scope.snapshotDirectoryAttempts(),
+          snapshotFileCreations: () => scope.snapshotFileCreations(),
           completion,
           async run<T>(work: (scope: OwnedWindowsDirectoryScope) => Promise<T>): Promise<T> {
             if (state !== "open" || signal?.aborted) throw new Error("directory_session_closed");

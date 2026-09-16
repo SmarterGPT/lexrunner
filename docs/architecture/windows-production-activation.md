@@ -19,10 +19,15 @@ unit tests alone does not satisfy this target.
    synchronous exported factory remains compatible. The real Linux broker integration
    fixture uses async bootstrap; Windows still requires the qualified adapter/launch
    below before this path can run against a production native boundary.
-2. **Complete adapter.** Map all broker-used directory/file/process operations and
-   operation IDs to owned native observations and existing receipts. Explicitly handle
-   unsupported options, cancellation and unknown effects. A projected receipt is not
-   durable delivery, and `not_requested` durability is not `committed`.
+2. **Portable lease adapter — implemented, production composition pending.**
+   `acquireOwnedWindowsWorkspaceLease` maps the complete lease method surface onto
+   owned native scopes, including broker/native operation associations, exclusive
+   file creation, process results, cancellation and unknown effects. See the
+   [adapter contract](owned-windows-workspace-lease.md). Connect it through verified
+   artifact selection and qualify all real broker-used options and operation sequences.
+   Its supplied decision digest is association data, not production authority.
+   A projected receipt is not durable delivery, and `not_requested` durability is
+   not `committed`.
 3. **Workload budgets — v2 profile implemented, broker workload qualification pending.**
    Protocol 2.0.0 permits 128 requests, 30-second command budgets plus reply reserve,
    and an explicitly selected work window up to five minutes. Defaults are unchanged.
