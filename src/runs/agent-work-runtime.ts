@@ -64,6 +64,29 @@ export function createAgentWorkRuntime(input: unknown): AgentWorkRuntime {
     ...(config.timeoutMs ? { defaultTimeoutMs: config.timeoutMs } : {}),
     ...(config.maxDirtyPaths ? { maxDirtyPaths: config.maxDirtyPaths } : {}),
   });
+  return assembleAgentWorkRuntime(config, broker);
+}
+
+export async function openAgentWorkRuntime(input: unknown): Promise<AgentWorkRuntime> {
+  const config = AgentWorkRuntimeConfigSchema.parse(input);
+  const broker = await NodeGitWorktreeBroker.open({
+    repositoryId: config.repositoryId,
+    repositoryRoot: config.repositoryRoot,
+    worktreeRoot: config.worktreeRoot,
+    hostId: config.hostId,
+    gitRuntime: config.gitRuntime,
+    pathComparison: config.pathComparison,
+    ...(config.gitExecutable ? { gitExecutable: config.gitExecutable } : {}),
+    ...(config.timeoutMs ? { defaultTimeoutMs: config.timeoutMs } : {}),
+    ...(config.maxDirtyPaths ? { maxDirtyPaths: config.maxDirtyPaths } : {}),
+  });
+  return assembleAgentWorkRuntime(config, broker);
+}
+
+function assembleAgentWorkRuntime(
+  config: AgentWorkRuntimeConfig,
+  broker: GitWorktreeBroker
+): AgentWorkRuntime {
   const store = new SqliteWorkspaceLifecycleStore(config.databasePath);
   try {
     const service = new AgentWorkLifecycleService(

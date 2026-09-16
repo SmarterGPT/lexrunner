@@ -42,7 +42,7 @@ describe("NodeGitWorktreeBroker real Git integration", () => {
     await git(repositoryRoot, "commit", "-m", "initial");
     baseSha = await gitStdout(repositoryRoot, "rev-parse", "HEAD");
 
-    broker = new NodeGitWorktreeBroker({
+    broker = await NodeGitWorktreeBroker.open({
       repositoryId: REPOSITORY_ID,
       repositoryRoot,
       worktreeRoot,

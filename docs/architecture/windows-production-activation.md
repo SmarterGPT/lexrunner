@@ -8,11 +8,17 @@ unit tests alone does not satisfy this target.
 
 ## Remaining gates
 
-1. **Portable broker bootstrap.** The broker stores portable directory observations
-   and compares backend-specific physical IDs, but its synchronous constructor still
-   captures Linux directories. Replace that initialization with native boundary root
-   acquisition, including `.git`, without accepting caller-supplied identities as live
-   authority. Retain Linux behavior and run the existing Git-backed integration suite.
+1. **Portable broker bootstrap — implemented, native qualification pending.**
+   `NodeGitWorktreeBroker.open` resolves the actual host boundary, acquires repository
+   and allocation roots, opens `.git`, asserts their identities and awaits release
+   before returning. The read-only bootstrap lease has distinct discovery lineage,
+   not worker execution authority. Subsequent operations acquire fresh leases and
+   compare observations. No public boundary override or caller-supplied identity is
+   accepted by the factory. The legacy synchronous constructor remains for Linux
+   callers. Agent-work adapters now await `openAgentWorkRuntime`; the existing
+   synchronous exported factory remains compatible. The real Linux broker integration
+   fixture uses async bootstrap; Windows still requires the qualified adapter/launch
+   below before this path can run against a production native boundary.
 2. **Complete adapter.** Map all broker-used directory/file/process operations and
    operation IDs to owned native observations and existing receipts. Explicitly handle
    unsupported options, cancellation and unknown effects. A projected receipt is not

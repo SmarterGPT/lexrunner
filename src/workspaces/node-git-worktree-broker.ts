@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { sameWorkspaceBoundaryIdentity } from "./workspace-boundary-identity.js";
 import path from "node:path";
 
@@ -98,6 +99,14 @@ interface OperationBoundary {
   operationSequence: number;
 }
 
+const brokerBootstrapToken = Symbol("broker-bootstrap");
+interface BrokerBootstrap {
+  readonly token: typeof brokerBootstrapToken;
+  readonly boundary: WorkspaceBoundary;
+  readonly repository: WorkspaceBoundaryDirectoryIdentity_v1;
+  readonly allocation: WorkspaceBoundaryDirectoryIdentity_v1;
+  readonly git: WorkspaceBoundaryDirectoryIdentity_v1;
+}
 /**
  * Node implementation of the STFC worktree safety contract.
  * One instance is bound to one repository, host, and Git runtime. It never
@@ -119,46 +128,16 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
   private readonly repositoryGitIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
   private readonly worktreeRootIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
 
-  constructor(options: NodeGitWorktreeBrokerOptions) {
-    if (
-      !options.repositoryId ||
-      !options.repositoryRoot ||
-      !options.worktreeRoot ||
-      !options.hostId ||
-      !options.gitRuntime
-    ) {
-      throw new Error(
-        "repositoryId, repositoryRoot, worktreeRoot, hostId, and gitRuntime are required"
-      );
-    }
-    if (
-      !path.isAbsolute(options.repositoryRoot) ||
-      !path.isAbsolute(options.worktreeRoot) ||
-      options.repositoryRoot.includes("\0") ||
-      options.worktreeRoot.includes("\0")
-    ) {
-      throw new Error("repositoryRoot and worktreeRoot must be runtime-native absolute paths");
-    }
-    if (!Number.isSafeInteger(options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS)) {
-      throw new Error("defaultTimeoutMs must be a positive safe integer");
-    }
-    if ((options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) <= 0) {
-      throw new Error("defaultTimeoutMs must be a positive safe integer");
-    }
-    if (!Number.isSafeInteger(options.maxDirtyPaths ?? DEFAULT_MAX_DIRTY_PATHS)) {
-      throw new Error("maxDirtyPaths must be a positive safe integer");
-    }
-    if ((options.maxDirtyPaths ?? DEFAULT_MAX_DIRTY_PATHS) <= 0) {
-      throw new Error("maxDirtyPaths must be a positive safe integer");
-    }
-    if (nativePathsOverlap(options.repositoryRoot, options.worktreeRoot, options.pathComparison)) {
-      throw new Error("repositoryRoot and worktreeRoot must not overlap");
-    }
-
-    const resolution = resolveWorkspaceBoundary(
-      { mode: "native" },
-      options.runner ? { runner: options.runner } : {}
-    );
+  constructor(options: NodeGitWorktreeBrokerOptions, bootstrap?: BrokerBootstrap) {
+    validateBrokerOptions(options);
+    if (bootstrap && bootstrap.token !== brokerBootstrapToken)
+      throw new Error("Invalid broker bootstrap");
+    const resolution = bootstrap
+      ? { ok: true as const, boundary: bootstrap.boundary }
+      : resolveWorkspaceBoundary(
+          { mode: "native" },
+          options.runner ? { runner: options.runner } : {}
+        );
     if (!resolution.ok) {
       throw new DirectoryBoundaryError(
         "unsupported_platform",
@@ -172,21 +151,27 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       );
     }
     this.boundary = resolution.boundary;
-    const repositoryIdentity = captureDirectoryIdentity(options.repositoryRoot, "repositoryRoot");
-    this.repositoryIdentity = portableLinuxIdentity(repositoryIdentity);
-    this.worktreeRootIdentity = portableLinuxIdentity(
-      captureDirectoryIdentity(options.worktreeRoot, "worktreeRoot")
-    );
-    const repository = reopenDirectoryIdentity(repositoryIdentity, "repositoryRoot");
-    try {
-      const repositoryGit = openChildDirectory(repository, ".git", "repository Git directory");
+    if (bootstrap) {
+      this.repositoryIdentity = bootstrap.repository;
+      this.worktreeRootIdentity = bootstrap.allocation;
+      this.repositoryGitIdentity = bootstrap.git;
+    } else {
+      const repositoryIdentity = captureDirectoryIdentity(options.repositoryRoot, "repositoryRoot");
+      this.repositoryIdentity = portableLinuxIdentity(repositoryIdentity);
+      this.worktreeRootIdentity = portableLinuxIdentity(
+        captureDirectoryIdentity(options.worktreeRoot, "worktreeRoot")
+      );
+      const repository = reopenDirectoryIdentity(repositoryIdentity, "repositoryRoot");
       try {
-        this.repositoryGitIdentity = portableLinuxIdentity(identityOf(repositoryGit));
+        const repositoryGit = openChildDirectory(repository, ".git", "repository Git directory");
+        try {
+          this.repositoryGitIdentity = portableLinuxIdentity(identityOf(repositoryGit));
+        } finally {
+          repositoryGit.close();
+        }
       } finally {
-        repositoryGit.close();
+        repository.close();
       }
-    } finally {
-      repository.close();
     }
 
     this.repositoryId = options.repositoryId;
@@ -202,6 +187,63 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       options.testOnlyAllowUnboundBoundaryAuthority ?? false;
   }
 
+  /** Capture native identity observations before opening the lifecycle store. */
+  static async open(input: NodeGitWorktreeBrokerOptions): Promise<NodeGitWorktreeBroker> {
+    const options = { ...input };
+    validateBrokerOptions(options);
+    const resolution = resolveWorkspaceBoundary(
+      { mode: "native" },
+      options.runner ? { runner: options.runner } : {}
+    );
+    if (!resolution.ok)
+      throw new DirectoryBoundaryError(
+        "unsupported_platform",
+        `Native workspace boundary is unavailable (${resolution.decision.reason_code})`
+      );
+    const boundary = resolution.boundary;
+    if (boundary.capability.host.path_comparison !== options.pathComparison)
+      throw new DirectoryBoundaryError(
+        "unsupported_platform",
+        "Boundary path comparison does not match the declared Git runtime"
+      );
+    const bootstrapId = `broker-bootstrap:${randomUUID()}`;
+    // Discovery lease lineage identifies this read-only capture, never a worker execution grant.
+    const acquired = await boundary.acquire({
+      operationId: bootstrapId,
+      orchestrationLeaseId: bootstrapId,
+      orchestrationLeaseRevision: 0,
+      ownerId: options.hostId,
+      roots: [
+        { role: "repository", absolutePath: options.repositoryRoot },
+        { role: "allocation", absolutePath: options.worktreeRoot },
+      ],
+    });
+    if (!acquired.ok) throw new Error(`Broker bootstrap failed: ${acquired.error.code}`);
+    const lease = acquired.lease;
+    let bootstrap: BrokerBootstrap;
+    try {
+      const repository = lease.root("repository");
+      const allocation = lease.root("allocation");
+      const git = await lease.openChild(repository, ".git", `${bootstrapId}:git`);
+      if (!git.ok) throw new Error(`Broker Git bootstrap failed: ${git.error.code}`);
+      const current = await lease.assertCurrent(
+        [repository, allocation, git.value],
+        `${bootstrapId}:assert`
+      );
+      if (!current.ok) throw new Error(`Broker bootstrap assertion failed: ${current.error.code}`);
+      bootstrap = {
+        token: brokerBootstrapToken,
+        boundary,
+        repository: structuredClone(repository.identity),
+        allocation: structuredClone(allocation.identity),
+        git: structuredClone(git.value.identity),
+      };
+    } finally {
+      const closed = await lease.close("completed");
+      if (closed.phase !== "released") throw new Error("Broker bootstrap release unconfirmed");
+    }
+    return new NodeGitWorktreeBroker(options, bootstrap);
+  }
   async create(
     target: WorktreeTarget,
     options: BrokerOperationOptions = {}
@@ -1254,4 +1296,41 @@ function tail(value: string, maxBytes: number): string {
   const bytes = Buffer.from(value, "utf8");
   if (bytes.byteLength <= maxBytes) return value;
   return bytes.subarray(bytes.byteLength - maxBytes).toString("utf8");
+}
+
+function validateBrokerOptions(options: NodeGitWorktreeBrokerOptions): void {
+  if (
+    !options.repositoryId ||
+    !options.repositoryRoot ||
+    !options.worktreeRoot ||
+    !options.hostId ||
+    !options.gitRuntime
+  ) {
+    throw new Error(
+      "repositoryId, repositoryRoot, worktreeRoot, hostId, and gitRuntime are required"
+    );
+  }
+  if (
+    !path.isAbsolute(options.repositoryRoot) ||
+    !path.isAbsolute(options.worktreeRoot) ||
+    options.repositoryRoot.includes("\0") ||
+    options.worktreeRoot.includes("\0")
+  ) {
+    throw new Error("repositoryRoot and worktreeRoot must be runtime-native absolute paths");
+  }
+  if (!Number.isSafeInteger(options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS)) {
+    throw new Error("defaultTimeoutMs must be a positive safe integer");
+  }
+  if ((options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) <= 0) {
+    throw new Error("defaultTimeoutMs must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(options.maxDirtyPaths ?? DEFAULT_MAX_DIRTY_PATHS)) {
+    throw new Error("maxDirtyPaths must be a positive safe integer");
+  }
+  if ((options.maxDirtyPaths ?? DEFAULT_MAX_DIRTY_PATHS) <= 0) {
+    throw new Error("maxDirtyPaths must be a positive safe integer");
+  }
+  if (nativePathsOverlap(options.repositoryRoot, options.worktreeRoot, options.pathComparison)) {
+    throw new Error("repositoryRoot and worktreeRoot must not overlap");
+  }
 }

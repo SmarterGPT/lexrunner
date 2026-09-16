@@ -24,7 +24,7 @@ import type {
   AdapterOperationError,
   AgentWorkHandlerResult,
 } from "./agent-work-adapters.js";
-import { AgentWorkRuntimeConfigSchema, createAgentWorkRuntime } from "./agent-work-runtime.js";
+import { AgentWorkRuntimeConfigSchema, openAgentWorkRuntime } from "./agent-work-runtime.js";
 import {
   AgentWorkWorkerSessionService,
   type WorkerSessionStatusResult,
@@ -224,7 +224,7 @@ export function createAttemptWorkerHandlers(): AttemptWorkerHandlers {
       if (!parsed.success) return parsed.failure;
       let runtime;
       try {
-        runtime = createAgentWorkRuntime(parsed.data.runtime);
+        runtime = await openAgentWorkRuntime(parsed.data.runtime);
       } catch (error) {
         return operationFailed(error);
       }
