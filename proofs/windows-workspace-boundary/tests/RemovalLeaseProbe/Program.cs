@@ -105,7 +105,18 @@ internal static class Program
         Check(!owner.Released && owner.ReleaseUncertain);
         Check(File.ReadAllText(Path.Combine(path, "file")) == "preserve");
       });
-      Console.WriteLine(JsonSerializer.Serialize(new { root, filesystem = Snapshot(root).FileSystem, passed = results }));
+      using var output = new MemoryStream();
+      using (var json = new Utf8JsonWriter(output))
+      {
+        json.WriteStartObject();
+        json.WriteString("root", root);
+        json.WriteString("filesystem", Snapshot(root).FileSystem);
+        json.WriteStartArray("passed");
+        foreach (var result in results) json.WriteStringValue(result);
+        json.WriteEndArray();
+        json.WriteEndObject();
+      }
+      Console.WriteLine(System.Text.Encoding.UTF8.GetString(output.ToArray()));
       return 0;
     }
     finally
