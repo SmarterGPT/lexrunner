@@ -4,12 +4,12 @@ using System.Text.Json;
 // Disposable composition probe, not a recursive deletion implementation.
 internal static class WorktreeRemovalProbe
 {
-  internal static void Run(string parent, string git, List<string> results)
+  internal static void Run(string parent, string git, List<string> results, bool interrupted = false)
   {
     if (!Path.IsPathFullyQualified(git)) throw new InvalidDataException("Absolute Git required");
     foreach (var phase in new[] { "content", "gitfile", "root" })
     {
-      var root = Path.Combine(parent, "worktree-" + phase);
+      var root = Path.Combine(parent, (interrupted ? "interrupted-" : "worktree-") + phase);
       var repo = Path.Combine(root, "repo");
       var target = Path.Combine(root, "worker");
       var other = Path.Combine(root, "other");
@@ -43,18 +43,14 @@ internal static class WorktreeRemovalProbe
         }
         file.Flush(true);
       }
-      using (var owner = OwnedDirectoryRemoval.Acquire(root, "worker", identity))
+      if (interrupted) InterruptAt(root, phase);
+      else
       {
-        File.Delete(Path.Combine(target, phase == "gitfile" ? ".git" : "first.txt"));
-        if (phase == "root")
-        {
-          File.Delete(Path.Combine(target, "second.txt"));
-          File.Delete(Path.Combine(target, ".git"));
-          Check(owner.RemoveEmpty().NameState == "absent");
-        }
+        using var owner = OwnedDirectoryRemoval.Acquire(root, "worker", identity);
+        MutateFixture(owner, target, phase);
       }
-      // Planned stop: all handles close. Read the fixture intent anew before any
-      // subsequent effects. This is not an abrupt process crash or authenticated intent.
+      // Reload association after either planned close or confirmed child termination.
+      // Neither the fixture file nor child handshake is authenticated authority.
       using var persisted = JsonDocument.Parse(File.ReadAllBytes(intentPath));
       var data = persisted.RootElement;
       string Field(string key) => data.GetProperty(key).GetString() ?? throw new InvalidDataException();
@@ -85,7 +81,67 @@ internal static class WorktreeRemovalProbe
       Check(File.ReadAllText(Path.Combine(other, "second.txt")) == "second");
       // A second recovery observation establishes completion without resending removal.
       Check(!Directory.Exists(target) && !Registered(Git(git, repo, "worktree", "list", "--porcelain"), target));
-      results.Add("worktree-planned-stop-" + phase);
+      results.Add((interrupted ? "worktree-process-killed-" : "worktree-planned-stop-") + phase);
+    }
+  }
+
+  private static void MutateFixture(OwnedDirectoryRemoval owner, string target, string phase)
+  {
+    File.Delete(Path.Combine(target, phase == "gitfile" ? ".git" : "first.txt"));
+    if (phase == "root")
+    {
+      File.Delete(Path.Combine(target, "second.txt"));
+      File.Delete(Path.Combine(target, ".git"));
+      var result = owner.RemoveEmpty();
+      Check(result.Disposition == "accepted" && result.LeafRelease == "confirmed" && result.NameState == "absent");
+    }
+  }
+
+  internal static int InterruptChild(string root, string phase)
+  {
+    if (phase is not ("content" or "gitfile" or "root") || !Path.IsPathFullyQualified(root) ||
+        Path.GetFileName(root) != "interrupted-" + phase ||
+        !Path.GetFileName(Path.GetDirectoryName(root)!).StartsWith("removal-probe-", StringComparison.Ordinal))
+      return 2;
+    using var persisted = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(root, "intent.json")));
+    string Field(string key) => persisted.RootElement.GetProperty(key).GetString() ?? throw new InvalidDataException();
+    var identity = new DirectoryLease.Identity(Field("path"), Field("volume"), Field("fileId"), Field("filesystem"));
+    using var owner = OwnedDirectoryRemoval.Acquire(root, "worker", identity);
+    try
+    {
+      MutateFixture(owner, Path.Combine(root, "worker"), phase);
+      Console.WriteLine("phase-reached:" + phase);
+      Console.Out.Flush();
+      Thread.Sleep(Timeout.Infinite);
+      return 3;
+    }
+    finally { File.WriteAllText(Path.Combine(root, "child-finally.txt"), "managed cleanup ran"); }
+  }
+
+  private static void InterruptAt(string root, string phase)
+  {
+    var executable = Environment.ProcessPath ?? throw new IOException("Missing probe executable");
+    var start = new ProcessStartInfo(executable)
+    { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+    if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+      start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "RemovalLeaseProbe.dll"));
+    foreach (var value in new[] { "--interrupt-child", root, phase }) start.ArgumentList.Add(value);
+    using var child = Process.Start(start) ?? throw new IOException("Probe child start failed");
+    try
+    {
+      var line = child.StandardOutput.ReadLineAsync();
+      Check(line.Wait(10000) && line.Result == "phase-reached:" + phase && !child.HasExited);
+      child.Kill(entireProcessTree: true);
+      Check(child.WaitForExit(5000) && child.ExitCode != 0);
+      Check(!File.Exists(Path.Combine(root, "child-finally.txt")));
+    }
+    finally
+    {
+      if (!child.HasExited)
+      {
+        child.Kill(entireProcessTree: true);
+        if (!child.WaitForExit(5000)) throw new IOException("Probe child termination unconfirmed");
+      }
     }
   }
 
