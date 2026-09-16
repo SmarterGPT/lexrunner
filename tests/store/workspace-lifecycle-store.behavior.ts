@@ -2663,6 +2663,35 @@ export function runWorkspaceLifecycleStoreBehaviorTests(
       if (!result.updated) throw new Error("workspace quarantine failed");
       expect(() => toAttemptContract(result.attempt)).not.toThrow();
       expect(await store.listWorkspaceLifecycleEvents("run-1")).toHaveLength(3);
+      await createAttempt("attempt-2", "work-2");
+      const retry = {
+        attemptId: "attempt-2",
+        workItemId: "work-2",
+        workspaceLeaseId: "workspace-lease-2",
+      };
+      await expect(
+        acquire({ ...retry, mutationId: "quarantined-branch-reuse" })
+      ).resolves.toMatchObject({
+        updated: false,
+        reason: "branch_conflict",
+      });
+      await expect(
+        acquire({
+          ...retry,
+          mutationId: "quarantined-path-reuse",
+          repositoryId: "repo-2",
+          branch: "agent/work-2",
+        })
+      ).resolves.toMatchObject({ updated: false, reason: "worktree_conflict" });
+      expect(await store.listWorkspaceLifecycleEvents("run-1")).toHaveLength(4);
+      await expect(
+        acquire({
+          ...retry,
+          mutationId: "quarantined-fresh-allocation",
+          branch: "agent/work-2",
+          worktreePath: "/worktrees/work-2",
+        })
+      ).resolves.toMatchObject({ updated: true });
     });
 
     it("quarantines an observed branch identity mismatch instead of adopting it", async () => {

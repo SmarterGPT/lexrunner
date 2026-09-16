@@ -380,7 +380,12 @@ export class InMemoryWorkspaceLifecycleStore
         return this.failure("live_attempt_conflict", attempt!);
       }
       for (const lease of this.workspaceLeases.values()) {
-        if (lease.status !== "active" && lease.status !== "reserved") {
+        // Quarantine ends execution, not ownership of unresolved workspace data.
+        if (
+          lease.status !== "active" &&
+          lease.status !== "reserved" &&
+          lease.status !== "quarantined"
+        ) {
           continue;
         }
         if (lease.repositoryId === input.repositoryId && lease.branch === input.branch) {
