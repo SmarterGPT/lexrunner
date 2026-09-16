@@ -592,6 +592,17 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       if (!targetDirectory) {
         return { ok: true, outcome: "preserved", preservationReason: "missing", observation };
       }
+      // Git can unregister and empty the worktree before failing to delete a held
+      // directory. Do not begin that partial mutation under an incompatible lease.
+      if (this.boundary.capability.claims.rename_delete_exclusion) {
+        return this.failure(
+          "remove",
+          "containment_violation",
+          "This boundary excludes deletion while directories are held; a qualified removal transition is required before Git worktree remove",
+          undefined,
+          observation
+        );
+      }
       const removed = await this.gitMain(
         boundary,
         "remove",

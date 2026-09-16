@@ -41,6 +41,10 @@ unit tests alone does not satisfy this target.
 5. **End-to-end outcomes.** Exercise create, exact retry/observe, dirty preservation,
    and safe removal against disposable native Git repositories. Check isolation,
    marker/receipt provenance, bounded graceful deadlines and cleanup observations.
+   Explicit native test composition now covers create/retry/observe and dirty
+   preservation. Clean removal is refused before mutation for deletion-excluding
+   profiles; [#997 and the removal contract](windows-worktree-removal.md) track the
+   qualified removal transition. This refusal is not successful removal qualification.
 6. **Recovery.** Interrupt before/after dispatch, mutation, acknowledgment and receipt
    delivery. Reconcile through durable state and the existing verifier without replaying
    an unknown mutation or inferring success from process exit.
