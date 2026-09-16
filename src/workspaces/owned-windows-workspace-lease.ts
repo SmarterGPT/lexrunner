@@ -106,7 +106,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
     for (const root of native.plan.roots)
       this.roots.set(root.role, this.register(native.root(root.role), seed.lease_id));
     const { receipt_digest: _digest, ...body } = seed;
-    this.acquired = Object.freeze(
+    this.acquired = freezeLeaseReceipt(
       createWorkspaceBoundaryLeaseReceipt({
         ...body,
         root_identity_digests: [...this.roots.values()].map(
@@ -315,11 +315,14 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
         )
           throw new Error("workspace_release_unconfirmed");
         const { receipt_digest: _digest, ...body } = this.acquired;
-        return createWorkspaceBoundaryLeaseReceipt({
-          ...body,
-          phase: reason === "expired" || report.reason === "work_timeout" ? "expired" : "released",
-          observed_at: new Date().toISOString(),
-        });
+        return freezeLeaseReceipt(
+          createWorkspaceBoundaryLeaseReceipt({
+            ...body,
+            phase:
+              reason === "expired" || report.reason === "work_timeout" ? "expired" : "released",
+            observed_at: new Date().toISOString(),
+          })
+        );
       })();
     return this.closing;
   }
@@ -450,6 +453,10 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
 function requireOperationId(value: string) {
   if (typeof value !== "string" || !value || value.length > 4096 || value.includes("\0"))
     throw new Error("invalid_operation_id");
+}
+function freezeLeaseReceipt(receipt: WorkspaceBoundaryLeaseReceipt_v1) {
+  Object.freeze(receipt.root_identity_digests);
+  return Object.freeze(receipt);
 }
 function identity(value: OwnedWindowsDirectoryIdentity) {
   return createWorkspaceBoundaryDirectoryIdentity({

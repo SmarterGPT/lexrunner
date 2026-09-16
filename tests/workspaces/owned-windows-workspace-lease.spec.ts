@@ -306,4 +306,18 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned Windows port
       error: { effect_state: "no_effect" },
     });
   });
+
+  it("keeps acquisition and terminal root evidence immutable", async () => {
+    const f = await fixture();
+    const original = [...f.lease.acquired.root_identity_digests];
+    expect(() => {
+      f.lease.acquired.root_identity_digests[0] = `sha256:${"b".repeat(64)}`;
+    }).toThrow();
+    const closed = await f.lease.close("completed");
+    expect(closed.root_identity_digests).toEqual(original);
+    expect(() => {
+      closed.root_identity_digests[0] = `sha256:${"c".repeat(64)}`;
+    }).toThrow();
+    expect((await f.lease.close("completed")).root_identity_digests).toEqual(original);
+  });
 });
