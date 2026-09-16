@@ -147,7 +147,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
     if (resolution.boundary.capability.host.path_comparison !== options.pathComparison) {
       throw new DirectoryBoundaryError(
         "unsupported_platform",
-        "Boundary path comparison does not match the declared Git runtime"
+        "Physical worktree containment currently requires a case-sensitive Linux Git runtime"
       );
     }
     this.boundary = resolution.boundary;
