@@ -56,6 +56,21 @@ Run its disposable native lifecycle probe from `proofs/windows-workspace-boundar
 dotnet run --project tests/RemovalLeaseProbe -c Release -- ../../artifacts
 ```
 
+Supply an absolute Git executable as a second argument to run three real-worktree
+composition cases as well. They flush a fixture identity/registration association
+file before mutation, close handles at planned stops after one content file, after
+the `.git` file, or after root removal, and reload that file before resuming.
+The remaining contents are observed separately from registration. Root removal uses
+the native owner; exact known fixture files use ordinary file deletion. Final Git
+registration cleanup preserves a second worktree. A repeated observation confirms
+completion without dispatching removal again.
+
+These are planned stops within one process, not abrupt process termination, power-loss
+durability, authenticated intent, concurrent allocation exclusion or product recovery.
+The fixture file is not a production receipt or authority grant. No arbitrary recursive
+content deletion is qualified. The signing qualification lane runs these cases, but
+the helper protocol still cannot invoke this primitive.
+
 This primitive is not reachable through the helper protocol or production resolver.
 It does not upgrade an existing read lease; that lease must already be absent before
 acquisition. It is not recursive deletion, a Git registration transition, durable
