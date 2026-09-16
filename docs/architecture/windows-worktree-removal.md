@@ -51,7 +51,9 @@ This primitive is not reachable through the helper protocol or production resolv
 It does not upgrade an existing read lease; that lease must already be absent before
 acquisition. It is not recursive deletion, a Git registration transition, durable
 receipt delivery, or crash recovery. Close failure paths retain uncertainty, but
-native close-failure injection and interruption qualification remain outstanding.
+real OS close-failure and interruption qualification remain outstanding. The linked
+probe injects a missing close confirmation after actual fixture-handle cleanup to
+check failed reader-acquisition uncertainty; that seam is excluded from the helper.
 The existing broker guard stays in place. Full worktree removal still needs the
 durable intent, preservation, effect verification and recovery design above.
 

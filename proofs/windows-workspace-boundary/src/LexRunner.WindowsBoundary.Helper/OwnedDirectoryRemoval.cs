@@ -77,7 +77,12 @@ internal sealed class OwnedDirectoryRemoval : IDisposable
         readers++;
         return new Reader(this, handle, identity);
       }
-      catch { CloseChecked(handle); throw; }
+      catch
+      {
+        try { CloseChecked(handle); }
+        catch { releaseUncertain = true; closing = true; throw; }
+        throw;
+      }
     }
   }
 
@@ -220,8 +225,16 @@ internal sealed class OwnedDirectoryRemoval : IDisposable
   {
     var valid = !handle.IsInvalid;
     handle.Dispose();
+#if REMOVAL_TESTS
+    AfterHandleClosed?.Invoke();
+#endif
     if (valid && handle.ReleaseSucceeded != true) throw new IOException("Removal handle release uncertain");
   }
+#if REMOVAL_TESTS
+  // Linked-source probe only: simulate an unconfirmed close acknowledgement
+  // after releasing the real fixture handle. Never compiled into the helper.
+  internal static Action? AfterHandleClosed;
+#endif
   [StructLayout(LayoutKind.Sequential)]
   private struct Disposition { internal uint Flags; }
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]

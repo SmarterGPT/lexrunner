@@ -89,6 +89,22 @@ internal static class Program
         Check(owner.Released && Directory.Exists(path));
         Reject<InvalidOperationException>(() => owner.RemoveEmpty());
       });
+      Run("failed-reader-close-uncertain", path => {
+        File.WriteAllText(Path.Combine(path, "file"), "preserve");
+        using var owner = OwnedDirectoryRemoval.Acquire(root, Path.GetFileName(path), Snapshot(path));
+        OwnedDirectoryRemoval.AfterHandleClosed = () => {
+          OwnedDirectoryRemoval.AfterHandleClosed = null;
+          throw new IOException("Injected missing close confirmation");
+        };
+        try { Reject<IOException>(() => owner.OpenReader("file")); }
+        finally { OwnedDirectoryRemoval.AfterHandleClosed = null; }
+        Check(owner.ReleaseUncertain);
+        Reject<InvalidOperationException>(() => owner.RemoveEmpty());
+        Reject<InvalidOperationException>(() => owner.OpenReader());
+        owner.Dispose();
+        Check(!owner.Released && owner.ReleaseUncertain);
+        Check(File.ReadAllText(Path.Combine(path, "file")) == "preserve");
+      });
       Console.WriteLine(JsonSerializer.Serialize(new { root, filesystem = Snapshot(root).FileSystem, passed = results }));
       return 0;
     }
