@@ -71,3 +71,29 @@ receipt projector before closing the session. The projector's identity checks st
 apply. This is in-memory observation access, not durable receipt delivery, a lifecycle
 lease binding, or the completed portable WorkspaceBoundary adapter. Snapshots carry
 no command arguments, environment values, or output bytes.
+
+## Development root-role acquisition
+
+`acquireOwnedWindowsRootSession` captures one common ancestor, opens requested
+repository/allocation paths beneath it and reuses shared intermediate scopes. It
+returns role-bound native scopes and the existing session, not a portable production
+lease or capability decision. Roots must exist. Missing roots fail acquisition and
+await owner cleanup; process exit is not promoted to acknowledged directory release.
+
+The pure planner accepts 1–16 unique roles and ordinary drive-absolute Windows paths.
+Cross-drive roots, UNC/device namespaces, relative paths and ambiguous components are
+explicitly unsupported. The existing case-insensitive directory profile applies;
+this planner does not independently qualify filesystem behavior. Native opens remain
+the source of actual directory identity and filesystem support.
+
+The current 15-request session budget includes acquisition and reverse releases.
+Planning charges one acquisition and one release for each unique held scope, then
+requires room for the caller's declared work-request budget. That budget must include
+any additional releases caused by work-created child scopes. It is a preflight count,
+not a time guarantee or a reservation enforceable against other caller operations.
+Existing owner checks remain authoritative; the returned remaining count is an initial
+estimate, not live capacity. No implicit splitting across helpers or renewed deadlines.
+
+Role lookup retains historical scopes after close; invoking their operations still
+fails through the existing owner. Full portable method/receipt mapping, write-option
+semantics, durable recovery and protected production launch remain pending.

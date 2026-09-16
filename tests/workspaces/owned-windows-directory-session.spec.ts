@@ -1,3 +1,4 @@
+import { acquireOwnedWindowsRootSession } from "../../src/workspaces/owned-windows-root-session.js";
 import { projectOwnedWindowsFileCreationReceipt } from "../../src/workspaces/owned-windows-file-receipt.js";
 import { projectOwnedWindowsProcessReceipt } from "../../src/workspaces/owned-windows-process-receipt.js";
 import { createHash } from "node:crypto";
@@ -35,6 +36,57 @@ afterEach(async () => {
 describe.skipIf(process.platform !== "win32" || !executable)(
   "owned directory session bridge",
   () => {
+    it("holds repository and allocation roles in one native owner", async () => {
+      const f = await fixture();
+      await mkdir(path.join(f.root, "repository"));
+      await mkdir(path.join(f.root, "allocation"));
+      const acquired = await acquireOwnedWindowsRootSession(
+        f.options,
+        {},
+        [
+          { role: "repository", absolutePath: path.join(f.root, "repository") },
+          { role: "allocation", absolutePath: path.join(f.root, "allocation") },
+        ],
+        4
+      );
+      if (!acquired.ok) throw new Error(JSON.stringify(acquired));
+      try {
+        await acquired.session.run(() => acquired.root("repository").assertCurrent());
+        await acquired.session.run(() =>
+          acquired.root("allocation").createFile("marker", Buffer.from("bird"))
+        );
+        const read = await acquired.session.run(() =>
+          acquired.root("allocation").readFile("marker", 10)
+        );
+        expect(Buffer.from(read.bytes).toString()).toBe("bird");
+        expect(() => acquired.root("missing")).toThrow("unknown_root_role");
+      } finally {
+        const report = await acquired.session.close();
+        expect(report).toMatchObject({
+          outcome: "matched",
+          directory: { childrenReleased: 2, releaseAcknowledged: true },
+        });
+      }
+      await expect(acquired.root("repository").assertCurrent()).rejects.toThrow();
+    });
+    it("closes the owner when a later root is missing", async () => {
+      const f = await fixture();
+      await mkdir(path.join(f.root, "exists"));
+      const acquired = await acquireOwnedWindowsRootSession(
+        f.options,
+        {},
+        [
+          { role: "a", absolutePath: path.join(f.root, "exists") },
+          { role: "b", absolutePath: path.join(f.root, "missing") },
+        ],
+        1
+      );
+      expect(acquired).toMatchObject({
+        ok: false,
+        reason: "root_acquisition_failed",
+        report: { cleanup: { disposition: "closed", processExited: true } },
+      });
+    });
     it("projects an acknowledged process receipt before closing the native session", async () => {
       const f = await fixture();
       const acquired = await acquireOwnedWindowsDirectorySession(f.options, {
