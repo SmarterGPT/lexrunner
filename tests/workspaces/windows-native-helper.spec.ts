@@ -22,11 +22,11 @@ describe.skipIf(process.platform !== "win32" || !executable)(
   () => {
     const request = {
       kind: "hello",
-      protocol_version: "1.0.0",
+      protocol_version: "2.0.0",
       request_id: "native-test",
       client_nonce: "a".repeat(64),
     };
-    function run(input: Buffer, args = ["--boundary-protocol", "1.0.0"]) {
+    function run(input: Buffer, args = ["--boundary-protocol", "2.0.0"]) {
       return spawnSync(executable!, args, {
         input,
         timeout: 3000,
@@ -34,7 +34,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
         windowsHide: true,
       });
     }
-    it.each([2, 15])(
+    it.each([2, 128])(
       "keeps one actual native process for %i correlated status requests",
       async (rounds) => {
         const report = await probeOwnedWindowsBoundarySession(
@@ -54,11 +54,11 @@ describe.skipIf(process.platform !== "win32" || !executable)(
         });
       }
     );
-    it.each(["wrong-session", "wrong-digest", "duplicate"])(
+    it.each(["wrong-session", "wrong-digest", "duplicate", "budget"])(
       "native session rejects %s",
       async (mode) => {
         await new Promise<void>((resolve, reject) => {
-          const child = spawn(executable!, ["--boundary-session", "1.0.0"], {
+          const child = spawn(executable!, ["--boundary-session", "2.0.0"], {
             windowsHide: true,
             stdio: "pipe",
           });
@@ -84,7 +84,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
                     kind: "session_request" as const,
                     operation: "session-status" as const,
                     operation_id: "op1",
-                    protocol_version: "1.0.0" as const,
+                    protocol_version: "2.0.0" as const,
                     request_id: "r1",
                     session_nonce:
                       mode === "wrong-session" ? "f".repeat(64) : message.session_nonce,
@@ -94,10 +94,18 @@ describe.skipIf(process.platform !== "win32" || !executable)(
                       ? `sha256:${"0".repeat(64)}`
                       : `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
                   frame = encodeWindowsBoundarySession({ ...body, request_digest: digest });
-                  child.stdin.write(frame);
+                  if (mode === "budget") {
+                    for (let i = 1; i <= 129; i++) {
+                      const next = { ...body, request_id: `r${i}`, operation_id: `op${i}` };
+                      const nextDigest = `sha256:${createHash("sha256").update(canonicalJSONStringify(next)).digest("hex")}`;
+                      child.stdin.write(
+                        encodeWindowsBoundarySession({ ...next, request_digest: nextDigest })
+                      );
+                    }
+                  } else child.stdin.write(frame);
                 } else if (message.kind === "session_result") {
                   replies++;
-                  child.stdin.write(frame); // Exact replay must be rejected by native state.
+                  if (mode !== "budget") child.stdin.write(frame); // Exact replay must be rejected.
                 } else throw new Error("Unexpected native message");
               }
             } catch (error) {
@@ -111,7 +119,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
             try {
               decoder.end();
               expect(code).toBe(3);
-              expect(replies).toBe(mode === "duplicate" ? 1 : 0);
+              expect(replies).toBe(mode === "budget" ? 128 : mode === "duplicate" ? 1 : 0);
               resolve();
             } catch (error) {
               reject(error);
@@ -180,7 +188,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
       expect(result.status).toBe(3);
     });
     it("rejects unsupported launch arguments without speaking protocol", () => {
-      const result = run(Buffer.alloc(0), ["--boundary-protocol", "2.0.0"]);
+      const result = run(Buffer.alloc(0), ["--boundary-protocol", "1.0.0"]);
       expect(result.status).toBe(2);
       expect(result.stdout.length).toBe(0);
     });

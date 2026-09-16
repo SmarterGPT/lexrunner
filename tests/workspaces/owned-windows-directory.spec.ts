@@ -37,6 +37,33 @@ afterEach(async () => {
   }
 });
 describe.skipIf(process.platform !== "win32" || !executable)("owned native directory scope", () => {
+  it("admits repeated 30-second command budgets within an explicit five-minute work window", async () => {
+    const f = await fixture();
+    const report = await withOwnedWindowsBoundaryDirectory(
+      f.options,
+      { path: f.directory, workTimeoutMs: 300_000 },
+      async (scope) => {
+        for (let i = 0; i < 2; i++) {
+          const result = await scope.runProcess({
+            executable: process.execPath,
+            args: [
+              { kind: "literal", value: "-e" },
+              { kind: "literal", value: "process.exit(0)" },
+            ],
+            environment: "inherit-helper",
+            timeoutMs: 30_000,
+            maxOutputBytes: 1024,
+          });
+          expect(result.status).toBe("exited");
+        }
+      }
+    );
+    expect(report).toMatchObject({
+      outcome: "matched",
+      directory: { releaseAcknowledged: true },
+      sessionOperations: { requested: 4, correlated: 4 },
+    });
+  });
   it("replaces command environment including Unicode and empty values", async () => {
     const f = await fixture();
     let output: unknown;
@@ -433,13 +460,13 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned native direc
       f.options,
       { path: f.directory },
       async (root) => {
-        for (let i = 0; i < 7; i++) await root.createChild(`child-${i}`);
+        for (let i = 0; i < 64; i++) await root.createChild(`child-${i}`);
       }
     );
     expect(report).toMatchObject({
       reason: "work_failed",
-      directory: { childrenAcquired: 6, childrenReleased: 0, releaseAcknowledged: false },
-      sessionOperations: { requested: 7, correlated: 7 },
+      directory: { childrenAcquired: 63, childrenReleased: 0, releaseAcknowledged: false },
+      sessionOperations: { requested: 64, correlated: 64 },
     });
     await rename(f.directory, f.directory + "-released");
   });
@@ -473,13 +500,13 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned native direc
       f.options,
       { path: f.directory },
       async (scope) => {
-        for (let i = 0; i < 13; i++) await scope.assertCurrent();
+        for (let i = 0; i < 126; i++) await scope.assertCurrent();
       }
     );
     expect(report).toMatchObject({
       outcome: "matched",
-      directory: { assertions: 13, releaseAcknowledged: true },
-      sessionOperations: { requested: 15, correlated: 15 },
+      directory: { assertions: 126, releaseAcknowledged: true },
+      sessionOperations: { requested: 128, correlated: 128 },
     });
   });
   it("fails caller exceptions without claiming an acknowledged release", async () => {

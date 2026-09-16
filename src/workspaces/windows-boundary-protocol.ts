@@ -4,9 +4,15 @@ import { z } from "zod";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 
 /** Negotiation only. Parsing these messages never qualifies a production helper. */
-export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "1.0.0" as const;
+export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "2.0.0" as const;
 export const WINDOWS_BOUNDARY_CONTROL_BYTES = 4_096;
-export const WINDOWS_BOUNDARY_NEGOTIATION_FRAMES = 16;
+export const WINDOWS_BOUNDARY_SESSION_REQUESTS = 128;
+export const WINDOWS_BOUNDARY_NEGOTIATION_FRAMES = WINDOWS_BOUNDARY_SESSION_REQUESTS + 1;
+export const WINDOWS_BOUNDARY_COMMAND_TIMEOUT_MS = 30_000;
+export const WINDOWS_BOUNDARY_REPLY_RESERVE_MS = 8_000;
+export const WINDOWS_BOUNDARY_REPLY_TIMEOUT_MS =
+  WINDOWS_BOUNDARY_COMMAND_TIMEOUT_MS + WINDOWS_BOUNDARY_REPLY_RESERVE_MS;
+export const WINDOWS_BOUNDARY_WORK_TIMEOUT_MS = 300_000;
 export const WINDOWS_BOUNDARY_FILE_BYTES = 65_536;
 export const WINDOWS_BOUNDARY_SESSION_BYTES = 98_304;
 export const WINDOWS_BOUNDARY_PROCESS_BYTES = 768 * 1024;

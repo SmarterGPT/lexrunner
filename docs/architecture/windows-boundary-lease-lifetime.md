@@ -86,7 +86,7 @@ explicitly unsupported. The existing case-insensitive directory profile applies;
 this planner does not independently qualify filesystem behavior. Native opens remain
 the source of actual directory identity and filesystem support.
 
-The current 15-request session budget includes acquisition and reverse releases.
+The protocol-v2 128-request session budget includes acquisition and reverse releases.
 Planning charges one acquisition and one release for each unique held scope, then
 requires room for the caller's declared work-request budget. That budget must include
 any additional releases caused by work-created child scopes. It is a preflight count,

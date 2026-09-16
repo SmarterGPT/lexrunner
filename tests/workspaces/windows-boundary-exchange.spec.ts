@@ -111,4 +111,12 @@ describe("Windows operation correlation (no native authority)", () => {
       exchange.reserve({ ...operation, request_id: "next", operation_id: "next" }, 10)
     ).toThrow("session_budget");
   });
+  it("admits the v2 reply reserve but rejects exceeding its ceiling", () => {
+    const exchange = new WindowsBoundaryExchange(binding, () => 0);
+    const reply = exchange.reserve(operation, 38_000);
+    expect(exchange.correlate(reply).correlated).toBe(true);
+    expect(() =>
+      exchange.reserve({ ...operation, request_id: "next", operation_id: "next" }, 38_001)
+    ).toThrow("invalid_timeout");
+  });
 });

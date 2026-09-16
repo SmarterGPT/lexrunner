@@ -7,7 +7,7 @@ using System.Text.Json;
 // Development protocol and held-directory peer; not a qualified production boundary.
 internal static class Program
 {
-  private const string Version = "1.0.0";
+  internal const string Version = "2.0.0";
   private const int Limit = 4096;
   internal const int FileLimit = 65_536;
   private const int SessionLimit = 98_304;
@@ -103,7 +103,7 @@ internal static class Program
     {
       var first = input.ReadByte();
       if (first == -1) return 0;
-      if (count >= 15) throw new InvalidDataException();
+      if (count >= 128) throw new InvalidDataException();
       header[0] = (byte)first;
       input.ReadExactly(header.AsSpan(1));
       var length = BinaryPrimitives.ReadUInt32BigEndian(header);

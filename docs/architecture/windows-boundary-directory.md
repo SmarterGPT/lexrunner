@@ -1,5 +1,8 @@
 # Native development directory leases
 
+> Version note: the v1 limits/launch examples below are historical. Current protocol
+> 2.0.0 requires a new helper; see [v2 session budgets](windows-boundary-budget-v2.md).
+
 The explicit `--boundary-session 1.0.0` NativeAOT development peer supports one
 initial directory chain per session, plus independently held children.
 `directory_request` accepts `acquire` with a path,

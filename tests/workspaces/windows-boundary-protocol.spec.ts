@@ -15,7 +15,7 @@ import {
 it("requires explicit session decoding and keeps negotiation closed to operations", () => {
   const operation = {
     kind: "session_result",
-    protocol_version: "1.0.0",
+    protocol_version: "2.0.0",
     request_id: "r1",
     client_nonce: "a".repeat(64),
     session_nonce: "b".repeat(64),
@@ -31,7 +31,7 @@ it("requires explicit session decoding and keeps negotiation closed to operation
 
 const request = {
   kind: "hello" as const,
-  protocol_version: "1.0.0" as const,
+  protocol_version: "2.0.0" as const,
   request_id: "request-1",
   client_nonce: "a".repeat(64),
 };
@@ -79,7 +79,7 @@ it("rejects oversized session frames from the header and retains the stream budg
   expect(() => decoder.push(header)).toThrow(expect.objectContaining({ code: "stream_closed" }));
   expect(() =>
     new WindowsBoundaryControlDecoder(true).push(
-      Buffer.alloc(16 * (4 + WINDOWS_BOUNDARY_PROCESS_BYTES) + 1)
+      Buffer.alloc(129 * (4 + WINDOWS_BOUNDARY_PROCESS_BYTES) + 1)
     )
   ).toThrow(expect.objectContaining({ code: "stream_limit" }));
 });
@@ -102,7 +102,7 @@ function expectTerminalFailure(frame: Uint8Array, code = "invalid_frame") {
 describe("Windows boundary negotiation codec", () => {
   it("matches the fixed v1 wire vector independently of the decoder", () => {
     const payload =
-      '{\n  "client_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",\n  "kind": "hello",\n  "protocol_version": "1.0.0",\n  "request_id": "request-1"\n}\n';
+      '{\n  "client_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",\n  "kind": "hello",\n  "protocol_version": "2.0.0",\n  "request_id": "request-1"\n}\n';
     const vector = Buffer.concat([Buffer.from([0, 0, 0, 168]), Buffer.from(payload, "utf8")]);
     expect(encodeWindowsBoundaryControl(request)).toEqual(vector);
     expect(new WindowsBoundaryControlDecoder().push(vector)).toEqual([request]);
@@ -168,7 +168,7 @@ describe("Windows boundary negotiation codec", () => {
     expectTerminalFailure(raw(bytes));
   });
   it.each([
-    { ...request, protocol_version: "2.0.0" },
+    { ...request, protocol_version: "1.0.0" },
     { ...request, kind: "execute" },
     { ...request, request_id: "bad\nidentifier" },
     { ...request, client_nonce: "a" },

@@ -1,3 +1,9 @@
+import {
+  WINDOWS_BOUNDARY_SESSION_REQUESTS,
+  WINDOWS_BOUNDARY_COMMAND_TIMEOUT_MS,
+  WINDOWS_BOUNDARY_REPLY_RESERVE_MS,
+  WINDOWS_BOUNDARY_WORK_TIMEOUT_MS,
+} from "./windows-boundary-protocol.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { isAbsolute, win32 } from "node:path";
@@ -175,7 +181,7 @@ const ProcessOptions = z.strictObject({
   environment: z.enum(["inherit-helper", "replace"]),
   env: z.record(z.string(), z.string()).optional(),
   // Leave 8 seconds within the existing 30-second exchange ceiling for cleanup/transport.
-  timeoutMs: z.number().int().min(1).max(22_000),
+  timeoutMs: z.number().int().min(1).max(WINDOWS_BOUNDARY_COMMAND_TIMEOUT_MS),
   maxOutputBytes: z
     .number()
     .int()
@@ -236,7 +242,7 @@ const DirectoryOptions = z.strictObject({
     .max(1024)
     .regex(/^[a-z]:\\/iu)
     .refine((s) => !s.includes("\0")),
-  workTimeoutMs: z.number().int().min(1).max(30_000).default(5_000),
+  workTimeoutMs: z.number().int().min(1).max(WINDOWS_BOUNDARY_WORK_TIMEOUT_MS).default(5_000),
   deadlineGraceMs: z.number().int().min(0).max(5_000).default(1_000),
 });
 type DirectoryWork = (scope: OwnedWindowsDirectoryScope) => Promise<void>;
@@ -300,7 +306,12 @@ async function runOwnedWindowsBoundary(
     },
     stderrBytes: 0,
   });
-  if (!parsed.success || !Number.isSafeInteger(rounds) || rounds < 0 || rounds > 15)
+  if (
+    !parsed.success ||
+    !Number.isSafeInteger(rounds) ||
+    rounds < 0 ||
+    rounds > WINDOWS_BOUNDARY_SESSION_REQUESTS
+  )
     return empty("invalid_options");
   if (signal?.aborted) return empty("cancelled");
   const settings = parsed.data;
@@ -531,7 +542,7 @@ async function runOwnedWindowsBoundary(
         closing ||
         (failure && !(deadlineDraining && operation === "release")) ||
         directoryOperation ||
-        sentCount >= 15
+        sentCount >= WINDOWS_BOUNDARY_SESSION_REQUESTS
       )
         throw new Error("Directory session unavailable");
       if (stopExpiredGrace()) throw new Error("Directory session expired");
@@ -641,7 +652,11 @@ async function runOwnedWindowsBoundary(
             fail("work_failed");
             throw new Error("Invalid child component");
           }
-          if (assertion || sentCount + 1 + liveDirectories.length + (child ? 1 : 0) > 15) {
+          if (
+            assertion ||
+            sentCount + 1 + liveDirectories.length + (child ? 1 : 0) >
+              WINDOWS_BOUNDARY_SESSION_REQUESTS
+          ) {
             fail("work_failed");
             throw new Error("Directory operation limit or concurrent request");
           }
@@ -694,10 +709,10 @@ async function runOwnedWindowsBoundary(
                 )
                   throw new Error("Invalid environment block");
               }
-              const replyBudget = parsed.timeoutMs + 8_000;
+              const replyBudget = parsed.timeoutMs + WINDOWS_BOUNDARY_REPLY_RESERVE_MS;
               if (
                 performance.now() + replyBudget >= workDeadline ||
-                sentCount + 1 + liveDirectories.length > 15
+                sentCount + 1 + liveDirectories.length > WINDOWS_BOUNDARY_SESSION_REQUESTS
               )
                 throw new Error("Insufficient process session budget");
               const args = parsed.args.map((arg) => {
