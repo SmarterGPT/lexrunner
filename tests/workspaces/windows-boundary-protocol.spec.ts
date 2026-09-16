@@ -100,7 +100,7 @@ function expectTerminalFailure(frame: Uint8Array, code = "invalid_frame") {
 }
 
 describe("Windows boundary negotiation codec", () => {
-  it("matches the fixed v1 wire vector independently of the decoder", () => {
+  it("matches the fixed v2 wire vector independently of the decoder", () => {
     const payload =
       '{\n  "client_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",\n  "kind": "hello",\n  "protocol_version": "2.0.0",\n  "request_id": "request-1"\n}\n';
     const vector = Buffer.concat([Buffer.from([0, 0, 0, 168]), Buffer.from(payload, "utf8")]);

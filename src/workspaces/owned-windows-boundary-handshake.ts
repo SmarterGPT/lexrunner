@@ -180,7 +180,7 @@ const ProcessOptions = z.strictObject({
     .max(64),
   environment: z.enum(["inherit-helper", "replace"]),
   env: z.record(z.string(), z.string()).optional(),
-  // Leave 8 seconds within the existing 30-second exchange ceiling for cleanup/transport.
+  // Reserve eight seconds beyond the command budget for cleanup/transport.
   timeoutMs: z.number().int().min(1).max(WINDOWS_BOUNDARY_COMMAND_TIMEOUT_MS),
   maxOutputBytes: z
     .number()
