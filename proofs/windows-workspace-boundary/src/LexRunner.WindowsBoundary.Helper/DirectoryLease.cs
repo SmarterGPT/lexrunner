@@ -84,7 +84,7 @@ internal sealed class DirectoryLease : IDisposable
     catch { child?.Dispose(); throw; }
   }
 
-  private static void ValidateComponent(string component)
+  internal static void ValidateComponent(string component)
   {
     if (component.Length is 0 or > 255 || component is "." or ".." ||
         component.EndsWith(' ') || component.EndsWith('.') ||
@@ -201,7 +201,7 @@ internal sealed class DirectoryLease : IDisposable
     if (uncertain) throw new IOException("Native handle release uncertain");
   }
 
-  private static Identity Capture(DirectoryHandle handle, bool directory = true)
+  internal static Identity Capture(DirectoryHandle handle, bool directory = true)
   {
     var tag = new byte[8];
     var id = new byte[24];

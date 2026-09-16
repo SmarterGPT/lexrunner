@@ -37,7 +37,9 @@ afterEach(async () => {
   for (const root of roots.splice(0)) {
     if (path.dirname(root) !== artifacts || !path.basename(root).startsWith("workspace-lease-"))
       throw new Error("Invalid cleanup root");
-    await rm(root, { recursive: true, force: true });
+    // Cancellation deliberately reports unconfirmed release. Its bounded child
+    // can still hold cwd briefly; fixture cleanup is not release evidence.
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
