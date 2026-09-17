@@ -3,6 +3,30 @@
 Status: current broker guard implemented; removal transition remains unqualified.
 Tracking: [#997](https://github.com/SmarterGPT/lexrunner/issues/997).
 
+## Removal evidence and recovery assessment
+
+`workspace-removal-evidence.ts` defines an internal, read-side contract for removal
+intent and independently collected observations. Intent binds operation, Attempt,
+lease revision, root identity, Git registration and preservation-evidence digests.
+Observation binds that intent to separately observed root, contents and registration
+state. Records use strict bounded canonical JSON and body digests; duplicate keys,
+unknown fields, truncation, digest mismatch and inconsistent states fail assessment.
+
+The caller supplies independently selected expected intent/observation digests, an
+assessment time and maximum observation age. Old, future or pre-intent observations
+require reconciliation. Digest equality associates records; it does not authenticate
+their source, establish current fencing, prove persistence or reserve an allocation.
+The caller remains responsible for selecting current independently observed evidence.
+
+Assessment separates `contents_remaining`, `root_remaining`,
+`registration_remaining` and `absence_observed`; uncertainty, changed identities,
+locks and a root surviving without registration require reconciliation. Every result
+has `authorizesMutation: false`. Even observed absence is not a native release receipt,
+an authorized retry, or an automatically finalized lifecycle transition. No filesystem
+or Git operation is dispatched. Records can be serialized with `canonicalJSONStringify`;
+storage, authenticated delivery, fixture ingestion and lifecycle integration remain
+pending. This contract is not exposed through the product protocol or public CLI.
+
 Allocation conflict checks retain quarantined leases as branch/path occupants in
 both lifecycle stores. Quarantine stops execution; it does not free unresolved data
 for another Attempt to adopt. A fresh branch/path remains available. This enforces
