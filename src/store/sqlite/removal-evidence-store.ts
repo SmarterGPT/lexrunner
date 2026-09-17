@@ -96,30 +96,39 @@ export class SqliteRemovalEvidenceStore extends SqliteCoordinationStore {
   private intent(operationId: string) {
     const row = this.db
       .prepare(
-        "SELECT intentDigest,substr(recordJson,1,16385) AS bytes FROM removal_intents WHERE operationId=?"
+        "SELECT intentDigest,substr(CAST(recordJson AS BLOB),1,16385) AS bytes FROM removal_intents WHERE operationId=?"
       )
-      .get(operationId) as { intentDigest: string; bytes: string } | undefined;
+      .get(operationId) as { intentDigest: string; bytes: Buffer } | undefined;
     if (!row) return null;
-    const parsed = parseRemovalIntentBytes(row.bytes);
+    const recordBytes = decodeStoredBytes(row.bytes);
+    const parsed = parseRemovalIntentBytes(recordBytes);
     if (parsed.operation_id !== operationId || parsed.intent_digest !== row.intentDigest)
       throw new Error("Corrupt removal intent binding");
-    return { bytes: row.bytes, digest: row.intentDigest };
+    return { bytes: recordBytes, digest: row.intentDigest };
   }
 
   private observation(observationDigest: string, intentDigest: string) {
     const row = this.db
       .prepare(
-        "SELECT intentDigest,substr(recordJson,1,16385) AS bytes FROM removal_observations WHERE observationDigest=?"
+        "SELECT intentDigest,substr(CAST(recordJson AS BLOB),1,16385) AS bytes FROM removal_observations WHERE observationDigest=?"
       )
-      .get(observationDigest) as { intentDigest: string; bytes: string } | undefined;
+      .get(observationDigest) as { intentDigest: string; bytes: Buffer } | undefined;
     if (!row) return null;
-    const parsed = parseRemovalObservationBytes(row.bytes);
+    const recordBytes = decodeStoredBytes(row.bytes);
+    const parsed = parseRemovalObservationBytes(recordBytes);
     if (
       row.intentDigest !== parsed.intent_digest ||
       parsed.observation_digest !== observationDigest
     )
       throw new Error("Corrupt removal observation binding");
     // A valid record for another intent is never attached to this snapshot.
-    return parsed.intent_digest === intentDigest ? row.bytes : null;
+    return parsed.intent_digest === intentDigest ? recordBytes : null;
   }
+}
+
+function decodeStoredBytes(bytes: Buffer): string {
+  if (!Buffer.isBuffer(bytes) || bytes.length > 16384)
+    throw new Error("Invalid stored removal evidence bytes");
+  // Preserve BOMs for canonical validation; never replace invalid UTF-8 or hide NULs.
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
 }

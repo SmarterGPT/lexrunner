@@ -197,4 +197,46 @@ describe("SQLite removal evidence journal", () => {
     }
     expect(() => store.readEvidence("wrong", observation.observation_digest)).toThrow("binding");
   });
+  describe.each(["intent", "observation"] as const)("raw %s corruption", (kind) => {
+    it.each(["nul", "oversized", "invalid-utf8", "bom"])(
+      "rejects %s bytes on read and replay",
+      (damage) => {
+        const store = open();
+        store.appendIntent(bytes(intent));
+        store.appendObservation(bytes(observation));
+        const original = Buffer.from(bytes(kind === "intent" ? intent : observation));
+        const corrupted =
+          damage === "nul"
+            ? Buffer.concat([original, Buffer.from([0]), Buffer.from("CORRUPT")])
+            : damage === "oversized"
+              ? Buffer.concat([original, Buffer.alloc(17000, 32)])
+              : damage === "bom"
+                ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), original])
+                : Buffer.concat([original, Buffer.from([0xff])]);
+        const db = new Database(path);
+        try {
+          db.prepare(
+            `UPDATE removal_${kind === "intent" ? "intents" : "observations"} SET recordJson=CAST(? AS TEXT)`
+          ).run(corrupted);
+          expect(() =>
+            store.readEvidence(intent.operation_id, observation.observation_digest)
+          ).toThrow();
+          expect(() =>
+            kind === "intent"
+              ? store.appendIntent(bytes(intent))
+              : store.appendObservation(bytes(observation))
+          ).toThrow();
+          expect(
+            db
+              .prepare(
+                `SELECT CAST(recordJson AS BLOB) AS raw FROM removal_${kind === "intent" ? "intents" : "observations"}`
+              )
+              .get()
+          ).toEqual({ raw: corrupted });
+        } finally {
+          db.close();
+        }
+      }
+    );
+  });
 });
