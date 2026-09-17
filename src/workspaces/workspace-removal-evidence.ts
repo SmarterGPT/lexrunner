@@ -43,6 +43,22 @@ export function createRemovalObservation(input: z.input<typeof observationBody>)
   return Object.freeze({ ...body, observation_digest: computeCanonicalHash(body) });
 }
 
+export function parseRemovalIntentBytes(bytes: string | null) {
+  const record = intentSchema.parse(decode(bytes));
+  const { intent_digest, ...body } = record;
+  if (computeCanonicalHash(body) !== intent_digest)
+    throw new Error("Removal intent digest mismatch");
+  return Object.freeze(record);
+}
+
+export function parseRemovalObservationBytes(bytes: string | null) {
+  const record = observationSchema.parse(decode(bytes));
+  const { observation_digest, ...body } = record;
+  if (computeCanonicalHash(body) !== observation_digest)
+    throw new Error("Removal observation digest mismatch");
+  return Object.freeze(record);
+}
+
 export type RemovalRecoveryState =
   | "reconciliation_required"
   | "contents_remaining"

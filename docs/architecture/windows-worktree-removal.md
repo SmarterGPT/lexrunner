@@ -24,8 +24,25 @@ locks and a root surviving without registration require reconciliation. Every re
 has `authorizesMutation: false`. Even observed absence is not a native release receipt,
 an authorized retry, or an automatically finalized lifecycle transition. No filesystem
 or Git operation is dispatched. Records can be serialized with `canonicalJSONStringify`;
-storage, authenticated delivery, fixture ingestion and lifecycle integration remain
-pending. This contract is not exposed through the product protocol or public CLI.
+authenticated delivery, fixture ingestion and lifecycle integration remain pending.
+This contract is not exposed through the product protocol or public CLI.
+
+`SqliteRemovalEvidenceStore` is an opt-in journal on the existing coordination
+database. It validates canonical bytes and digests before appending immutable intents
+and observations. Exact retries are idempotent; a conflicting intent cannot replace
+the record for an operation. Observations require a recorded intent, and earlier
+observations remain addressable by digest. Readback selects an explicit operation
+and observation digest within one read transaction, validates both records and their
+row bindings, and returns bytes for the existing assessor. Missing evidence remains
+missing; corrupt evidence throws without repair. Read-only reopening is supported.
+
+These persistence tests cover connection reopening and independent connection retries,
+not abrupt process termination or power loss. A successful transaction is not evidence
+of qualified storage durability, current lease ownership, authenticated provenance,
+native handle release or removal completion. The journal does not acquire or release
+allocations, select the latest observation, or dispatch recovery. Semantic consistency
+and freshness remain assessor responsibilities; contradictory observations can be
+retained as evidence without being accepted for recovery.
 
 Allocation conflict checks retain quarantined leases as branch/path occupants in
 both lifecycle stores. Quarantine stops execution; it does not free unresolved data
