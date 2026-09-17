@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
@@ -15,6 +15,14 @@ const execFileAsync = promisify(execFile);
  */
 describe("rotate-secrets-example.ts", () => {
   const scriptPath = "scripts/rotate-secrets-example.ts";
+  // Exercise the installed runtime directly, without npx resolution/startup work.
+  // Stop the owned child before Vitest's five-second test deadline.
+  const runExample = (env: NodeJS.ProcessEnv) =>
+    execFileAsync(process.execPath, ["--import", "tsx", scriptPath], {
+      env,
+      timeout: 4000,
+      killSignal: "SIGKILL",
+    });
 
   describe("deterministic output", () => {
     it("should produce consistent JSON structure", async () => {
@@ -23,7 +31,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_GITHUB_TOKEN: "ghp_test1234567890abcdefghijklmnopqrstuvwx",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
 
       // Check required fields exist
@@ -49,7 +57,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_GITHUB_TOKEN: "ghp_test1234567890abcdefghijklmnopqrstuvwx",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
       const keys = Object.keys(output);
 
@@ -63,7 +71,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_GITHUB_TOKEN: "ghp_test1234567890abcdefghijklmnopqrstuvwx",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
 
       expect(stdout.endsWith("\n")).toBe(true);
       // Ensure exactly one trailing newline (canonical JSON)
@@ -78,7 +86,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_DATABASE_URL: "postgresql://test",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
 
       // All secrets are fresh, should be in 'ok' array, sorted
@@ -96,7 +104,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_DATABASE_URL: "postgresql://test",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
 
       expect(output.status).toBe("ok");
@@ -113,7 +121,7 @@ describe("rotate-secrets-example.ts", () => {
       delete env.LEX_PR_API_KEY;
       delete env.LEX_PR_DATABASE_URL;
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
 
       // Missing secrets don't trigger "needs rotation" - they just aren't checked
@@ -130,7 +138,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_GITHUB_TOKEN: "ghp_test1234567890abcdefghijklmnopqrstuvwx",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
 
       expect(() => JSON.parse(stdout.trim())).not.toThrow();
     });
@@ -141,7 +149,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_GITHUB_TOKEN: "ghp_test1234567890abcdefghijklmnopqrstuvwx",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
 
       // Validate ISO 8601 format
@@ -160,7 +168,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_GITHUB_TOKEN: "ghp_test1234567890abcdefghijklmnopqrstuvwx",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
 
       expect(output.findings.maxAgeDays).toBe(90);
@@ -173,7 +181,7 @@ describe("rotate-secrets-example.ts", () => {
         // Missing: API_KEY, DATABASE_URL (but they won't need rotation, just missing)
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
 
       // All secrets should be 'ok' if none are old
@@ -189,7 +197,7 @@ describe("rotate-secrets-example.ts", () => {
         LEX_PR_GITHUB_TOKEN: "ghp_test1234567890abcdefghijklmnopqrstuvwx",
       };
 
-      const { stdout } = await execFileAsync("npx", ["tsx", scriptPath], { env });
+      const { stdout } = await runExample(env);
       const output = JSON.parse(stdout.trim());
 
       expect(output.command).toBe("rotate-secrets-example");

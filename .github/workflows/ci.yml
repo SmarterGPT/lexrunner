@@ -221,6 +221,7 @@ jobs:
           tests/runs/agent-work-preparation-service.spec.ts
           tests/workspaces/workspace-boundary-resolver.spec.ts
           tests/workspaces/workspace-boundary.spec.ts
+          tests/store/sqlite/removal-evidence-interruption.spec.ts
       - name: Run native Windows handle-authority proof
         shell: pwsh
         run: ./proofs/windows-workspace-boundary/verify.ps1
