@@ -18,6 +18,7 @@ internal static class Program
     var root = Path.Combine(Path.GetFullPath(args[0]), "removal-probe-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(root);
     var results = new List<string>();
+    var evidence = new List<RemovalEvidence>();
     void Run(string name, Action<string> test)
     {
       var path = Path.Combine(root, name);
@@ -109,8 +110,8 @@ internal static class Program
       });
       if (args.Length == 2)
       {
-        WorktreeRemovalProbe.Run(root, args[1], results);
-        WorktreeRemovalProbe.Run(root, args[1], results, interrupted: true);
+        WorktreeRemovalProbe.Run(root, args[1], results, evidence);
+        WorktreeRemovalProbe.Run(root, args[1], results, evidence, interrupted: true);
       }
       using var output = new MemoryStream();
       using (var json = new Utf8JsonWriter(output))
@@ -120,6 +121,9 @@ internal static class Program
         json.WriteString("filesystem", Snapshot(root).FileSystem);
         json.WriteStartArray("passed");
         foreach (var result in results) json.WriteStringValue(result);
+        json.WriteEndArray();
+        json.WriteStartArray("worktreeEvidence");
+        foreach (var item in evidence) item.Write(json);
         json.WriteEndArray();
         json.WriteEndObject();
       }

@@ -42,7 +42,13 @@ jobs:
           node node_modules/vitest/vitest.mjs run tests/workspaces/node-git-worktree-native.spec.ts tests/workspaces/owned-windows-workspace-lease.spec.ts tests/workspaces/owned-windows-directory-session.spec.ts tests/workspaces/owned-windows-directory.spec.ts tests/workspaces/windows-native-directory.spec.ts tests/workspaces/windows-native-helper.spec.ts tests/workspaces/owned-windows-boundary-handshake.spec.ts tests/workspaces/windows-boundary-protocol.spec.ts tests/workspaces/windows-boundary-exchange.spec.ts tests/workspaces/workspace-boundary.spec.ts tests/workspaces/owned-windows-root-session.spec.ts tests/workspaces/owned-windows-file-receipt.spec.ts tests/workspaces/owned-windows-process-receipt.spec.ts tests/workspaces/owned-windows-process-binding.spec.ts tests/workspaces/windows-command-environment.spec.ts --maxWorkers=1
       - name: Exercise development empty-directory removal lifecycle
         working-directory: proofs/windows-workspace-boundary
-        run: dotnet run --project tests/RemovalLeaseProbe -c Release -- ../../artifacts (Get-Command git.exe).Source
+        run: |
+          dotnet build tests/RemovalLeaseProbe -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report = dotnet run --no-build --project tests/RemovalLeaseProbe -c Release -- ../../artifacts (Get-Command git.exe).Source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report | Set-Content ../../artifacts/removal-observed-report.json -Encoding utf8
+          node --import tsx ../../scripts/verify-removal-probe-evidence.ts ../../artifacts/removal-observed-report.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unsigned-helper

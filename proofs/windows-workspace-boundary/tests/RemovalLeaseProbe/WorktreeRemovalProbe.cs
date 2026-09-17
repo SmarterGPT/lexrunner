@@ -4,7 +4,7 @@ using System.Text.Json;
 // Disposable composition probe, not a recursive deletion implementation.
 internal static class WorktreeRemovalProbe
 {
-  internal static void Run(string parent, string git, List<string> results, bool interrupted = false)
+  internal static void Run(string parent, string git, List<string> results, List<RemovalEvidence> evidence, bool interrupted = false)
   {
     if (!Path.IsPathFullyQualified(git)) throw new InvalidDataException("Absolute Git required");
     foreach (var phase in new[] { "content", "gitfile", "root" })
@@ -27,6 +27,11 @@ internal static class WorktreeRemovalProbe
       DirectoryLease.Identity identity;
       using (var held = DirectoryLease.Acquire(target)) identity = held.Leaf;
       var gitfile = File.ReadAllText(Path.Combine(target, ".git"));
+      Check(gitfile.StartsWith("gitdir: ", StringComparison.Ordinal));
+      var registrationPath = Path.GetFullPath(gitfile[8..].Trim(), target);
+      var snapshots = new List<RemovalSnapshot> {
+        RemovalSnapshot.Capture(target, registrationPath, Registered(Git(git, repo, "worktree", "list", "--porcelain"), target))
+      };
       var intentPath = Path.Combine(root, "intent.json");
       using (var file = new FileStream(intentPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
       {
@@ -58,6 +63,7 @@ internal static class WorktreeRemovalProbe
       Check(expected == identity && Field("gitfile") == gitfile);
       var before = Git(git, repo, "worktree", "list", "--porcelain");
       Check(Registered(before, target) && Registered(before, other));
+      snapshots.Add(RemovalSnapshot.Capture(target, registrationPath, Registered(before, target)));
       if (phase != "root")
       {
         Check(File.ReadAllText(Path.Combine(target, "second.txt")) == "second");
@@ -74,14 +80,17 @@ internal static class WorktreeRemovalProbe
         Check(removal.Disposition == "accepted" && removal.LeafRelease == "confirmed" && removal.NameState == "absent");
       }
       Check(!Directory.Exists(target));
+      snapshots.Add(RemovalSnapshot.Capture(target, registrationPath, Registered(Git(git, repo, "worktree", "list", "--porcelain"), target)));
       Git(git, repo, "worktree", "remove", target);
       var after = Git(git, repo, "worktree", "list", "--porcelain");
       Check(!Registered(after, target) && Registered(after, other));
+      snapshots.Add(RemovalSnapshot.Capture(target, registrationPath, Registered(after, target)));
       Check(File.ReadAllText(Path.Combine(other, "first.txt")) == "first");
       Check(File.ReadAllText(Path.Combine(other, "second.txt")) == "second");
       // A second recovery observation establishes completion without resending removal.
       Check(!Directory.Exists(target) && !Registered(Git(git, repo, "worktree", "list", "--porcelain"), target));
       results.Add((interrupted ? "worktree-process-killed-" : "worktree-planned-stop-") + phase);
+      evidence.Add(new RemovalEvidence(results[^1], snapshots));
     }
   }
 
