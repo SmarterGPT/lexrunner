@@ -24,7 +24,7 @@ locks and a root surviving without registration require reconciliation. Every re
 has `authorizesMutation: false`. Even observed absence is not a native release receipt,
 an authorized retry, or an automatically finalized lifecycle transition. No filesystem
 or Git operation is dispatched. Records can be serialized with `canonicalJSONStringify`;
-authenticated delivery, fixture ingestion and lifecycle integration remain pending.
+authenticated delivery and production lifecycle integration remain pending.
 This contract is not exposed through the product protocol or public CLI.
 
 `SqliteRemovalEvidenceStore` is an opt-in journal on the existing coordination
@@ -132,8 +132,8 @@ post-operation boundaries, not termination inside the native disposition call.
 The phase marker proves fixture progress, not an authenticated receipt. Confirmed child
 termination does not manufacture native close acknowledgements. No power-loss durability,
 authenticated intent, concurrent allocation exclusion or production recovery is claimed.
-The fixture file is not a production receipt or authority grant; restart ingestion through
-the existing verifier remains pending. No arbitrary recursive content deletion is qualified.
+The fixture file is not a production receipt or authority grant; authenticated restart
+ingestion remains pending. No arbitrary recursive content deletion is qualified.
 The signing qualification lane runs these cases, but the helper protocol still cannot
 invoke this primitive.
 

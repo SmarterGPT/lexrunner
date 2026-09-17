@@ -48,7 +48,19 @@ jobs:
           $report = dotnet run --no-build --project tests/RemovalLeaseProbe -c Release -- ../../artifacts (Get-Command git.exe).Source
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $report | Set-Content ../../artifacts/removal-observed-report.json -Encoding utf8
-          node --import tsx ../../scripts/verify-removal-probe-evidence.ts ../../artifacts/removal-observed-report.json
+          $verified = node --import tsx ../../scripts/verify-removal-probe-evidence.ts ../../artifacts/removal-observed-report.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $verified | Set-Content ../../artifacts/removal-observed-verification.json -Encoding utf8
+      - name: Retain development removal evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: development-removal-evidence
+          path: |
+            artifacts/removal-observed-report.json
+            artifacts/removal-observed-verification.json
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unsigned-helper
