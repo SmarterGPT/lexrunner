@@ -36,8 +36,23 @@ and observation digest within one read transaction, validates both records and t
 row bindings, and returns bytes for the existing assessor. Missing evidence remains
 missing; corrupt evidence throws without repair. Read-only reopening is supported.
 
-These persistence tests cover connection reopening and independent connection retries,
-not abrupt process termination or power loss. A successful transaction is not evidence
+Persistence tests cover connection reopening and independent connection retries.
+A separate disposable child-process fixture covers forced termination after an intent
+commit, during an uncommitted observation, and after an observation commit. It uses
+the real journal API; a test-only subclass keeps an outer transaction open around
+the observation append for the uncommitted case. The parent waits for an IPC phase
+marker, kills its child, waits for process close, checks that managed cleanup did not
+run, and reopens the database through the ordinary writable store constructor.
+Committed records survive these tested stops; the uncommitted observation is absent.
+The existing assessor still returns `authorizesMutation: false`, including when the
+fixture's supplied observation says both root and registration are absent. Re-appending
+after readback is only a storage retry test, not permission to repeat filesystem work.
+The default test suite and Windows bootstrap CI lane run the fixture.
+
+This does not test power loss, termination inside a SQLite commit, all journal modes,
+or actual filesystem removal coupled to database persistence. The observations are
+synthetic fixture inputs; IPC markers are synchronization, not authenticated evidence.
+A successful transaction is not evidence
 of qualified storage durability, current lease ownership, authenticated provenance,
 native handle release or removal completion. The journal does not acquire or release
 allocations, select the latest observation, or dispatch recovery. Semantic consistency
