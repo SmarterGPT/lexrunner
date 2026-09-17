@@ -24,7 +24,7 @@ locks and a root surviving without registration require reconciliation. Every re
 has `authorizesMutation: false`. Even observed absence is not a native release receipt,
 an authorized retry, or an automatically finalized lifecycle transition. No filesystem
 or Git operation is dispatched. Records can be serialized with `canonicalJSONStringify`;
-authenticated delivery, fixture ingestion and lifecycle integration remain pending.
+authenticated delivery and production lifecycle integration remain pending.
 This contract is not exposed through the product protocol or public CLI.
 
 `SqliteRemovalEvidenceStore` is an opt-in journal on the existing coordination
@@ -132,10 +132,34 @@ post-operation boundaries, not termination inside the native disposition call.
 The phase marker proves fixture progress, not an authenticated receipt. Confirmed child
 termination does not manufacture native close acknowledgements. No power-loss durability,
 authenticated intent, concurrent allocation exclusion or production recovery is claimed.
-The fixture file is not a production receipt or authority grant; restart ingestion through
-the existing verifier remains pending. No arbitrary recursive content deletion is qualified.
+The fixture file is not a production receipt or authority grant; authenticated restart
+ingestion remains pending. No arbitrary recursive content deletion is qualified.
 The signing qualification lane runs these cases, but the helper protocol still cannot
 invoke this primitive.
+
+With Git supplied, the probe also emits four raw snapshots for each of its six
+worktree cases: initial state, planned/interrupted stop, root removed, and registration
+removed. Each snapshot reads the root identity and contents, and separately reads
+Git's registration listing plus the native registration-directory identity and its
+`gitdir` backlink. Unexpected I/O failures stop the probe. These sequential reads are
+not an atomic namespace snapshot or an authenticated production observation.
+
+`node --import tsx scripts/verify-removal-probe-evidence.ts <report.json>` projects
+these bounded fixture reports into removal intents/observations, appends them to a
+temporary SQLite journal, reopens it, selects each exact record, and checks it through
+the existing removal assessor. The output binds the exact source-report byte digest
+to fixture intents and identifies every assessed observation. All results remain
+non-authorizing and explicitly unauthenticated. Expected identities come from the
+fixture's initial snapshot, not independent production provisioning; the preservation
+digest denotes the disposable known-files fixture, not a verified preservation receipt.
+These intents are reconstructed after the probe; their source timestamps do not prove
+that a journal intent was persisted before filesystem mutation. The output labels
+this retrospective fixture timing explicitly.
+The temporary journal is removed after verification; retain the raw report and output
+as qualification evidence. Changed identities, missing cases, malformed records and
+inconsistent observations fail this fixture verifier. The signing qualification lane
+runs it after the native probe. Authenticated capture, current fencing and production
+recovery integration remain pending.
 
 This primitive is not reachable through the helper protocol or production resolver.
 It does not upgrade an existing read lease; that lease must already be absent before
