@@ -10,6 +10,7 @@
  */
 
 import { SecretsManager } from "../src/security/secrets.js";
+import { pathToFileURL } from "node:url";
 import { canonicalJSONStringify } from "../src/util/canonicalJson.js";
 
 /**
@@ -127,7 +128,7 @@ async function main() {
 }
 
 // Run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }
 
