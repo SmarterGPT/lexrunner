@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { verifyRemovalProbeEvidence } from "../../scripts/verify-removal-probe-evidence.js";
+import {
+  probeIntent,
+  probeObservation,
+  probePreservationDigest,
+  removalProbeSnapshot,
+} from "../../scripts/removal-probe-records.js";
+import { canonicalJSONStringify } from "../../src/util/canonicalJson.js";
 
 function fixture() {
   const identity = { path: "fixture", volume: "1", fileId: "2", filesystem: "fixture" };
@@ -36,6 +43,35 @@ function fixture() {
 }
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value));
 describe("development removal probe evidence ingestion", () => {
+  it("verifies pre-mutation checkpoint bindings without treating them as authenticated evidence", async () => {
+    const report = fixture();
+    const items = report.worktreeEvidence.map((item) => {
+      const initial = removalProbeSnapshot.parse(item.snapshots[0]);
+      const intent = probeIntent(item.name, initial, probePreservationDigest(initial));
+      return {
+        ...item,
+        journalCheckpoints: item.snapshots.map((state) => ({
+          intentBytes: canonicalJSONStringify(intent),
+          observationBytes: canonicalJSONStringify(
+            probeObservation(intent.intent_digest, removalProbeSnapshot.parse(state))
+          ),
+        })),
+      };
+    });
+    const bound = { ...report, worktreeEvidence: items };
+    const result = await verifyRemovalProbeEvidence(encode(bound));
+    expect(result.intentTiming).toBe("pre-mutation-journal-fixture");
+    expect(result.authenticated).toBe(false);
+    items[0].journalCheckpoints[1] = items[0].journalCheckpoints[2];
+    await expect(verifyRemovalProbeEvidence(encode(bound))).rejects.toThrow(
+      "does not match observed snapshot"
+    );
+    await expect(
+      verifyRemovalProbeEvidence(
+        encode({ ...report, worktreeEvidence: [items[0], ...report.worktreeEvidence.slice(1)] })
+      )
+    ).rejects.toThrow("Mixed journal");
+  });
   it("round-trips all selected observations without authorizing or authenticating them", async () => {
     const result = await verifyRemovalProbeEvidence(encode(fixture()));
     expect(result.authenticated).toBe(false);
