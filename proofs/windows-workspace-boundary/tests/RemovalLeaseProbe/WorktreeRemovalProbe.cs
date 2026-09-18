@@ -4,12 +4,18 @@ using System.Text.Json;
 // Disposable composition probe, not a recursive deletion implementation.
 internal static class WorktreeRemovalProbe
 {
-  internal static void Run(string parent, string git, List<string> results, List<RemovalEvidence> evidence, bool interrupted = false)
+  internal static void Run(string parent, string git, List<string> results, List<RemovalEvidence> evidence, bool interrupted = false, string? node = null, string? journalScript = null)
   {
     if (!Path.IsPathFullyQualified(git)) throw new InvalidDataException("Absolute Git required");
     foreach (var phase in new[] { "content", "gitfile", "root" })
     {
       var root = Path.Combine(parent, (interrupted ? "interrupted-" : "worktree-") + phase);
+      var caseName = (interrupted ? "worktree-process-killed-" : "worktree-planned-stop-") + phase;
+      var checkpoints = node is null ? null : new List<JsonElement>();
+      void Checkpoint(RemovalSnapshot snapshot) {
+        if (checkpoints is not null)
+          checkpoints.Add(JournalCheckpoint.Record(root, caseName, snapshot, node!, journalScript!));
+      }
       var repo = Path.Combine(root, "repo");
       var target = Path.Combine(root, "worker");
       var other = Path.Combine(root, "other");
@@ -48,6 +54,8 @@ internal static class WorktreeRemovalProbe
         }
         file.Flush(true);
       }
+      // No target mutation until SQLite commit and independent connection readback succeed.
+      Checkpoint(snapshots[0]);
       if (interrupted) InterruptAt(root, phase);
       else
       {
@@ -64,6 +72,8 @@ internal static class WorktreeRemovalProbe
       var before = Git(git, repo, "worktree", "list", "--porcelain");
       Check(Registered(before, target) && Registered(before, other));
       snapshots.Add(RemovalSnapshot.Capture(target, registrationPath, Registered(before, target)));
+      // Re-read the fixture's persisted selection and reopen the journal in a new Node process.
+      Checkpoint(snapshots[^1]);
       if (phase != "root")
       {
         Check(File.ReadAllText(Path.Combine(target, "second.txt")) == "second");
@@ -81,16 +91,18 @@ internal static class WorktreeRemovalProbe
       }
       Check(!Directory.Exists(target));
       snapshots.Add(RemovalSnapshot.Capture(target, registrationPath, Registered(Git(git, repo, "worktree", "list", "--porcelain"), target)));
+      Checkpoint(snapshots[^1]);
       Git(git, repo, "worktree", "remove", target);
       var after = Git(git, repo, "worktree", "list", "--porcelain");
       Check(!Registered(after, target) && Registered(after, other));
       snapshots.Add(RemovalSnapshot.Capture(target, registrationPath, Registered(after, target)));
+      Checkpoint(snapshots[^1]);
       Check(File.ReadAllText(Path.Combine(other, "first.txt")) == "first");
       Check(File.ReadAllText(Path.Combine(other, "second.txt")) == "second");
       // A second recovery observation establishes completion without resending removal.
       Check(!Directory.Exists(target) && !Registered(Git(git, repo, "worktree", "list", "--porcelain"), target));
-      results.Add((interrupted ? "worktree-process-killed-" : "worktree-planned-stop-") + phase);
-      evidence.Add(new RemovalEvidence(results[^1], snapshots));
+      results.Add(caseName);
+      evidence.Add(new RemovalEvidence(caseName, snapshots, checkpoints));
     }
   }
 

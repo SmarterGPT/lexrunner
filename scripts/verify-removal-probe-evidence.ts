@@ -8,23 +8,20 @@ import { createHash } from "node:crypto";
 import { computeCanonicalHash } from "../src/schemas/task-contract.js";
 import { canonicalJSONStringify } from "../src/util/canonicalJson.js";
 import {
-  createRemovalIntent,
-  createRemovalObservation,
+  parseRemovalIntentBytes,
   assessRemovalRecovery,
 } from "../src/workspaces/workspace-removal-evidence.js";
 import { SqliteRemovalEvidenceStore } from "../src/store/sqlite/removal-evidence-store.js";
 
+import {
+  removalProbeSnapshot as snapshot,
+  removalProbeCheckpoint,
+  probeIntent,
+  probeObservation,
+  probePreservationDigest,
+} from "./removal-probe-records.js";
+
 const text = z.string().min(1).max(4096);
-const identity = z.object({ path: text, volume: text, fileId: text, filesystem: text }).strict();
-const snapshot = z
-  .object({
-    at: z.string().datetime({ offset: true }),
-    root: identity.nullable(),
-    contents: z.enum(["remaining", "empty", "unknown"]),
-    registration: identity.nullable(),
-    backlink: text.nullable(),
-  })
-  .strict();
 const names = [
   "worktree-planned-stop-content",
   "worktree-planned-stop-gitfile",
@@ -44,6 +41,7 @@ const reportSchema = z
           .object({
             name: z.enum(names),
             snapshots: z.array(snapshot).length(4),
+            journalCheckpoints: z.array(removalProbeCheckpoint).length(4).optional(),
           })
           .strict()
       )
@@ -59,6 +57,11 @@ export async function verifyRemovalProbeEvidence(raw: Buffer) {
   );
   if (new Set(report.worktreeEvidence.map((item) => item.name)).size !== names.length)
     throw new Error("Repeated/missing probe case");
+  if (
+    report.worktreeEvidence.some((item) => item.journalCheckpoints) &&
+    !report.worktreeEvidence.every((item) => item.journalCheckpoints)
+  )
+    throw new Error("Mixed journal checkpoint coverage");
   const sourceDigest = `sha256:${createHash("sha256").update(raw).digest("hex")}`;
   const dir = await mkdtemp(join(tmpdir(), "removal-projection-"));
   const path = join(dir, "journal.db");
@@ -74,40 +77,34 @@ export async function verifyRemovalProbeEvidence(raw: Buffer) {
       const initial = item.snapshots[0];
       if (!initial.root || !initial.registration || !initial.backlink)
         throw new Error("Missing initial identity");
-      const registrationDigest = (state: z.infer<typeof snapshot>) =>
-        state.registration === null
-          ? null
-          : computeCanonicalHash({ identity: state.registration, backlink: state.backlink });
-      const intent = createRemovalIntent({
-        schema_version: "workspace-removal-intent/1",
-        operation_id: item.name,
-        attempt_id: "fixture-attempt",
-        lease_id: "fixture-lease",
-        lease_revision: 0,
-        root_identity_digest: computeCanonicalHash(initial.root),
-        registration_digest: registrationDigest(initial)!,
-        preservation_digest: computeCanonicalHash({
-          profile: "disposable-known-files-fixture",
-          sourceDigest,
-        }),
-        created_at: initial.at,
-      });
+      const intent = item.journalCheckpoints
+        ? parseRemovalIntentBytes(item.journalCheckpoints[0].intentBytes)
+        : probeIntent(
+            item.name,
+            initial,
+            computeCanonicalHash({
+              profile: "disposable-known-files-fixture",
+              sourceDigest,
+            })
+          );
+      if (
+        item.journalCheckpoints &&
+        canonicalJSONStringify(intent) !==
+          canonicalJSONStringify(probeIntent(item.name, initial, probePreservationDigest(initial)))
+      )
+        throw new Error("Pre-mutation intent binding mismatch");
       const intentBytes = canonicalJSONStringify(intent);
       if (!store.appendIntent(intentBytes).recorded) throw new Error("Intent append failed");
-      const records = item.snapshots.map((state) => {
-        if ((state.registration === null) !== (state.backlink === null))
-          throw new Error("Inconsistent registration snapshot");
-        return createRemovalObservation({
-          schema_version: "workspace-removal-observation/1",
-          intent_digest: intent.intent_digest,
-          observed_at: state.at,
-          root_state: state.root === null ? "absent" : "present",
-          root_identity_digest: state.root === null ? null : computeCanonicalHash(state.root),
-          contents: state.contents,
-          registration_state: state.registration === null ? "absent" : "present",
-          registration_digest: registrationDigest(state),
+      const records = item.snapshots.map((state) => probeObservation(intent.intent_digest, state));
+      if (item.journalCheckpoints) {
+        item.journalCheckpoints.forEach((checkpoint, index) => {
+          if (
+            checkpoint.intentBytes !== intentBytes ||
+            checkpoint.observationBytes !== canonicalJSONStringify(records[index])
+          )
+            throw new Error("Journal checkpoint does not match observed snapshot");
         });
-      });
+      }
       for (const record of records)
         if (!store.appendObservation(canonicalJSONStringify(record)).recorded)
           throw new Error("Observation append failed");
@@ -144,7 +141,9 @@ export async function verifyRemovalProbeEvidence(raw: Buffer) {
     return {
       sourceDigest,
       profile: "development-native-removal-fixture",
-      intentTiming: "retrospective-fixture",
+      intentTiming: report.worktreeEvidence.every((item) => item.journalCheckpoints)
+        ? "pre-mutation-journal-fixture"
+        : "retrospective-fixture",
       authenticated: false,
       authorizesMutation: false,
       results,

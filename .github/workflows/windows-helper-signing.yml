@@ -45,7 +45,7 @@ jobs:
         run: |
           dotnet build tests/RemovalLeaseProbe -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $report = dotnet run --no-build --project tests/RemovalLeaseProbe -c Release -- ../../artifacts (Get-Command git.exe).Source
+          $report = dotnet run --no-build --project tests/RemovalLeaseProbe -c Release -- ../../artifacts (Get-Command git.exe).Source (Get-Command node.exe).Source (Resolve-Path ../../scripts/checkpoint-removal-probe.ts).Path
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $report | Set-Content ../../artifacts/removal-observed-report.json -Encoding utf8
           $verified = node --import tsx ../../scripts/verify-removal-probe-evidence.ts ../../artifacts/removal-observed-report.json

@@ -87,6 +87,38 @@ dirty preservation and the guarded clean-removal result. It uses explicit test-o
 resolver composition and an absolute Git executable; synthetic discovery metadata is
 not production provisioning. The public resolver remains unavailable.
 
+## Pre-mutation journal fixture
+
+The optional four-argument native probe mode supplies absolute Node and
+`scripts/checkpoint-removal-probe.ts` paths after the artifact parent and Git path.
+The signing qualification lane selects this mode. Before the first target mutation,
+the bridge writes the initial intent and observation to the real SQLite journal,
+closes it, reopens a separate read-only connection, and checks exact readback before
+acknowledging. A failed checkpoint stops the probe rather than proceeding with removal.
+
+After each planned stop or confirmed child termination, the parent captures a new
+native snapshot. A new Node process reads the persisted fixture selection, finds the
+exact previous evidence pair, reuses its intent, appends the new observation and
+verifies readback. Missing/conflicting evidence and older observation times fail.
+Changed-identity observations are retained, but do not receive a success acknowledgement.
+The caller selects observations explicitly; no timestamp-based "latest row" inference
+or automatic filesystem retry is added.
+
+The report retains all four exact journal record pairs per case. The existing verifier
+checks them against the observed snapshots and initial fixture binding before replaying
+assessment. Complete checkpoint reports are labeled `pre-mutation-journal-fixture`;
+legacy two-argument reports remain `retrospective-fixture`. Mixed coverage is rejected.
+These labels describe the inspected fixture path, not authenticated proof from arbitrary
+report bytes. Journal files are removed with the disposable fixture; retain the report.
+
+The Node bridge is internal test tooling, not a product protocol. The persisted selector
+and known-file preservation association remain unauthenticated fixture data. SQLite
+commit/readback and native child termination do not prove power-loss durability, parent
+process restart, current fencing, allocation reservation, or atomic filesystem observations.
+The parent remains alive during the native child stop. Production broker guard, helper
+protocol and resolver are unchanged. Allocation reservation and authenticated delivery
+remain prerequisites for production recovery wiring.
+
 ## Next bounded design and experiments
 
 Removal must be a deliberate lifecycle transition, not an ordinary command whose

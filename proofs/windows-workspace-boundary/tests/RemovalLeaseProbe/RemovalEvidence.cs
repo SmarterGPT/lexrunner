@@ -1,14 +1,20 @@
 using System.Text.Json;
 
 // Development observations, never authenticated production receipts.
-internal sealed record RemovalEvidence(string Name, List<RemovalSnapshot> Snapshots)
+internal sealed record RemovalEvidence(string Name, List<RemovalSnapshot> Snapshots, List<JsonElement>? JournalCheckpoints = null)
 {
   internal void Write(Utf8JsonWriter json)
   {
     json.WriteStartObject(); json.WriteString("name", Name);
     json.WriteStartArray("snapshots");
     foreach (var snapshot in Snapshots) snapshot.Write(json);
-    json.WriteEndArray(); json.WriteEndObject();
+    json.WriteEndArray();
+    if (JournalCheckpoints is not null) {
+      json.WriteStartArray("journalCheckpoints");
+      foreach (var checkpoint in JournalCheckpoints) checkpoint.WriteTo(json);
+      json.WriteEndArray();
+    }
+    json.WriteEndObject();
   }
 }
 
