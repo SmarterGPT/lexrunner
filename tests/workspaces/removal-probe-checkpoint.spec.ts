@@ -49,7 +49,15 @@ describe("pre-mutation removal fixture checkpoints", () => {
       );
       expect(second.intentBytes).toBe(first.intentBytes);
       expect(selection(second).observationDigest).not.toBe(expected.observationDigest);
-      expect(await checkpointRemovalProbe(path, encode(initial))).toEqual(first);
+      await expect(checkpointRemovalProbe(path, encode(initial))).rejects.toThrow("Stale");
+      const reopened = new SqliteRemovalEvidenceStore(path, { readOnly: true });
+      try {
+        expect(reopened.readSelection("remove-1", expected.intentDigest)?.observationBytes).toBe(
+          second.observationBytes
+        );
+      } finally {
+        await reopened.close();
+      }
     });
   });
 
@@ -69,6 +77,85 @@ describe("pre-mutation removal fixture checkpoints", () => {
         expect(store.readEvidence("remove-1", `sha256:${"b".repeat(64)}`).intentBytes).toBeNull();
       } finally {
         await store.close();
+      }
+    });
+  });
+
+  it("rejects an old selector even when its new observation has a later timestamp", async () => {
+    await fixture(async (path) => {
+      const first = await checkpointRemovalProbe(path, encode(initial));
+      const second = await checkpointRemovalProbe(
+        path,
+        encode({ ...initial, at: "2026-09-16T00:00:01Z" }, selection(first))
+      );
+      await expect(
+        checkpointRemovalProbe(
+          path,
+          encode({ ...initial, at: "2026-09-16T00:00:02Z" }, selection(first))
+        )
+      ).rejects.toThrow("Stale");
+      const store = new SqliteRemovalEvidenceStore(path);
+      try {
+        const current = selection(second);
+        expect(store.readSelection("remove-1", current.intentDigest)?.observationDigest).toBe(
+          current.observationDigest
+        );
+        expect(
+          store.selectObservation(
+            "remove-1",
+            current.intentDigest,
+            selection(first).observationDigest,
+            current.observationDigest
+          )
+        ).toBe(false);
+        expect(() => store.readSelection("remove-1", `sha256:${"f".repeat(64)}`)).toThrow(
+          "mismatch"
+        );
+      } finally {
+        await store.close();
+      }
+    });
+  });
+
+  it("replays an acknowledged checkpoint but does not select appended evidence implicitly", async () => {
+    await fixture(async (path) => {
+      const first = await checkpointRemovalProbe(path, encode(initial));
+      expect(await checkpointRemovalProbe(path, encode(initial))).toEqual(first);
+      const { probeObservation } = await import("../../scripts/removal-probe-records.js");
+      const { canonicalJSONStringify } = await import("../../src/util/canonicalJson.js");
+      const expected = selection(first);
+      const next = probeObservation(expected.intentDigest, {
+        ...initial,
+        contents: "remaining",
+        at: "2026-09-16T00:00:01Z",
+      });
+      const store = new SqliteRemovalEvidenceStore(path);
+      try {
+        expect(store.appendObservation(canonicalJSONStringify(next)).recorded).toBe(true);
+        expect(store.readSelection("remove-1", expected.intentDigest)?.observationDigest).toBe(
+          expected.observationDigest
+        );
+        expect(
+          store.selectObservation("remove-1", expected.intentDigest, next.observation_digest, null)
+        ).toBe(false);
+        expect(
+          store.selectObservation(
+            "remove-1",
+            expected.intentDigest,
+            next.observation_digest,
+            expected.observationDigest
+          )
+        ).toBe(true);
+      } finally {
+        await store.close();
+      }
+      const reopened = new SqliteRemovalEvidenceStore(path, { readOnly: true });
+      try {
+        expect(reopened.readSelection("remove-1", expected.intentDigest)?.observationDigest).toBe(
+          next.observation_digest
+        );
+      } finally {
+        await reopened.close();
       }
     });
   });
@@ -117,6 +204,9 @@ describe("pre-mutation removal fixture checkpoints", () => {
         expect(
           store.readEvidence("remove-1", changed.observation_digest).observationBytes
         ).not.toBeNull();
+        expect(
+          store.readSelection("remove-1", selection(first).intentDigest)?.observationDigest
+        ).toBe(changed.observation_digest);
       } finally {
         await store.close();
       }
