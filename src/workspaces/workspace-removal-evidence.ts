@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { computeCanonicalHash } from "../schemas/task-contract.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
+import type {
+  AttemptRecord,
+  WorkspaceLifecycleLeaseRecord,
+} from "../store/workspace-lifecycle-store.js";
+import { WorkspaceLifecycleLeaseStatus } from "../store/workspace-lifecycle-domains.js";
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
 const id = z.string().min(1).max(128);
@@ -154,4 +159,56 @@ function decode(bytes: string | null): unknown {
   // Exact canonical bytes reject duplicate keys and ambiguous alternate encodings.
   if (canonicalJSONStringify(value) !== bytes) throw new Error("Noncanonical record");
   return value;
+}
+
+const reservationOwner = z.object({
+  attemptId: id,
+  runId: id,
+  runRevision: z.number().int().nonnegative().safe(),
+  workItemId: id,
+  workItemRevision: z.number().int().nonnegative().safe(),
+  packetId: id,
+  packetHash: digest,
+  baseSha: z.string().min(1),
+});
+const reservedAttempt = reservationOwner.extend({ workspaceLeaseId: id });
+const reservedLease = reservationOwner.extend({
+  leaseId: id,
+  revision: z.number().int().nonnegative().safe(),
+  status: WorkspaceLifecycleLeaseStatus,
+});
+
+/** Match supplied lifecycle snapshots before assessing selected removal evidence.
+ * Does not lock those snapshots, authenticate them, acquire custody, or authorize release.
+ */
+export function assessReservedRemovalRecovery(
+  input: Parameters<typeof assessRemovalRecovery>[0] & {
+    attempt: AttemptRecord | null;
+    lease: WorkspaceLifecycleLeaseRecord | null;
+  }
+): RemovalRecoveryAssessment {
+  const stop = (reason: string): RemovalRecoveryAssessment => ({
+    state: "reconciliation_required",
+    reason,
+    authorizesMutation: false,
+  });
+  try {
+    const intent = parseRemovalIntentBytes(input.intentBytes);
+    const attempt = reservedAttempt.parse(input.attempt);
+    const lease = reservedLease.parse(input.lease);
+    if (
+      intent.attempt_id !== attempt.attemptId ||
+      intent.lease_id !== lease.leaseId ||
+      attempt.workspaceLeaseId !== lease.leaseId ||
+      canonicalJSONStringify(reservationOwner.parse(attempt)) !==
+        canonicalJSONStringify(reservationOwner.parse(lease))
+    )
+      return stop("reservation_binding_mismatch");
+    if (intent.lease_revision !== lease.revision) return stop("reservation_revision_changed");
+    if (!["reserved", "active", "quarantined"].includes(lease.status))
+      return stop("reservation_not_held");
+    return assessRemovalRecovery(input);
+  } catch {
+    return stop("reservation_evidence_invalid");
+  }
 }
