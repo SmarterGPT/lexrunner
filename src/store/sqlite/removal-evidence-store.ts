@@ -10,7 +10,8 @@ import {
 type AppendResult =
   { recorded: true; replay: boolean } | { recorded: false; reason: "conflict" | "intent_missing" };
 
-/** Opt-in immutable evidence journal. No lifecycle/fencing/authority mutations.
+/** Opt-in immutable evidence journal with an explicit mutable recovery selection.
+ * No lifecycle/fencing/authority mutations.
  * Transaction commits are storage observations, not qualified power-loss guarantees.
  */
 export class SqliteRemovalEvidenceStore extends SqliteCoordinationStore {
@@ -28,11 +29,78 @@ export class SqliteRemovalEvidenceStore extends SqliteCoordinationStore {
         );
         INSERT OR IGNORE INTO coordination_schema_migrations(version,name,appliedAt)
           VALUES(21,'removal-evidence',datetime('now'));
+        CREATE TABLE IF NOT EXISTS removal_selections (
+          operationId TEXT PRIMARY KEY, observationDigest TEXT NOT NULL,
+          FOREIGN KEY(operationId) REFERENCES removal_intents(operationId) ON DELETE RESTRICT,
+          FOREIGN KEY(observationDigest) REFERENCES removal_observations(observationDigest) ON DELETE RESTRICT
+        );
+        INSERT OR IGNORE INTO coordination_schema_migrations(version,name,appliedAt)
+          VALUES(22,'removal-selection',datetime('now'));
       `);
     } catch (error) {
       this.db.close();
       throw error;
     }
+  }
+
+  /** Explicit persisted cursor, not a latest-timestamp query or mutation authority. */
+  readSelection(operationId: string, expectedIntentDigest: string) {
+    if (
+      typeof operationId !== "string" ||
+      operationId.length < 1 ||
+      operationId.length > 128 ||
+      !/^sha256:[a-f0-9]{64}$/u.test(expectedIntentDigest)
+    )
+      throw new Error("Invalid expected removal intent");
+    return this.db.transaction(() => {
+      const row = this.db
+        .prepare("SELECT observationDigest FROM removal_selections WHERE operationId=?")
+        .get(operationId) as { observationDigest: string } | undefined;
+      if (!row) return null;
+      const evidence = this.readEvidence(operationId, row.observationDigest);
+      const intent = parseRemovalIntentBytes(evidence.intentBytes);
+      const observation = parseRemovalObservationBytes(evidence.observationBytes);
+      if (
+        intent.intent_digest !== expectedIntentDigest ||
+        observation.intent_digest !== expectedIntentDigest
+      )
+        throw new Error("Removal selection intent mismatch");
+      return { ...evidence, observationDigest: row.observationDigest };
+    })();
+  }
+
+  /** Compare-and-swap among immutable recorded observations. Unselected evidence is retained. */
+  selectObservation(
+    operationId: string,
+    intentDigest: string,
+    observationDigest: string,
+    expectedPrevious: string | null
+  ): boolean {
+    if (expectedPrevious !== null && !/^sha256:[a-f0-9]{64}$/u.test(expectedPrevious))
+      throw new Error("Invalid previous removal selection");
+    return this.immediateTransaction(() => {
+      const evidence = this.readEvidence(operationId, observationDigest);
+      const intent = parseRemovalIntentBytes(evidence.intentBytes);
+      const observation = parseRemovalObservationBytes(evidence.observationBytes);
+      if (intent.intent_digest !== intentDigest || observation.intent_digest !== intentDigest)
+        throw new Error("Removal selection intent mismatch");
+      const current = this.readSelection(operationId, intentDigest);
+      if (current?.observationDigest === observationDigest) return true;
+      if ((current?.observationDigest ?? null) !== expectedPrevious) return false;
+      if (
+        current &&
+        Date.parse(observation.observed_at) <
+          Date.parse(parseRemovalObservationBytes(current.observationBytes).observed_at)
+      )
+        return false;
+      this.db
+        .prepare(
+          `INSERT INTO removal_selections(operationId,observationDigest) VALUES(?,?)
+        ON CONFLICT(operationId) DO UPDATE SET observationDigest=excluded.observationDigest`
+        )
+        .run(operationId, observationDigest);
+      return true;
+    });
   }
 
   appendIntent(bytes: string): AppendResult {

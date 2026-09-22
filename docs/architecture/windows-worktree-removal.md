@@ -233,3 +233,31 @@ unexpired controller credential and supplies the original release request; contr
 takeover, expired fencing, power loss, native partial effects, and authenticated
 restart selection remain separate work. Windows production resolution still reports
 `helper_missing`; do not bypass that boundary to run this portable qualification.
+
+## Explicit recovery selection
+
+The opt-in SQLite evidence journal now keeps a separate `removal_selections` cursor.
+Immutable intent/observation records remain historical evidence; appending a record
+never makes it the selected recovery checkpoint. Selection compares the expected
+previous observation under an immediate transaction, validates the exact intent and
+observation association, and refuses backward observation time. Repeating the
+already-selected observation is idempotent. No timestamp-based "latest" lookup occurs.
+
+The native fixture checkpoint bridge advances this cursor before acknowledgement and
+reopens it for readback. Replaying initial preparation after the cursor has advanced,
+or submitting a new observation with a stale previous selector, fails. Evidence
+appended before a failed selection remains available without replacing the cursor.
+A conflicting observation that wins selection is retained and selected, but still
+fails the existing recovery assessor; selection never means successful removal.
+
+A crash between append and selection leaves the old cursor. A crash after selection
+but before acknowledgement can leave the sidecar stale; the bridge refuses to guess
+or roll back. Explicit restart recovery can read the persisted selection with the
+expected intent digest and must reassess actual filesystem state. Legacy journals
+have no selected checkpoint until explicitly selected; reopening for writable use
+adds the empty selection table, without choosing historical evidence. A read-only
+pre-migration database cannot serve this new API.
+
+This is local evidence selection, not authenticated provisioning, controller fencing,
+allocation release, deletion authority, or power-loss qualification. Binding it to
+current lifecycle reservations and restarting the native parent remain pending.

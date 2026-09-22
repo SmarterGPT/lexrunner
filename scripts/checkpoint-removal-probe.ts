@@ -66,11 +66,25 @@ export async function checkpointRemovalProbe(journal: string, raw: Buffer) {
     // Retain conflicting observations, but never acknowledge them as a successful checkpoint.
     if (!store.appendObservation(observationBytes).recorded)
       throw new Error("Observation append failed");
+    if (
+      !store.selectObservation(
+        request.operation,
+        intent.intent_digest,
+        observation.observation_digest,
+        request.previous?.observationDigest ?? null
+      )
+    )
+      throw new Error("Stale checkpoint selection");
     await store.close();
     store = new SqliteRemovalEvidenceStore(journal, { readOnly: true });
     const readback = store.readEvidence(request.operation, observation.observation_digest);
     if (readback.intentBytes !== intentBytes || readback.observationBytes !== observationBytes)
       throw new Error("Checkpoint readback mismatch");
+    if (
+      store.readSelection(request.operation, intent.intent_digest)?.observationDigest !==
+      observation.observation_digest
+    )
+      throw new Error("Checkpoint selection changed before acknowledgement");
     if (assessment.state === "reconciliation_required") throw new Error(assessment.reason);
     return { intentBytes, observationBytes };
   } finally {
