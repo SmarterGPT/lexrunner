@@ -261,3 +261,27 @@ pre-migration database cannot serve this new API.
 This is local evidence selection, not authenticated provisioning, controller fencing,
 allocation release, deletion authority, or power-loss qualification. Binding it to
 current lifecycle reservations and restarting the native parent remain pending.
+
+## Reservation-bound read-side assessment
+
+`assessReservedRemovalRecovery` checks supplied Attempt/lease snapshots before
+calling the existing evidence assessor. The intent must name the same Attempt and
+lease, the Attempt must still name that lease, and both lifecycle records must agree
+on run/revision, WorkItem/revision, packet/hash and base commit. The intent's exact
+lease revision must match. Only reserved, active or quarantined leases represent a
+retained allocation for this check; released, preserved and abandoned leases require
+reconciliation. A newer lease revision is never adopted implicitly.
+
+Tests create real controller, Attempt and reservation records plus selected removal
+evidence in SQLite, reopen both stores read-only and assess the recovered records.
+The absence observation is synthetic; no filesystem removal occurs. Assessment leaves
+the reservation and event history unchanged. Negative variants exercise ownership,
+revision, finished-state, missing-record and freshness failures. Quarantine still
+means retained allocation; observed absence does not release it.
+
+This is structural binding of supplied snapshots, not a transaction spanning lifecycle
+and journal reads, authenticated provenance, a physical root-to-path binding, or current
+controller fencing. It does not infer reservation retention from process exit or lease
+TTL, renew an expired controller, or dispatch recovery. A caller must obtain current
+state and fence any subsequent mutation. Native parent restart, independent provisioning
+of the intent's physical identities, and production integration remain pending.
