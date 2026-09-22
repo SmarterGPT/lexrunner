@@ -103,7 +103,7 @@
     "docs:surface:check": "node scripts/render-doc-surfaces.mjs --check",
     "dogfood:ecosystem": "tsx scripts/dogfood-ecosystem.ts",
     "test": "vitest run",
-    "test:git": "vitest run -c vitest.git.config.ts tests/release-prepare.spec.ts tests/promptsResolver.spec.ts tests/e2e-comprehensive.test.ts tests/autopilot-e2e-level3-4.spec.ts tests/deterministic-build.test.ts tests/e2e-merge-resume.spec.ts tests/e2e-frozen-git-inputs.spec.ts tests/runs/worker-receipt-native-integration.spec.ts",
+    "test:git": "vitest run -c vitest.git.config.ts tests/workspaces/workspace-coordinator-sqlite-git.spec.ts tests/release-prepare.spec.ts tests/promptsResolver.spec.ts tests/e2e-comprehensive.test.ts tests/autopilot-e2e-level3-4.spec.ts tests/deterministic-build.test.ts tests/e2e-merge-resume.spec.ts tests/e2e-frozen-git-inputs.spec.ts tests/runs/worker-receipt-native-integration.spec.ts",
     "test:isolation": "node scripts/verify-parallel-isolation.mjs",
     "test:cli:slow": "vitest run -c vitest.slow-cli.config.ts",
     "benchmark": "vitest bench -c vitest.benchmark.config.ts",

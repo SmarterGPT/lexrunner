@@ -215,3 +215,21 @@ make recursive deletion an implicit fallback. A different cooperative workspace
 profile can be evaluated explicitly if it better serves trusted coworkers, with its
 actual guarantees and recovery costs measured. This work concerns coordination and
 mistake containment, not a new hostile-code sandbox.
+
+## Coordinator process-exit qualification
+
+The Git-backed test gate includes `workspace-coordinator-sqlite-git.spec.ts`.
+Its restart cases run the real coordinator in a separate Node process, exiting
+without coordinator/store cleanup immediately before or after portable Git removal.
+A newly opened SQLite store must retain the prepared allocation and reject both
+branch and path reuse. Before-effect recovery can complete release through exact
+prepare replay; after-effect recovery quarantines the absent worktree and retains
+both reservations across another database reopen. Only completed release permits
+allocation reuse. The prepare event must remain unique.
+
+This tests the existing Linux broker/coordinator lifecycle, not native Windows
+removal or the removal-evidence journal selection protocol. The fixture reuses an
+unexpired controller credential and supplies the original release request; controller
+takeover, expired fencing, power loss, native partial effects, and authenticated
+restart selection remain separate work. Windows production resolution still reports
+`helper_missing`; do not bypass that boundary to run this portable qualification.
