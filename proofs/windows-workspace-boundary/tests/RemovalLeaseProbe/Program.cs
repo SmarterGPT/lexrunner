@@ -14,6 +14,10 @@ internal static class Program
   {
     if (args.Length == 3 && args[0] == "--interrupt-child" && OperatingSystem.IsWindows())
       return WorktreeRemovalProbe.InterruptChild(args[1], args[2]);
+    if (args.Length == 3 && args[0] == "--mutate-once" && OperatingSystem.IsWindows())
+      return WorktreeRemovalProbe.InterruptChild(args[1], args[2], wait: false);
+    if (args.Length == 3 && args[0] == "--restart-snapshot" && OperatingSystem.IsWindows())
+      return WorktreeRemovalProbe.RestartSnapshot(args[1], args[2]);
     if (args.Length is not (1 or 2 or 4) || !OperatingSystem.IsWindows()) return 2;
     var root = Path.Combine(Path.GetFullPath(args[0]), "removal-probe-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(root);
