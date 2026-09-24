@@ -399,6 +399,11 @@ function start(root: string, id: string, detached = false) {
           const terminal = (await nativeMarkers(root, id)).find((event) =>
             terminalStages.includes(event.stage)
           );
+          // The expected marker can appear after the first existence check.
+          if (terminal?.stage === stage) {
+            events.push(terminal);
+            return true;
+          }
           if (terminal)
             throw new Error(`Native ${id} ended with ${terminal.stage} before ${stage}`);
         }
@@ -554,7 +559,7 @@ async function run() {
             readOnly: true,
           });
           try {
-            assert.equal(rejectedStore.readOperation("content"), undefined);
+            assert.equal(rejectedStore.readOperation("content"), null);
           } finally {
             await rejectedStore.close();
           }
