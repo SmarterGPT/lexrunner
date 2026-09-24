@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rename, rm, access } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rename, rm, access, open } from "node:fs/promises";
 import { dirname, basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -236,6 +236,33 @@ type Event = {
   elapsedMs?: number;
   operation?: { kind: string; reason?: string };
 };
+const terminalStages = [
+  "busy",
+  "cancelled",
+  "effect-completed",
+  "deadline-before-admission",
+  "deadline-before-effect",
+];
+async function nativeMarkers(root: string, id: string) {
+  const markers: Event[] = [];
+  for (const stage of ["held", "admitted", ...terminalStages]) {
+    const path = join(root, `${id}.${stage}.json`);
+    if (!(await exists(path))) continue;
+    const file = await open(path, "r");
+    try {
+      const buffer = Buffer.alloc(4097);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      assert.ok(bytesRead <= 4096, "Oversized native marker");
+      const event = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")) as Event;
+      assert.equal(event.request, id);
+      assert.equal(event.stage, stage);
+      markers.push(event);
+    } finally {
+      await file.close();
+    }
+  }
+  return markers;
+}
 function watchNative(pid: number) {
   const watcher = spawn(probe, ["--watch-admission-child", String(pid)], {
     cwd: source,
@@ -261,6 +288,9 @@ function watchNative(pid: number) {
     closed = true;
   });
   return {
+    snapshot() {
+      return { pid, closed, code, output, error };
+    },
     async ready() {
       await waitFor(
         async () => closed || output.includes("watching"),
@@ -328,6 +358,30 @@ function start(root: string, id: string, detached = false) {
   return {
     events,
     child,
+    async diagnostics() {
+      let markers: Event[] = [];
+      let markerError: string | undefined;
+      try {
+        markers = await nativeMarkers(root, id);
+      } catch (failure) {
+        markerError = String(failure);
+      }
+      return {
+        id,
+        events,
+        markers,
+        markerError,
+        coordinator: {
+          pid: child.pid,
+          exited,
+          closed,
+          code,
+          stderr,
+          error: error?.message,
+        },
+        watcher: observer?.snapshot(),
+      };
+    },
     async stage(stage: string) {
       await waitFor(async () => {
         if (error) throw error;
@@ -341,6 +395,15 @@ function start(root: string, id: string, detached = false) {
           return true;
         }
         if (closed && !observer) throw new Error(`Actor closed before ${stage}: ${stderr}`);
+        if (["held", "admitted", ...terminalStages].includes(stage)) {
+          const terminal = (await nativeMarkers(root, id)).find((event) =>
+            terminalStages.includes(event.stage)
+          );
+          if (terminal)
+            throw new Error(`Native ${id} ended with ${terminal.stage} before ${stage}`);
+        }
+        if (closed && observer?.snapshot().closed)
+          throw new Error(`Actor and native watcher closed before ${stage}: ${stderr}`);
         return false;
       }, `${id}: ${stage}`);
       if (stage === "held" && !observer) {
@@ -386,10 +449,14 @@ function start(root: string, id: string, detached = false) {
     async cleanup() {
       // No observer is needed for a normally exited parent: it awaited its own
       // child's exit. Abnormal unobserved termination leaves the fixture retained.
-      if (exited && code === 0) return;
+      if (exited && code === 0) {
+        await waitFor(async () => closed, "normal coordinator cleanup closure", 5000);
+        return;
+      }
       if (!exited) child.kill();
       assert.ok(observer, "No process watcher: retain fixture rather than assume quiescence");
       await observer.finish();
+      await waitFor(async () => exited && closed, "coordinator cleanup closure", 5000);
     },
   };
 }
@@ -425,13 +492,16 @@ async function run() {
     "cancel",
     "deadline",
     "commit-loss",
+    "admission-deadline",
   ];
   if (request) assert.ok(conditions.includes(request));
+  if (launch) assert.ok(launch === "diagnostic-failure" && request === "admission-deadline");
   for (const condition of request ? [request] : conditions) {
     const container = await mkdtemp(join(resolve(rootArg), "removal-probe-"));
     const root = join(container, "interrupted-content");
     const actors: ReturnType<typeof start>[] = [];
     const started = performance.now();
+    let failed = false;
     try {
       command(process.execPath, [
         "--import",
@@ -449,7 +519,10 @@ async function run() {
       actors.push(primary);
       await primary.stage("held");
       let replacement;
-      if (condition === "before") replacement = await replace(root);
+      if (["before", "admission-deadline"].includes(condition)) replacement = await replace(root);
+      // Reproduce a delayed controller check without guessing a sleep duration.
+      // The stale check is delivered only after the native deadline marker exists.
+      if (condition === "admission-deadline") await primary.stage("deadline-before-admission");
       await signal(
         root,
         "primary",
@@ -460,14 +533,32 @@ async function run() {
             ? "commit-loss"
             : "current"
       );
-      const rejected = ["before", "expired"].includes(condition);
+      const rejected = ["before", "expired", "admission-deadline"].includes(condition);
       if (rejected) {
-        await primary.stage("cancelled");
+        await primary.stage(condition === "admission-deadline" ? "checked" : "cancelled");
         assert.equal(
           primary.events.find((e) => e.stage === "checked")?.operation?.reason,
-          condition === "before" ? "stale_fence" : "lease_expired"
+          condition === "expired" ? "lease_expired" : "stale_fence"
         );
         assert.ok(!primary.events.some((e) => e.stage === "admitted"));
+        if (condition === "admission-deadline") {
+          // Explicit negative qualification: exercise the actual retained-failure path.
+          if (launch === "diagnostic-failure") await primary.stage("cancelled");
+          await assert.rejects(
+            primary.stage("cancelled"),
+            /deadline-before-admission before cancelled/u
+          );
+          const diagnostics = await primary.diagnostics();
+          assert.ok(diagnostics.markers.some((e) => e.stage === "deadline-before-admission"));
+          const rejectedStore = new SqliteRemovalOperationStore(join(root, "journal.db"), {
+            readOnly: true,
+          });
+          try {
+            assert.equal(rejectedStore.readOperation("content"), undefined);
+          } finally {
+            await rejectedStore.close();
+          }
+        }
       } else if (condition === "commit-loss") {
         await primary.stage("commit-recorded");
         await primary.killParent(false);
@@ -567,25 +658,47 @@ async function run() {
         replacement,
         operation,
         events: actors.map((actor) => actor.events),
+        diagnostics: await Promise.all(actors.map((actor) => actor.diagnostics())),
         recovery,
         reservationRetained: true,
         selectionAdvanced: false,
       });
     } catch (error) {
+      failed = true;
       console.error(
         JSON.stringify({
           condition,
           root,
           durationMs: performance.now() - started,
           events: actors.map((actor) => actor.events),
+          error: String(error),
+          diagnostics: await Promise.all(actors.map((actor) => actor.diagnostics())),
+          retained: true,
         })
       );
       throw error;
     } finally {
-      await Promise.all(actors.map((actor) => actor.cleanup()));
+      const cleanup = await Promise.allSettled(actors.map((actor) => actor.cleanup()));
+      const quiescent = cleanup.every((result) => result.status === "fulfilled");
+      if (failed || !quiescent) {
+        const failure = {
+          root,
+          condition,
+          quiescent,
+          cleanup: cleanup.map((result) =>
+            result.status === "fulfilled"
+              ? { status: result.status }
+              : { status: result.status, reason: String(result.reason) }
+          ),
+          diagnostics: await Promise.all(actors.map((actor) => actor.diagnostics())),
+        };
+        await writeFile(join(container, "failure.json"), JSON.stringify(failure, null, 2));
+        console.error(JSON.stringify({ retainedFailure: container, ...failure }));
+      }
+      assert.ok(quiescent, "Cleanup could not establish quiescence; fixture retained");
       assert.equal(dirname(container), resolve(rootArg));
       assert.match(basename(container), /^removal-probe-/u);
-      await rm(container, { recursive: true, force: true, maxRetries: 3 });
+      if (!failed) await rm(container, { recursive: true, force: true, maxRetries: 3 });
     }
   }
   console.log(

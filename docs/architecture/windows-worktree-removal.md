@@ -352,10 +352,12 @@ a newly admitted known-file partial effect; the child keeps the slot
 until its native call and handle cleanup finish. All competing fixture entries use
 the same slot. Unrelated workers are not asked to manage any of this bookkeeping.
 
-Nine cases cover current ownership, replacement before the check, expiry before
+Ten cases cover current ownership, replacement before the check, expiry before
 the check, replacement after admission, two parent-exit launch modes, cancellation
 at the pre-effect safe point, a 15-second deadline with no effect, and parent exit
-after admission commit but before native dispatch. Replacement
+after admission commit but before native dispatch. The additional delayed-admission
+case withholds the controller check until `deadline-before-admission`, then submits
+the stale check: no admission or effect is recorded. Replacement
 uses an advanced logical clock. A busy contender does not reach the controller check
 or native effect. After release, repeated admitted operations acquire the slot but
 return historical status without dispatch; a never-admitted stale request fails its
@@ -385,6 +387,19 @@ deadline cases stop before the partial effect. Mid-effect cancellation, power lo
 parallel independent targets and authenticated native admission remain unqualified.
 The report includes ordered per-actor events, actual effects, admission/resolution
 records, fresh observation bytes, retained reservation and selected evidence identity.
+Bounded native markers and coordinator/watcher exit diagnostics are collected separately
+from expected stage events. Unexpected native termination fails promptly. Any failed
+case retains its disposable directory and `failure.json`, including whether cleanup
+established quiescence. To exercise that negative path explicitly, append
+`admission-deadline diagnostic-failure` after the Git argument; exit 1 and a retained
+failure with `deadline-before-admission` are expected, not a successful matrix.
+
+Independent review of candidate `f65afc05` observed one unexplained `before` failure:
+the stale check was rejected but the driver timed out awaiting `cancelled`. Later runs
+passed; the original fixture deleted uncollected markers, so its cause cannot be
+established retrospectively. The delayed-admission case reproduces one possible
+mechanism, not proof of that historical cause. Corrected diagnostics improve future
+classification; they do not erase the failure or establish race-frequency reliability.
 
 This is a **cooperative development experiment**, not a fix to the production broker.
 The barrier files and caller-selected slot are not protected/authenticated authority.
