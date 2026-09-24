@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { SqliteWorkspaceLifecycleStore } from "../src/store/sqlite/workspace-lifecycle-store.js";
 import { SqliteRemovalEvidenceStore } from "../src/store/sqlite/removal-evidence-store.js";
+import { SqliteRemovalOperationStore } from "../src/store/sqlite/removal-operation-store.js";
 import { assessReservedRemovalRecovery } from "../src/workspaces/workspace-removal-evidence.js";
 import { canonicalJSONStringify } from "../src/util/canonicalJson.js";
 import { probeObservation, removalProbeSnapshot } from "./removal-probe-records.js";
@@ -128,7 +129,7 @@ async function actor(root: string, id: string) {
     childCode = code;
     childExited = true;
   });
-  const store = new SqliteWorkspaceLifecycleStore(join(root, "journal.db"));
+  const store = new SqliteRemovalOperationStore(join(root, "journal.db"));
   try {
     await waitFor(
       async () =>
@@ -146,21 +147,75 @@ async function actor(root: string, id: string) {
         "driver permits fresh controller check"
       );
       const condition = await readFile(join(root, `${id}.check`), "utf8");
-      assert.ok(["current", "expired"].includes(condition));
+      assert.ok(["current", "expired", "recover", "commit-loss"].includes(condition));
       const recovery = await assess(root);
       const current = await store.getRunCoordination("run");
       assert.ok(current?.lease);
       const now =
         condition === "expired"
           ? new Date(Date.parse(current.lease.expiresAt) + 1).toISOString()
-          : new Date().toISOString();
-      const renewal = await store.renewControllerLease({ ...oldController, now, ttlMs: 120_000 });
+          : new Date(
+              condition === "recover"
+                ? Math.max(
+                    Date.now(),
+                    Date.parse(current.updatedAt),
+                    Date.parse(current.lease.renewedAt)
+                  )
+                : Date.now()
+            ).toISOString();
+      const intentDigest = JSON.parse(recovery.intentBytes!).intent_digest;
+      let operation;
+      if (condition === "recover") {
+        const admitted = store.readOperation("content");
+        assert.ok(admitted);
+        assert.ok(store.appendObservation(recovery.observationBytes).recorded);
+        const active = current.lease;
+        operation = store.resolveRemoval({
+          operationId: "content",
+          admissionDigest: admitted.admission.admissionDigest,
+          observationDigest: JSON.parse(recovery.observationBytes).observation_digest,
+          controller: {
+            runId: active.runId,
+            controllerId: active.controllerId,
+            leaseId: active.leaseId,
+            fencingToken: active.fencingToken,
+          },
+          expectedRunRevision: current.revision,
+          now,
+          maxObservationAgeMs: 180_000,
+        });
+      } else {
+        operation = store.admitRemoval({
+          operationId: "content",
+          intentDigest,
+          observationDigest: recovery.selectedObservationDigest,
+          expectedRunRevision: current.revision,
+          expectedAttemptRevision: recovery.attempt.revision,
+          controller: oldController,
+          executorId: `native-${child.pid}`,
+          now,
+          maxObservationAgeMs: 30_000,
+        });
+      }
       console.log(
-        JSON.stringify({ request: id, stage: "checked", renewal, assessment: recovery.assessment })
+        JSON.stringify({
+          request: id,
+          stage: "checked",
+          operation,
+          assessment: recovery.assessment,
+        })
       );
-      // This explicit fixture driver authorizes its known disposable effect.
-      // Assessment/renewal are not general mutation authority or atomic reservation admission.
-      await signal(root, id, "decision", renewal.renewed ? "admit" : "deny");
+      if (condition === "commit-loss") {
+        assert.equal(operation.kind, "admitted");
+        console.log(JSON.stringify({ request: id, stage: "commit-recorded" }));
+        await waitFor(
+          () => exists(join(root, `${id}.dispatch`)),
+          "dispatch barrier after admission commit"
+        );
+      }
+      // Only a newly committed admission reaches this fixture's native effect.
+      // Replay/recovery never dispatch; physical custody remains a separate port.
+      await signal(root, id, "decision", operation.kind === "admitted" ? "admit" : "deny");
     }
     await waitFor(async () => childExited, "native child exit");
     assert.equal(childError, undefined);
@@ -179,7 +234,7 @@ type Event = {
   stage: string;
   pid?: number;
   elapsedMs?: number;
-  renewal?: { renewed: boolean; reason?: string };
+  operation?: { kind: string; reason?: string };
 };
 function watchNative(pid: number) {
   const watcher = spawn(probe, ["--watch-admission-child", String(pid)], {
@@ -369,6 +424,7 @@ async function run() {
     "parent-exit",
     "cancel",
     "deadline",
+    "commit-loss",
   ];
   if (request) assert.ok(conditions.includes(request));
   for (const condition of request ? [request] : conditions) {
@@ -394,15 +450,27 @@ async function run() {
       await primary.stage("held");
       let replacement;
       if (condition === "before") replacement = await replace(root);
-      await signal(root, "primary", "check", condition === "expired" ? "expired" : "current");
+      await signal(
+        root,
+        "primary",
+        "check",
+        condition === "expired"
+          ? "expired"
+          : condition === "commit-loss"
+            ? "commit-loss"
+            : "current"
+      );
       const rejected = ["before", "expired"].includes(condition);
       if (rejected) {
         await primary.stage("cancelled");
         assert.equal(
-          primary.events.find((e) => e.stage === "checked")?.renewal?.reason,
+          primary.events.find((e) => e.stage === "checked")?.operation?.reason,
           condition === "before" ? "stale_fence" : "lease_expired"
         );
         assert.ok(!primary.events.some((e) => e.stage === "admitted"));
+      } else if (condition === "commit-loss") {
+        await primary.stage("commit-recorded");
+        await primary.killParent(false);
       } else {
         await primary.stage("admitted");
         if (condition === "parent-exit-attached") {
@@ -434,8 +502,8 @@ async function run() {
         }
       }
       await primary.finish(
-        condition.startsWith("parent-exit"),
-        condition === "parent-exit-attached"
+        condition.startsWith("parent-exit") || condition === "commit-loss",
+        condition === "parent-exit-attached" || condition === "commit-loss"
       );
       if (replacement) {
         const stale = start(root, "stale");
@@ -444,17 +512,50 @@ async function run() {
         await signal(root, "stale", "check", "current");
         await stale.stage("cancelled");
         await stale.finish();
-        assert.equal(
-          stale.events.find((e) => e.stage === "checked")?.renewal?.reason,
-          "stale_fence"
-        );
+        const response = stale.events.find((e) => e.stage === "checked")?.operation;
+        if (rejected) assert.equal(response?.reason, "stale_fence");
+        else assert.equal(response?.kind, "replay");
       }
       const effected =
-        !rejected && !["cancel", "deadline", "parent-exit-attached"].includes(condition);
+        !rejected &&
+        !["cancel", "deadline", "parent-exit-attached", "commit-loss"].includes(condition);
       assert.equal(await exists(join(root, "worker/first.txt")), !effected);
       assert.equal(await readFile(join(root, "worker/second.txt"), "utf8"), "second");
       assert.equal(await readFile(join(root, "other/first.txt"), "utf8"), "first");
       assert.equal(await readFile(join(root, "other/second.txt"), "utf8"), "second");
+      let operation;
+      if (!rejected) {
+        const recoverer = start(root, "recoverer");
+        actors.push(recoverer);
+        await recoverer.stage("held");
+        await signal(root, "recoverer", "check", "recover");
+        await recoverer.stage("cancelled");
+        await recoverer.finish();
+        assert.equal(
+          recoverer.events.find((e) => e.stage === "checked")?.operation?.kind,
+          "resolved"
+        );
+        const reopened = new SqliteRemovalOperationStore(join(root, "journal.db"), {
+          readOnly: true,
+        });
+        try {
+          operation = reopened.readOperation("content");
+          assert.ok(operation?.resolution);
+          assert.equal(operation.admission.controller.fencingToken, 1);
+          assert.equal(operation.resolution.controller.fencingToken, replacement ? 2 : 1);
+          assert.equal(operation.resolution.observedState, "contents_remaining");
+        } finally {
+          await reopened.close();
+        }
+        const replay = start(root, "replay");
+        actors.push(replay);
+        await replay.stage("held");
+        await signal(root, "replay", "check", "current");
+        await replay.stage("cancelled");
+        await replay.finish();
+        assert.equal(replay.events.find((e) => e.stage === "checked")?.operation?.kind, "replay");
+        assert.equal(await exists(join(root, "worker/first.txt")), !effected);
+      }
       const recovery = await assess(root);
       assert.deepEqual(recovery.attempt, initial.attempt);
       assert.deepEqual(recovery.lease, initial.lease);
@@ -464,6 +565,7 @@ async function run() {
         durationMs: performance.now() - started,
         effectObserved: effected,
         replacement,
+        operation,
         events: actors.map((actor) => actor.events),
         recovery,
         reservationRetained: true,
@@ -493,7 +595,8 @@ async function run() {
       limits: [
         "Cooperative child-owned file exclusion and explicit fixture authorization; not authenticated helper admission.",
         "All simulated entry paths use one stable slot. Product broker and helper protocol remain unchanged.",
-        "Real controller renewal, reservation assessment and native effect are separate; no atomic admission record or replay contract.",
+        "SQLite admission is atomic over current controller, reservation and selected evidence; filesystem effects remain a separate cooperative executor contract.",
+        "Current-controller recovery records an observation without releasing the reservation or advancing selection; it does not transfer ownership for new deletion.",
         "Replacement/expiry use an advanced logical clock. Barrier ordering is real; no wall-time race-frequency claim.",
         "Parent exit occurs with native child alive before a known-file partial effect, not during a kernel call.",
         "Surviving-child case explicitly uses detached launch; default attached launch is a separate observed termination control.",

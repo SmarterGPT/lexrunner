@@ -177,14 +177,19 @@ const reservedLease = reservationOwner.extend({
   revision: z.number().int().nonnegative().safe(),
   status: WorkspaceLifecycleLeaseStatus,
 });
+export type RemovalReservationAttempt = Pick<AttemptRecord, keyof z.infer<typeof reservedAttempt>>;
+export type RemovalReservationLease = Pick<
+  WorkspaceLifecycleLeaseRecord,
+  keyof z.infer<typeof reservedLease>
+>;
 
 /** Match supplied lifecycle snapshots before assessing selected removal evidence.
  * Does not lock those snapshots, authenticate them, acquire custody, or authorize release.
  */
 export function assessReservedRemovalRecovery(
   input: Parameters<typeof assessRemovalRecovery>[0] & {
-    attempt: AttemptRecord | null;
-    lease: WorkspaceLifecycleLeaseRecord | null;
+    attempt: RemovalReservationAttempt | null;
+    lease: RemovalReservationLease | null;
   }
 ): RemovalRecoveryAssessment {
   const stop = (reason: string): RemovalRecoveryAssessment => ({
