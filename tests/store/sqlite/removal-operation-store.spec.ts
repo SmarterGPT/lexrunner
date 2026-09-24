@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3-multiple-ciphers";
+import { SqliteRemovalEvidenceStore } from "../../../src/store/sqlite/removal-evidence-store.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteWorkspaceLifecycleStore } from "../../../src/store/sqlite/workspace-lifecycle-store.js";
 import {
@@ -334,51 +336,210 @@ describe("durable removal admission and observation recovery", () => {
     expect(store.readOperation("remove")?.resolution).toBeNull();
   });
 
-  it("refuses changed lifecycle revisions rather than resolving against an old reservation", async () => {
-    const admitted = store.admitRemoval(input);
-    if (admitted.kind !== "admitted") throw new Error("setup");
-    expect(
-      (
-        await lifecycle.heartbeatWorkspace({
-          runId: "run",
-          controller,
-          expectedRunRevision: 0,
-          mutationId: "heartbeat",
-          now: time(2),
-          attemptId: "attempt",
-          workspaceLeaseId: "workspace",
-          expectedAttemptRevision: 1,
-          expectedWorkspaceLeaseRevision: 0,
-          ttlMs: 60_000,
-          observation: {
-            repositoryId: "fixture",
-            hostId: "host",
-            gitRuntime: "fixture",
-            projectRoot: directory,
-            worktreePath: join(directory, "worker"),
-            branch: "fixture/work",
-            attemptId: "attempt",
-            exists: true,
-            registered: true,
-            headSha: "a".repeat(40),
-            cleanliness: "clean",
-          },
-        })
-      ).updated
-    ).toBe(true);
+  const observation = () => ({
+    repositoryId: "fixture",
+    hostId: "host",
+    gitRuntime: "fixture",
+    projectRoot: directory,
+    worktreePath: join(directory, "worker"),
+    branch: "fixture/work",
+    attemptId: "attempt",
+    exists: true,
+    registered: true,
+    headSha: "a".repeat(40),
+    cleanliness: "clean" as const,
+  });
+  const mutation = () => ({
+    runId: "run",
+    controller,
+    expectedRunRevision: 0,
+    mutationId: "change",
+    now: time(2),
+    attemptId: "attempt",
+    workspaceLeaseId: "workspace",
+    expectedAttemptRevision: 1,
+    expectedWorkspaceLeaseRevision: 0,
+    ttlMs: 60_000,
+    observation: observation(),
+  });
+  it("rejects old admission inputs when lifecycle mutation commits first", async () => {
+    expect((await lifecycle.heartbeatWorkspace(mutation())).updated).toBe(true);
+    expect(store.admitRemoval({ ...input, now: time(2), maxObservationAgeMs: 2000 })).toEqual({
+      kind: "rejected",
+      reason: "stale_attempt_revision",
+    });
+    expect(store.readOperation("remove")).toBeNull();
+  });
+  function resolvePending() {
+    const admitted = store.readOperation("remove")!;
     const observed = observationFor(input.intentDigest, 2);
-    store.appendObservation(canonicalJSONStringify(observed));
+    expect(store.appendObservation(canonicalJSONStringify(observed)).recorded).toBe(true);
     expect(
       store.resolveRemoval({
         operationId: "remove",
-        admissionDigest: admitted.operation.admission.admissionDigest,
+        admissionDigest: admitted.admission.admissionDigest,
         observationDigest: observed.observation_digest,
         controller,
         expectedRunRevision: 0,
         now: time(2),
         maxObservationAgeMs: 0,
-      })
-    ).toEqual({ kind: "rejected", reason: "stale_attempt_revision" });
+      }).kind
+    ).toBe("resolved");
+    return observed;
+  }
+
+  it.each(["heartbeat", "release", "reconcile", "quarantine", "transition"] as const)(
+    "blocks %s from an already-open lifecycle connection until recovery resolves",
+    async (operation) => {
+      const before = {
+        attempt: await lifecycle.getAttempt("attempt"),
+        lease: await lifecycle.getWorkspaceLease("workspace"),
+        events: await lifecycle.listWorkspaceLifecycleEvents("run"),
+      };
+      expect(store.admitRemoval(input).kind).toBe("admitted");
+      const change = () => {
+        const args = mutation();
+        switch (operation) {
+          case "heartbeat":
+            return lifecycle.heartbeatWorkspace(args);
+          case "release":
+            return lifecycle.releaseWorkspace({ ...args, disposition: "discarded" });
+          case "reconcile":
+            return lifecycle.reconcileWorkspace({ ...args, action: "resume" });
+          case "quarantine":
+            return lifecycle.quarantineWorkspace({ ...args, reason: "fixture" });
+          case "transition":
+            return lifecycle.transitionAttempt({ ...args, status: "cancelled" });
+        }
+      };
+      await expect(change()).rejects.toThrow("removal_operation_pending");
+      expect(await lifecycle.getAttempt("attempt")).toEqual(before.attempt);
+      expect(await lifecycle.getWorkspaceLease("workspace")).toEqual(before.lease);
+      expect(await lifecycle.listWorkspaceLifecycleEvents("run")).toEqual(before.events);
+      resolvePending();
+      // The rejected transaction did not consume its mutation ID or revise the reservation.
+      expect((await change()).updated).toBe(true);
+      expect(store.admitRemoval(input).kind).toBe("replay");
+    }
+  );
+
+  it("keeps fresh evidence appendable but prevents cursor changes until resolution", async () => {
+    const journal = new SqliteRemovalEvidenceStore(database);
+    try {
+      expect(store.admitRemoval(input).kind).toBe("admitted");
+      const fresh = observationFor(input.intentDigest, 2);
+      expect(journal.appendObservation(canonicalJSONStringify(fresh)).recorded).toBe(true);
+      expect(
+        journal.selectObservation("remove", input.intentDigest, input.observationDigest, null)
+      ).toBe(true);
+      expect(() =>
+        journal.selectObservation(
+          "remove",
+          input.intentDigest,
+          fresh.observation_digest,
+          input.observationDigest
+        )
+      ).toThrow("removal_operation_pending");
+      expect(journal.readSelection("remove", input.intentDigest)?.observationDigest).toBe(
+        input.observationDigest
+      );
+      resolvePending();
+      expect(
+        journal.selectObservation(
+          "remove",
+          input.intentDigest,
+          fresh.observation_digest,
+          input.observationDigest
+        )
+      ).toBe(true);
+      expect(store.admitRemoval(input).kind).toBe("replay");
+    } finally {
+      await journal.close();
+    }
+  });
+
+  it.each([
+    "UPDATE attempts SET revision=revision+1 WHERE attemptId='attempt'",
+    "DELETE FROM attempts WHERE attemptId='attempt'",
+    "UPDATE workspace_leases SET revision=revision+1 WHERE leaseId='workspace'",
+    "DELETE FROM workspace_leases WHERE leaseId='workspace'",
+    "DELETE FROM removal_selections WHERE operationId='remove'",
+  ])("rejects direct legacy write and rolls back preceding transaction work: %s", (sql) => {
+    const connection = new Database(database);
+    try {
+      expect(store.admitRemoval(input).kind).toBe("admitted");
+      const change = connection.transaction(() => {
+        connection
+          .prepare("UPDATE run_coordination SET revision=revision+1 WHERE runId='run'")
+          .run();
+        connection.exec(sql);
+      });
+      expect(change).toThrow("removal_operation_pending");
+      expect(
+        connection.prepare("SELECT revision FROM run_coordination WHERE runId='run'").get()
+      ).toEqual({ revision: 0 });
+      expect(store.readOperation("remove")?.resolution).toBeNull();
+    } finally {
+      connection.close();
+    }
+  });
+
+  it("upgrades an existing unresolved journal and preserves its admission across reopen", async () => {
+    expect(store.admitRemoval(input).kind).toBe("admitted");
+    const admission = store.readOperation("remove");
+    await store.close();
+    const legacy = new Database(database);
+    try {
+      for (const row of legacy
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'removal_pending_%'"
+        )
+        .all() as { name: string }[])
+        legacy.exec(`DROP TRIGGER ${row.name}`);
+      legacy.exec("DELETE FROM coordination_schema_migrations WHERE version=24");
+      store = new SqliteRemovalOperationStore(database);
+      expect(store.readOperation("remove")).toEqual(admission);
+      expect(() =>
+        legacy.exec("UPDATE workspace_leases SET revision=revision+1 WHERE leaseId='workspace'")
+      ).toThrow("removal_operation_pending");
+      resolvePending();
+      expect((await lifecycle.heartbeatWorkspace(mutation())).updated).toBe(true);
+    } finally {
+      legacy.close();
+    }
+  });
+
+  it("does not block an unrelated attempt or controller progress", async () => {
+    expect(store.admitRemoval(input).kind).toBe("admitted");
+    const common = { controller, runId: "run", expectedRunRevision: 0, now: time(2) };
+    expect(
+      (
+        await lifecycle.createAttempt({
+          ...common,
+          mutationId: "other-create",
+          attemptId: "other",
+          workItemId: "other-work",
+          workItemRevision: 1,
+          packetId: "other-packet",
+          packetHash: hash,
+          baseSha: "a".repeat(40),
+        })
+      ).updated
+    ).toBe(true);
+    expect(
+      (
+        await lifecycle.transitionAttempt({
+          ...common,
+          mutationId: "other-change",
+          attemptId: "other",
+          expectedAttemptRevision: 0,
+          status: "cancelled",
+        })
+      ).updated
+    ).toBe(true);
+    expect(
+      (await lifecycle.renewControllerLease({ ...controller, now: time(2), ttlMs: 60_000 })).renewed
+    ).toBe(true);
     expect(store.readOperation("remove")?.resolution).toBeNull();
   });
 

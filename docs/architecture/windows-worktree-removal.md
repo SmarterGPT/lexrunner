@@ -446,9 +446,29 @@ resolution of this bounded operation, not a claim that workspace cleanup complet
 Neither method releases the workspace, changes Attempt/lease revisions, advances
 selection, or automatically starts a successor effect. New deletion after takeover
 still requires explicit reservation reconciliation and a new, correctly bound intent.
-An externally changed reservation/selection fails recovery closed; this store does
-not lock out existing lifecycle APIs or silently reinterpret the old intent against
-new revisions. Production wiring must coordinate those writes and provide the
-quiescence/exclusion guarantees: this database API alone cannot establish physical
+Opening the writable operation store also installs opt-in migration 24. Database
+triggers reject updates/deletes to the admitted operation's Attempt, workspace lease
+and selected observation cursor while its resolution is null. This includes existing
+lifecycle connections opened before installation: admission and lifecycle writes
+serialize through the same SQLite writer transaction. If the lifecycle write commits
+first, admission must satisfy the new revisions; if admission commits first, the
+lifecycle write fails with SQLite `removal_operation_pending` and the store transaction
+rolls back. The rejected mutation ID remains available. Selection replay with the
+same digest remains a read-only success. This internal opt-in error is not a new
+public lifecycle result variant; production adapters must handle it as a pending
+operation and recover rather than repeatedly retrying the mutation.
+
+Fresh observations and other immutable evidence remain appendable. Controller
+renewal/takeover, run progress and unrelated reservations remain available. Recovery
+records resolution without touching guarded rows. After resolution, normal lifecycle
+and cursor mutations can proceed under their existing rules; historical admission
+replay still never dispatches. A resolved `contents_remaining` observation is not
+permission to reuse a partly removed workspace: reconciliation must use fresh
+physical evidence before any new execution or cleanup.
+
+These guards coordinate the existing store APIs; they are not protection from raw SQL
+schema changes or replacement of the database. Prior to production wiring, qualify
+worker/session concurrency and bind executor quiescence/exclusion to the guard's
+lifetime. This database API alone cannot establish physical
 custody, bind an authenticated helper, stop an OS call, or authorize a protected
 native mutation.

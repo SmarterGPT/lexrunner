@@ -100,7 +100,8 @@ export class SqliteRemovalOperationStore extends SqliteRemovalEvidenceStore {
     super(path, options);
     try {
       if (!options.readOnly)
-        this.db.exec(`
+        this.immediateTransaction(() => {
+          this.db.exec(`
         CREATE TABLE IF NOT EXISTS removal_operations (
           operationId TEXT PRIMARY KEY, workspaceLeaseId TEXT NOT NULL,
           admissionJson TEXT NOT NULL, resolutionJson TEXT, observationDigest TEXT,
@@ -114,6 +115,35 @@ export class SqliteRemovalOperationStore extends SqliteRemovalEvidenceStore {
         INSERT OR IGNORE INTO coordination_schema_migrations(version,name,appliedAt)
           VALUES(23,'removal-operation-admission',datetime('now'));
       `);
+          // Install in the database, not in one caller's connection-local checks.
+          // Connections opened before this opt-in migration must obey the same fence.
+          for (const [table, pending] of [
+            [
+              "workspace_leases",
+              `SELECT 1 FROM removal_operations
+            WHERE workspaceLeaseId=OLD.leaseId AND resolutionJson IS NULL`,
+            ],
+            [
+              "attempts",
+              `SELECT 1 FROM removal_operations AS operation
+            JOIN workspace_leases AS lease ON lease.leaseId=operation.workspaceLeaseId
+            WHERE lease.attemptId=OLD.attemptId AND operation.resolutionJson IS NULL`,
+            ],
+            [
+              "removal_selections",
+              `SELECT 1 FROM removal_operations
+            WHERE operationId=OLD.operationId AND resolutionJson IS NULL`,
+            ],
+          ]) {
+            for (const action of ["UPDATE", "DELETE"]) {
+              this.db.exec(`CREATE TRIGGER IF NOT EXISTS removal_pending_${table}_${action}
+              BEFORE ${action} ON ${table} WHEN EXISTS (${pending})
+              BEGIN SELECT RAISE(ABORT, 'removal_operation_pending'); END;`);
+            }
+          }
+          this.db.exec(`INSERT OR IGNORE INTO coordination_schema_migrations(version,name,appliedAt)
+          VALUES(24,'removal-lifecycle-interlock',datetime('now'));`);
+        });
     } catch (error) {
       this.db.close();
       throw error;
