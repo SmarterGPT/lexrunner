@@ -49,7 +49,13 @@ async function snapshot(root: string, probe: string, git: string) {
   );
 }
 
-async function parent(root: string, phase: string, probe: string, git: string) {
+async function parent(
+  root: string,
+  phase: string,
+  probe: string,
+  git: string,
+  prepareOnly = false
+) {
   validateRoot(root);
   const repo = join(root, "repo"),
     target = join(root, "worker");
@@ -147,6 +153,11 @@ async function parent(root: string, phase: string, probe: string, git: string) {
     observation.observation_digest
   );
   await readback.close();
+  if (prepareOnly) {
+    await journal.close();
+    await lifecycle.close();
+    return;
+  }
   command(probe, ["--mutate-once", root, phase], sourceRoot);
   // The native call completed and closed its handles. Abrupt coordinator exit leaves
   // both live SQLite connections unclosed and the selected pre-effect observation intact.
@@ -274,6 +285,7 @@ async function main() {
   if (!parentPath || !probe || !git || !isAbsolute(probe) || !isAbsolute(git))
     throw new Error("Supply mode, root, absolute probe and Git");
   if (mode === "parent") return parent(parentPath, phase, probe, git);
+  if (mode === "prepare") return parent(parentPath, phase, probe, git, true);
   if (mode === "recover") {
     console.log(JSON.stringify(await recover(parentPath, phase, probe, git, condition)));
     return;

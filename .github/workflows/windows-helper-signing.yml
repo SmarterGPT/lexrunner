@@ -58,6 +58,13 @@ jobs:
           $report = node --import tsx scripts/qualify-removal-parent-restart.ts run (Resolve-Path artifacts).Path $probe (Get-Command git.exe).Source
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $report | Set-Content artifacts/removal-parent-restart.json -Encoding utf8
+      - name: Qualify cooperative native operation lifetime
+        shell: pwsh
+        run: |
+          $probe = (Resolve-Path proofs/windows-workspace-boundary/tests/RemovalLeaseProbe/bin/Release/net8.0/RemovalLeaseProbe.exe).Path
+          $report = node --import tsx scripts/qualify-removal-operation-lifetime.ts run (Resolve-Path artifacts).Path $probe (Get-Command git.exe).Source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report | Set-Content artifacts/removal-operation-lifetime.json -Encoding utf8
       - name: Retain development removal evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -67,6 +74,7 @@ jobs:
             artifacts/removal-observed-report.json
             artifacts/removal-observed-verification.json
             artifacts/removal-parent-restart.json
+            artifacts/removal-operation-lifetime.json
           if-no-files-found: warn
           retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

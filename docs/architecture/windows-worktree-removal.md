@@ -335,3 +335,57 @@ Controller renewal and native observation are separate operations. This fixture
 does not close the check-to-use interval, transfer ownership to the replacement,
 authenticate the supplied physical identity/selection, or prove a fenced native
 mutation protocol. Those boundaries and production recovery remain pending.
+
+## Cooperative operation-lifetime experiment
+
+`scripts/qualify-removal-operation-lifetime.ts` tests a candidate ordering mechanism
+using the same fixture project, setup, SQLite reservation/journal and recovery
+assessor. Substitute its name for `qualify-removal-parent-restart.ts` in the command
+above. The original script also exposes `prepare` mode for this shared setup; that
+mode closes its SQLite connections without mutating the worktree or exiting abruptly.
+
+The native **child**, not its Node coordinator, opens a pre-created stable exclusion
+file outside the target with `FileShare.None`. The file is never unlinked or replaced
+on release. Only after the child holds that slot does the coordinator read the
+reservation/selected evidence and attempt real controller renewal. An explicit
+fixture instruction permits a known-file partial effect; the child keeps the slot
+until its native call and handle cleanup finish. All competing fixture entries use
+the same slot. Unrelated workers are not asked to manage any of this bookkeeping.
+
+Eight cases cover current ownership, replacement before the check, expiry before
+the check, replacement after admission, two parent-exit launch modes, cancellation
+at the pre-effect safe point, and a 15-second deadline with no effect. Replacement
+uses an advanced logical clock. A busy contender does not reach the controller check
+or native effect. After release, delayed old credentials acquire the slot but fail
+their fresh fence check. The known partial effect removes only `first.txt`; the
+other target file, sibling worktree, reservation and selected journal cursor remain.
+Fresh native observations are passed to `assessReservedRemovalRecovery`; assessment
+still reports that it does not authorize mutation.
+
+On the tested default Windows attached launch, terminating the Node parent also
+terminates the native child. A separately declared `detached` launch exercises an
+executor that survives: after parent exit, a competing process still sees the slot
+busy, and the original child can finish its already-admitted fixture effect. Neither
+launch behavior is assumed for other runtimes/hosts. Output-pipe closure is not
+evidence of child termination. A separate watcher opens and retains the actual
+Windows process handle **before** parent exit, and confirms termination before
+fixture cleanup. PID polling alone is not used as quiescence evidence. Watcher
+failure or unknown termination retains the disposable directory for investigation.
+The attached child may report exit code zero after parent termination without a
+completed effect. Neither zero nor nonzero exit is used to infer filesystem effects.
+
+File barriers impose the tested order; polling only waits for those explicit signals.
+The deadline bounds barrier waiting, not an arbitrary kernel call. Cancellation and
+deadline cases stop before the partial effect. Mid-effect cancellation, power loss,
+whole-operation replay, parallel independent targets and authenticated admission
+remain unqualified. The report includes ordered per-actor events, actual effects,
+fresh observation bytes, retained reservation and selected evidence identity.
+
+This is a **cooperative development experiment**, not a fix to the production broker.
+The barrier files and caller-selected slot are not protected/authenticated authority.
+Controller renewal, lifecycle/journal reads and effect dispatch are still separate;
+there is no atomic reservation/admission record or durable operation replay contract.
+The mechanism orders only participants using that stable slot. The production guard,
+helper protocol and resolver are unchanged. A production adapter must bind all effect
+entrances to the approved executor/slot and current intent/reservation, define durable
+admission and replay, and qualify its actual launch profile before activation.
