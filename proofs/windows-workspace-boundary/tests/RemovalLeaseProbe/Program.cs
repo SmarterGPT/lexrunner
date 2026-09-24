@@ -12,6 +12,10 @@ internal static class Program
 
   private static int Main(string[] args)
   {
+    if (args.Length == 2 && args[0] == "--watch-admission-child" && OperatingSystem.IsWindows())
+      return AdmissionProbe.Watch(args[1]);
+    if (args.Length == 3 && args[0] == "--admission-child" && OperatingSystem.IsWindows())
+      return AdmissionProbe.Run(args[1], args[2]);
     if (args.Length == 3 && args[0] == "--interrupt-child" && OperatingSystem.IsWindows())
       return WorktreeRemovalProbe.InterruptChild(args[1], args[2]);
     if (args.Length == 3 && args[0] == "--mutate-once" && OperatingSystem.IsWindows())
