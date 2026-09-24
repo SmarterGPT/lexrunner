@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rename, rm, access } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rename, rm, access, open } from "node:fs/promises";
 import { dirname, basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { SqliteWorkspaceLifecycleStore } from "../src/store/sqlite/workspace-lifecycle-store.js";
 import { SqliteRemovalEvidenceStore } from "../src/store/sqlite/removal-evidence-store.js";
+import { SqliteRemovalOperationStore } from "../src/store/sqlite/removal-operation-store.js";
 import { assessReservedRemovalRecovery } from "../src/workspaces/workspace-removal-evidence.js";
 import { canonicalJSONStringify } from "../src/util/canonicalJson.js";
 import { probeObservation, removalProbeSnapshot } from "./removal-probe-records.js";
@@ -128,7 +129,7 @@ async function actor(root: string, id: string) {
     childCode = code;
     childExited = true;
   });
-  const store = new SqliteWorkspaceLifecycleStore(join(root, "journal.db"));
+  const store = new SqliteRemovalOperationStore(join(root, "journal.db"));
   try {
     await waitFor(
       async () =>
@@ -146,21 +147,75 @@ async function actor(root: string, id: string) {
         "driver permits fresh controller check"
       );
       const condition = await readFile(join(root, `${id}.check`), "utf8");
-      assert.ok(["current", "expired"].includes(condition));
+      assert.ok(["current", "expired", "recover", "commit-loss"].includes(condition));
       const recovery = await assess(root);
       const current = await store.getRunCoordination("run");
       assert.ok(current?.lease);
       const now =
         condition === "expired"
           ? new Date(Date.parse(current.lease.expiresAt) + 1).toISOString()
-          : new Date().toISOString();
-      const renewal = await store.renewControllerLease({ ...oldController, now, ttlMs: 120_000 });
+          : new Date(
+              condition === "recover"
+                ? Math.max(
+                    Date.now(),
+                    Date.parse(current.updatedAt),
+                    Date.parse(current.lease.renewedAt)
+                  )
+                : Date.now()
+            ).toISOString();
+      const intentDigest = JSON.parse(recovery.intentBytes!).intent_digest;
+      let operation;
+      if (condition === "recover") {
+        const admitted = store.readOperation("content");
+        assert.ok(admitted);
+        assert.ok(store.appendObservation(recovery.observationBytes).recorded);
+        const active = current.lease;
+        operation = store.resolveRemoval({
+          operationId: "content",
+          admissionDigest: admitted.admission.admissionDigest,
+          observationDigest: JSON.parse(recovery.observationBytes).observation_digest,
+          controller: {
+            runId: active.runId,
+            controllerId: active.controllerId,
+            leaseId: active.leaseId,
+            fencingToken: active.fencingToken,
+          },
+          expectedRunRevision: current.revision,
+          now,
+          maxObservationAgeMs: 180_000,
+        });
+      } else {
+        operation = store.admitRemoval({
+          operationId: "content",
+          intentDigest,
+          observationDigest: recovery.selectedObservationDigest,
+          expectedRunRevision: current.revision,
+          expectedAttemptRevision: recovery.attempt.revision,
+          controller: oldController,
+          executorId: `native-${child.pid}`,
+          now,
+          maxObservationAgeMs: 30_000,
+        });
+      }
       console.log(
-        JSON.stringify({ request: id, stage: "checked", renewal, assessment: recovery.assessment })
+        JSON.stringify({
+          request: id,
+          stage: "checked",
+          operation,
+          assessment: recovery.assessment,
+        })
       );
-      // This explicit fixture driver authorizes its known disposable effect.
-      // Assessment/renewal are not general mutation authority or atomic reservation admission.
-      await signal(root, id, "decision", renewal.renewed ? "admit" : "deny");
+      if (condition === "commit-loss") {
+        assert.equal(operation.kind, "admitted");
+        console.log(JSON.stringify({ request: id, stage: "commit-recorded" }));
+        await waitFor(
+          () => exists(join(root, `${id}.dispatch`)),
+          "dispatch barrier after admission commit"
+        );
+      }
+      // Only a newly committed admission reaches this fixture's native effect.
+      // Replay/recovery never dispatch; physical custody remains a separate port.
+      await signal(root, id, "decision", operation.kind === "admitted" ? "admit" : "deny");
     }
     await waitFor(async () => childExited, "native child exit");
     assert.equal(childError, undefined);
@@ -179,8 +234,35 @@ type Event = {
   stage: string;
   pid?: number;
   elapsedMs?: number;
-  renewal?: { renewed: boolean; reason?: string };
+  operation?: { kind: string; reason?: string };
 };
+const terminalStages = [
+  "busy",
+  "cancelled",
+  "effect-completed",
+  "deadline-before-admission",
+  "deadline-before-effect",
+];
+async function nativeMarkers(root: string, id: string) {
+  const markers: Event[] = [];
+  for (const stage of ["held", "admitted", ...terminalStages]) {
+    const path = join(root, `${id}.${stage}.json`);
+    if (!(await exists(path))) continue;
+    const file = await open(path, "r");
+    try {
+      const buffer = Buffer.alloc(4097);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      assert.ok(bytesRead <= 4096, "Oversized native marker");
+      const event = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")) as Event;
+      assert.equal(event.request, id);
+      assert.equal(event.stage, stage);
+      markers.push(event);
+    } finally {
+      await file.close();
+    }
+  }
+  return markers;
+}
 function watchNative(pid: number) {
   const watcher = spawn(probe, ["--watch-admission-child", String(pid)], {
     cwd: source,
@@ -206,6 +288,9 @@ function watchNative(pid: number) {
     closed = true;
   });
   return {
+    snapshot() {
+      return { pid, closed, code, output, error };
+    },
     async ready() {
       await waitFor(
         async () => closed || output.includes("watching"),
@@ -273,6 +358,30 @@ function start(root: string, id: string, detached = false) {
   return {
     events,
     child,
+    async diagnostics() {
+      let markers: Event[] = [];
+      let markerError: string | undefined;
+      try {
+        markers = await nativeMarkers(root, id);
+      } catch (failure) {
+        markerError = String(failure);
+      }
+      return {
+        id,
+        events,
+        markers,
+        markerError,
+        coordinator: {
+          pid: child.pid,
+          exited,
+          closed,
+          code,
+          stderr,
+          error: error?.message,
+        },
+        watcher: observer?.snapshot(),
+      };
+    },
     async stage(stage: string) {
       await waitFor(async () => {
         if (error) throw error;
@@ -286,6 +395,20 @@ function start(root: string, id: string, detached = false) {
           return true;
         }
         if (closed && !observer) throw new Error(`Actor closed before ${stage}: ${stderr}`);
+        if (["held", "admitted", ...terminalStages].includes(stage)) {
+          const terminal = (await nativeMarkers(root, id)).find((event) =>
+            terminalStages.includes(event.stage)
+          );
+          // The expected marker can appear after the first existence check.
+          if (terminal?.stage === stage) {
+            events.push(terminal);
+            return true;
+          }
+          if (terminal)
+            throw new Error(`Native ${id} ended with ${terminal.stage} before ${stage}`);
+        }
+        if (closed && observer?.snapshot().closed)
+          throw new Error(`Actor and native watcher closed before ${stage}: ${stderr}`);
         return false;
       }, `${id}: ${stage}`);
       if (stage === "held" && !observer) {
@@ -331,10 +454,14 @@ function start(root: string, id: string, detached = false) {
     async cleanup() {
       // No observer is needed for a normally exited parent: it awaited its own
       // child's exit. Abnormal unobserved termination leaves the fixture retained.
-      if (exited && code === 0) return;
+      if (exited && code === 0) {
+        await waitFor(async () => closed, "normal coordinator cleanup closure", 5000);
+        return;
+      }
       if (!exited) child.kill();
       assert.ok(observer, "No process watcher: retain fixture rather than assume quiescence");
       await observer.finish();
+      await waitFor(async () => exited && closed, "coordinator cleanup closure", 5000);
     },
   };
 }
@@ -369,13 +496,17 @@ async function run() {
     "parent-exit",
     "cancel",
     "deadline",
+    "commit-loss",
+    "admission-deadline",
   ];
   if (request) assert.ok(conditions.includes(request));
+  if (launch) assert.ok(launch === "diagnostic-failure" && request === "admission-deadline");
   for (const condition of request ? [request] : conditions) {
     const container = await mkdtemp(join(resolve(rootArg), "removal-probe-"));
     const root = join(container, "interrupted-content");
     const actors: ReturnType<typeof start>[] = [];
     const started = performance.now();
+    let failed = false;
     try {
       command(process.execPath, [
         "--import",
@@ -393,16 +524,49 @@ async function run() {
       actors.push(primary);
       await primary.stage("held");
       let replacement;
-      if (condition === "before") replacement = await replace(root);
-      await signal(root, "primary", "check", condition === "expired" ? "expired" : "current");
-      const rejected = ["before", "expired"].includes(condition);
+      if (["before", "admission-deadline"].includes(condition)) replacement = await replace(root);
+      // Reproduce a delayed controller check without guessing a sleep duration.
+      // The stale check is delivered only after the native deadline marker exists.
+      if (condition === "admission-deadline") await primary.stage("deadline-before-admission");
+      await signal(
+        root,
+        "primary",
+        "check",
+        condition === "expired"
+          ? "expired"
+          : condition === "commit-loss"
+            ? "commit-loss"
+            : "current"
+      );
+      const rejected = ["before", "expired", "admission-deadline"].includes(condition);
       if (rejected) {
-        await primary.stage("cancelled");
+        await primary.stage(condition === "admission-deadline" ? "checked" : "cancelled");
         assert.equal(
-          primary.events.find((e) => e.stage === "checked")?.renewal?.reason,
-          condition === "before" ? "stale_fence" : "lease_expired"
+          primary.events.find((e) => e.stage === "checked")?.operation?.reason,
+          condition === "expired" ? "lease_expired" : "stale_fence"
         );
         assert.ok(!primary.events.some((e) => e.stage === "admitted"));
+        if (condition === "admission-deadline") {
+          // Explicit negative qualification: exercise the actual retained-failure path.
+          if (launch === "diagnostic-failure") await primary.stage("cancelled");
+          await assert.rejects(
+            primary.stage("cancelled"),
+            /deadline-before-admission before cancelled/u
+          );
+          const diagnostics = await primary.diagnostics();
+          assert.ok(diagnostics.markers.some((e) => e.stage === "deadline-before-admission"));
+          const rejectedStore = new SqliteRemovalOperationStore(join(root, "journal.db"), {
+            readOnly: true,
+          });
+          try {
+            assert.equal(rejectedStore.readOperation("content"), null);
+          } finally {
+            await rejectedStore.close();
+          }
+        }
+      } else if (condition === "commit-loss") {
+        await primary.stage("commit-recorded");
+        await primary.killParent(false);
       } else {
         await primary.stage("admitted");
         if (condition === "parent-exit-attached") {
@@ -434,8 +598,8 @@ async function run() {
         }
       }
       await primary.finish(
-        condition.startsWith("parent-exit"),
-        condition === "parent-exit-attached"
+        condition.startsWith("parent-exit") || condition === "commit-loss",
+        condition === "parent-exit-attached" || condition === "commit-loss"
       );
       if (replacement) {
         const stale = start(root, "stale");
@@ -444,17 +608,50 @@ async function run() {
         await signal(root, "stale", "check", "current");
         await stale.stage("cancelled");
         await stale.finish();
-        assert.equal(
-          stale.events.find((e) => e.stage === "checked")?.renewal?.reason,
-          "stale_fence"
-        );
+        const response = stale.events.find((e) => e.stage === "checked")?.operation;
+        if (rejected) assert.equal(response?.reason, "stale_fence");
+        else assert.equal(response?.kind, "replay");
       }
       const effected =
-        !rejected && !["cancel", "deadline", "parent-exit-attached"].includes(condition);
+        !rejected &&
+        !["cancel", "deadline", "parent-exit-attached", "commit-loss"].includes(condition);
       assert.equal(await exists(join(root, "worker/first.txt")), !effected);
       assert.equal(await readFile(join(root, "worker/second.txt"), "utf8"), "second");
       assert.equal(await readFile(join(root, "other/first.txt"), "utf8"), "first");
       assert.equal(await readFile(join(root, "other/second.txt"), "utf8"), "second");
+      let operation;
+      if (!rejected) {
+        const recoverer = start(root, "recoverer");
+        actors.push(recoverer);
+        await recoverer.stage("held");
+        await signal(root, "recoverer", "check", "recover");
+        await recoverer.stage("cancelled");
+        await recoverer.finish();
+        assert.equal(
+          recoverer.events.find((e) => e.stage === "checked")?.operation?.kind,
+          "resolved"
+        );
+        const reopened = new SqliteRemovalOperationStore(join(root, "journal.db"), {
+          readOnly: true,
+        });
+        try {
+          operation = reopened.readOperation("content");
+          assert.ok(operation?.resolution);
+          assert.equal(operation.admission.controller.fencingToken, 1);
+          assert.equal(operation.resolution.controller.fencingToken, replacement ? 2 : 1);
+          assert.equal(operation.resolution.observedState, "contents_remaining");
+        } finally {
+          await reopened.close();
+        }
+        const replay = start(root, "replay");
+        actors.push(replay);
+        await replay.stage("held");
+        await signal(root, "replay", "check", "current");
+        await replay.stage("cancelled");
+        await replay.finish();
+        assert.equal(replay.events.find((e) => e.stage === "checked")?.operation?.kind, "replay");
+        assert.equal(await exists(join(root, "worker/first.txt")), !effected);
+      }
       const recovery = await assess(root);
       assert.deepEqual(recovery.attempt, initial.attempt);
       assert.deepEqual(recovery.lease, initial.lease);
@@ -464,26 +661,49 @@ async function run() {
         durationMs: performance.now() - started,
         effectObserved: effected,
         replacement,
+        operation,
         events: actors.map((actor) => actor.events),
+        diagnostics: await Promise.all(actors.map((actor) => actor.diagnostics())),
         recovery,
         reservationRetained: true,
         selectionAdvanced: false,
       });
     } catch (error) {
+      failed = true;
       console.error(
         JSON.stringify({
           condition,
           root,
           durationMs: performance.now() - started,
           events: actors.map((actor) => actor.events),
+          error: String(error),
+          diagnostics: await Promise.all(actors.map((actor) => actor.diagnostics())),
+          retained: true,
         })
       );
       throw error;
     } finally {
-      await Promise.all(actors.map((actor) => actor.cleanup()));
+      const cleanup = await Promise.allSettled(actors.map((actor) => actor.cleanup()));
+      const quiescent = cleanup.every((result) => result.status === "fulfilled");
+      if (failed || !quiescent) {
+        const failure = {
+          root,
+          condition,
+          quiescent,
+          cleanup: cleanup.map((result) =>
+            result.status === "fulfilled"
+              ? { status: result.status }
+              : { status: result.status, reason: String(result.reason) }
+          ),
+          diagnostics: await Promise.all(actors.map((actor) => actor.diagnostics())),
+        };
+        await writeFile(join(container, "failure.json"), JSON.stringify(failure, null, 2));
+        console.error(JSON.stringify({ retainedFailure: container, ...failure }));
+      }
+      assert.ok(quiescent, "Cleanup could not establish quiescence; fixture retained");
       assert.equal(dirname(container), resolve(rootArg));
       assert.match(basename(container), /^removal-probe-/u);
-      await rm(container, { recursive: true, force: true, maxRetries: 3 });
+      if (!failed) await rm(container, { recursive: true, force: true, maxRetries: 3 });
     }
   }
   console.log(
@@ -493,7 +713,8 @@ async function run() {
       limits: [
         "Cooperative child-owned file exclusion and explicit fixture authorization; not authenticated helper admission.",
         "All simulated entry paths use one stable slot. Product broker and helper protocol remain unchanged.",
-        "Real controller renewal, reservation assessment and native effect are separate; no atomic admission record or replay contract.",
+        "SQLite admission is atomic over current controller, reservation and selected evidence; filesystem effects remain a separate cooperative executor contract.",
+        "Current-controller recovery records an observation without releasing the reservation or advancing selection; it does not transfer ownership for new deletion.",
         "Replacement/expiry use an advanced logical clock. Barrier ordering is real; no wall-time race-frequency claim.",
         "Parent exit occurs with native child alive before a known-file partial effect, not during a kernel call.",
         "Surviving-child case explicitly uses detached launch; default attached launch is a separate observed termination control.",

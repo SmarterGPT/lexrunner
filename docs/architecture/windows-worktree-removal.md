@@ -346,21 +346,28 @@ mode closes its SQLite connections without mutating the worktree or exiting abru
 
 The native **child**, not its Node coordinator, opens a pre-created stable exclusion
 file outside the target with `FileShare.None`. The file is never unlinked or replaced
-on release. Only after the child holds that slot does the coordinator read the
-reservation/selected evidence and attempt real controller renewal. An explicit
-fixture instruction permits a known-file partial effect; the child keeps the slot
+on release. Only after the child holds that slot does the coordinator attempt the
+durable SQLite admission described below. An explicit fixture instruction permits
+a newly admitted known-file partial effect; the child keeps the slot
 until its native call and handle cleanup finish. All competing fixture entries use
 the same slot. Unrelated workers are not asked to manage any of this bookkeeping.
 
-Eight cases cover current ownership, replacement before the check, expiry before
+Ten cases cover current ownership, replacement before the check, expiry before
 the check, replacement after admission, two parent-exit launch modes, cancellation
-at the pre-effect safe point, and a 15-second deadline with no effect. Replacement
+at the pre-effect safe point, a 15-second deadline with no effect, and parent exit
+after admission commit but before native dispatch. The additional delayed-admission
+case withholds the controller check until `deadline-before-admission`, then submits
+the stale check: no admission or effect is recorded. Replacement
 uses an advanced logical clock. A busy contender does not reach the controller check
-or native effect. After release, delayed old credentials acquire the slot but fail
-their fresh fence check. The known partial effect removes only `first.txt`; the
+or native effect. After release, repeated admitted operations acquire the slot but
+return historical status without dispatch; a never-admitted stale request fails its
+fresh fence check. The known partial effect removes only `first.txt`; the
 other target file, sibling worktree, reservation and selected journal cursor remain.
 Fresh native observations are passed to `assessReservedRemovalRecovery`; assessment
-still reports that it does not authorize mutation.
+still reports that it does not authorize mutation. A new recovery process reacquires
+the exclusion slot, observes the target, and records resolution using the current
+controller. Replacement controllers can record recovery without inheriting the old
+controller's authority to dispatch. Another replay remains status-only afterward.
 
 On the tested default Windows attached launch, terminating the Node parent also
 terminates the native child. A separately declared `detached` launch exercises an
@@ -377,15 +384,71 @@ completed effect. Neither zero nor nonzero exit is used to infer filesystem effe
 File barriers impose the tested order; polling only waits for those explicit signals.
 The deadline bounds barrier waiting, not an arbitrary kernel call. Cancellation and
 deadline cases stop before the partial effect. Mid-effect cancellation, power loss,
-whole-operation replay, parallel independent targets and authenticated admission
-remain unqualified. The report includes ordered per-actor events, actual effects,
-fresh observation bytes, retained reservation and selected evidence identity.
+parallel independent targets and authenticated native admission remain unqualified.
+The report includes ordered per-actor events, actual effects, admission/resolution
+records, fresh observation bytes, retained reservation and selected evidence identity.
+Bounded native markers and coordinator/watcher exit diagnostics are collected separately
+from expected stage events. Unexpected native termination fails promptly. Any failed
+case retains its disposable directory and `failure.json`, including whether cleanup
+established quiescence. To exercise that negative path explicitly, append
+`admission-deadline diagnostic-failure` after the Git argument; exit 1 and a retained
+failure with `deadline-before-admission` are expected, not a successful matrix.
+
+Independent review of candidate `f65afc05` observed one unexplained `before` failure:
+the stale check was rejected but the driver timed out awaiting `cancelled`. Later runs
+passed; the original fixture deleted uncollected markers, so its cause cannot be
+established retrospectively. The delayed-admission case reproduces one possible
+mechanism, not proof of that historical cause. Corrected diagnostics improve future
+classification; they do not erase the failure or establish race-frequency reliability.
 
 This is a **cooperative development experiment**, not a fix to the production broker.
 The barrier files and caller-selected slot are not protected/authenticated authority.
-Controller renewal, lifecycle/journal reads and effect dispatch are still separate;
-there is no atomic reservation/admission record or durable operation replay contract.
-The mechanism orders only participants using that stable slot. The production guard,
+SQLite admission is atomic over the stored controller, reservation and selected
+evidence; filesystem effects remain a separate executor contract. The mechanism
+orders only participants using that stable slot. The production guard,
 helper protocol and resolver are unchanged. A production adapter must bind all effect
-entrances to the approved executor/slot and current intent/reservation, define durable
-admission and replay, and qualify its actual launch profile before activation.
+entrances to the approved executor/slot, coordinate other lifecycle writes, and qualify
+its actual launch profile before activation.
+
+## Durable admission and recovery records
+
+The internal, opt-in `SqliteRemovalOperationStore` extends the evidence journal on
+the same SQLite connection. It requires the existing lifecycle tables; no new CLI,
+MCP operation or production broker path instantiates it. Migration 23 adds one
+operation table and a unique index for one unresolved operation per workspace lease.
+
+`admitRemoval` commits an immutable admission before dispatch. A single immediate
+transaction checks current controller identity/fence/expiry and run revision, exact
+selected intent/observation, current Attempt revision, retained lease revision,
+reservation ownership/expiry, and the existing evidence assessor. The record binds
+the selection, revisions, controller, executor identifier and admission time with a
+canonical digest. Observed complete absence or unknown state is not newly admitted. SQLite commits
+are observed persistence, not a claim of qualified power-loss durability.
+
+Only `kind: admitted` represents a first admission. The caller must already own
+the effect exclusion and maintain it through the operation. A retry with the same
+operation and immutable inputs returns `kind: replay`, preserving the original
+controller/executor even after reopen or takeover. It never grants another dispatch.
+Changed inputs conflict. Loss of the response after commit, including before the
+native instruction, leaves an unresolved record; it is not inferred to have no effect.
+Another operation for that lease is refused while the first remains unresolved.
+
+Recovery must first establish old-executor quiescence and hold the same effect
+exclusion. It appends a fresh immutable observation, then calls `resolveRemoval` with
+current controller credentials and the expected admission digest. Resolution checks
+current controller/run revision, the retained reservation and unchanged selection,
+and assesses the fresh observation through the existing verifier. Pre-admission,
+unknown, mismatched or stale observations are refused. One immutable resolution
+records the actual assessed state and resolving controller. A conflicting resolution
+is refused; identical replay only returns history. `contents_remaining` is a valid
+resolution of this bounded operation, not a claim that workspace cleanup completed.
+
+Neither method releases the workspace, changes Attempt/lease revisions, advances
+selection, or automatically starts a successor effect. New deletion after takeover
+still requires explicit reservation reconciliation and a new, correctly bound intent.
+An externally changed reservation/selection fails recovery closed; this store does
+not lock out existing lifecycle APIs or silently reinterpret the old intent against
+new revisions. Production wiring must coordinate those writes and provide the
+quiescence/exclusion guarantees: this database API alone cannot establish physical
+custody, bind an authenticated helper, stop an OS call, or authorize a protected
+native mutation.
