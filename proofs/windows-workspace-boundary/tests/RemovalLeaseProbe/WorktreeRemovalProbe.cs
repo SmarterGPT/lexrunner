@@ -118,7 +118,35 @@ internal static class WorktreeRemovalProbe
     }
   }
 
-  internal static int InterruptChild(string root, string phase)
+  internal static int RestartSnapshot(string root, string git)
+  {
+    ValidateRestartRoot(root);
+    if (!Path.IsPathFullyQualified(git)) throw new InvalidDataException("Absolute Git required");
+    var target = Path.Combine(root, "worker");
+    if (new FileInfo(Path.Combine(root, "intent.json")).Length > 16384) throw new InvalidDataException("Oversized restart fixture intent");
+    using var persisted = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(root, "intent.json")));
+    var gitfile = persisted.RootElement.GetProperty("gitfile").GetString()!;
+    if (!gitfile.StartsWith("gitdir: ", StringComparison.Ordinal)) throw new InvalidDataException("Invalid fixture gitfile");
+    var registrationPath = Path.GetFullPath(gitfile[8..].Trim(), target);
+    var expectedParent = Path.GetFullPath(Path.Combine(root, "repo", ".git", "worktrees"));
+    if (Path.GetDirectoryName(registrationPath) != expectedParent) throw new InvalidDataException("Unexpected fixture registration path");
+    var snapshot = RemovalSnapshot.Capture(target, registrationPath,
+      Registered(Git(git, Path.Combine(root, "repo"), "worktree", "list", "--porcelain"), target));
+    using var output = new MemoryStream();
+    using (var json = new Utf8JsonWriter(output)) snapshot.Write(json);
+    Console.WriteLine(System.Text.Encoding.UTF8.GetString(output.ToArray()));
+    return 0;
+  }
+
+  private static void ValidateRestartRoot(string root)
+  {
+    if (!Path.IsPathFullyQualified(root) ||
+        Path.GetFileName(root) is not ("interrupted-content" or "interrupted-gitfile" or "interrupted-root") ||
+        !Path.GetFileName(Path.GetDirectoryName(root)!).StartsWith("removal-probe-", StringComparison.Ordinal))
+      throw new InvalidDataException("Unexpected restart fixture root");
+  }
+
+  internal static int InterruptChild(string root, string phase, bool wait = true)
   {
     if (phase is not ("content" or "gitfile" or "root") || !Path.IsPathFullyQualified(root) ||
         Path.GetFileName(root) != "interrupted-" + phase ||
@@ -133,6 +161,7 @@ internal static class WorktreeRemovalProbe
       MutateFixture(owner, Path.Combine(root, "worker"), phase);
       Console.WriteLine("phase-reached:" + phase);
       Console.Out.Flush();
+      if (!wait) return 0;
       Thread.Sleep(Timeout.Infinite);
       return 3;
     }

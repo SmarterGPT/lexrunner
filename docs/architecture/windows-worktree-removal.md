@@ -285,3 +285,53 @@ controller fencing. It does not infer reservation retention from process exit or
 TTL, renew an expired controller, or dispatch recovery. A caller must obtain current
 state and fence any subsequent mutation. Native parent restart, independent provisioning
 of the intent's physical identities, and production integration remain pending.
+
+## Native parent-exit assessment qualification
+
+`scripts/qualify-removal-parent-restart.ts` composes the development native probe,
+real Git worktrees, SQLite lifecycle reservations and the selected removal journal.
+It does not use the production resolver or add a deletion operation to the helper
+protocol. Run it from the repository root on Windows after building the existing
+`proofs/windows-workspace-boundary/tests/RemovalLeaseProbe` project:
+
+```powershell
+node --import tsx scripts/qualify-removal-parent-restart.ts run `
+  (Resolve-Path artifacts).Path `
+  (Resolve-Path proofs/windows-workspace-boundary/tests/RemovalLeaseProbe/bin/Release/net8.0/RemovalLeaseProbe.exe).Path `
+  (Get-Command git.exe).Source
+```
+
+The harness creates a new disposable root under the selected parent and removes
+only that exact root afterward. It supports both the framework build and a
+NativeAOT publish of the same fixture. The manual signing qualification workflow
+runs the framework build's assessment and retains its JSON report separately.
+
+For each of three boundaries (one content file removed, `.git` removed, or the root
+removed), a separate Node parent reserves the actual branch/path, commits the
+initial intent/observation and selection, and independently reopens selection
+before invoking the native known-file mutation. The native child completes and
+closes its handles. The Node parent exits with code 73 without closing its live
+SQLite connections. This is coordinator process exit after a completed native
+call, not a kill inside that call, interrupted native cleanup, or power loss.
+
+Fresh Node recovery processes read the persisted selection and reservation, acquire
+fresh native identity/registration observations, and run the existing
+`assessReservedRemovalRecovery`. Partial content and root-absence cases remain
+distinct. The raw intent, selected old observation, fresh observation and lifecycle
+snapshots are included in the report. The fresh observation is assessed explicitly;
+it does not silently advance the persisted journal cursor.
+
+Each boundary tests a current controller, an expired controller, and a replacement
+controller with a newer fence. Expiration/takeover use the store's explicit clock
+input advanced beyond expiry, not a claim about elapsed wall time. The old
+credential's renewal and run-state write must fail in the latter two cases. The
+same filesystem assessment can remain valid in all three cases: assessment is
+not authority. Workspace reservation, Attempt, lifecycle events and journal
+selection remain unchanged; the unrelated sibling worktree and remaining known
+target files are checked.
+
+Even the current-controller case does **not** resume deletion or release storage.
+Controller renewal and native observation are separate operations. This fixture
+does not close the check-to-use interval, transfer ownership to the replacement,
+authenticate the supplied physical identity/selection, or prove a fenced native
+mutation protocol. Those boundaries and production recovery remain pending.
