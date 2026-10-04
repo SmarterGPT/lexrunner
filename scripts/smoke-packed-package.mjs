@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { resolveContainedPackageTarget } from "./packed-package-paths.mjs";
+import { smokeGateExecution } from "./smoke-gate-execution.mjs";
 
 const projectRoot = process.cwd();
 const packageVersion = JSON.parse(
@@ -192,6 +193,11 @@ try {
     consumerRoot,
     packageVersion
   );
+  const gateExecution = await smokeGateExecution({
+    cli: canonicalCli,
+    mcp: resolvePackageBinTarget(installedPackageRoot, installedManifest, "lexrunner-mcp"),
+    fixtureRoot: path.join(temporaryRoot, "gate-execution"),
+  });
   process.stdout.write(
     `${JSON.stringify({
       installed: "@smartergpt/lexrunner",
@@ -202,6 +208,7 @@ try {
       assistedLifecycle: "bounded_read_only_status_passed",
       mcpTools: toolCount,
       mcpAttemptTools: requiredAttemptTools.length,
+      gateExecution,
     })}\n`
   );
 } finally {

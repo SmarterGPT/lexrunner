@@ -74,6 +74,7 @@ This document provides a comprehensive parity matrix showing which LexRunner ope
 | `--force`                  | `force: true`            | Force operation (e.g., overwrite existing)              |
 | `--only-item <item>`       | `onlyItem`               | Run gates for specific item only                        |
 | `--only-gate <gate>`       | `onlyGate`               | Run specific gate only                                  |
+| `--repo-root <dir>`        | `repoRoot`               | Explicit physical Git repository candidate root         |
 | `--profile-dir <dir>`      | `profileDir`             | Profile directory override                              |
 | `--include-metrics`        | `includeMetrics: true`   | Include detailed metrics in response                    |
 

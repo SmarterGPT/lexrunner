@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { ExecutionState } from "../executionState.js";
 import { executeGatesWithPolicy } from "../gates.js";
 import type { Plan } from "../schema.js";
 import { loadPlan } from "../schema.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
-import { captureGateCandidateIdentity, sameGateCandidate } from "./gate-candidate-identity.js";
+import {
+  captureGateCandidateIdentity,
+  resolveGateRepositoryRoot,
+  sameGateCandidate,
+} from "./gate-candidate-identity.js";
 import {
   writeGateEvidenceManifest,
   type GateEvidenceArtifactReference,
@@ -68,6 +72,9 @@ export class GateExecutionServiceError extends Error {
       | "GATE_RESULT_LIMIT_EXCEEDED"
       | "GATE_SELECTION_NOT_FOUND"
       | "GATE_TIMEOUT_INVALID"
+      | "GATE_CANDIDATE_ROOT_INVALID"
+      | "GATE_WORKING_DIRECTORY_INVALID"
+      | "GATE_WORKING_DIRECTORY_CONFLICT"
       | "GATE_CANDIDATE_CHANGED",
     message: string
   ) {
@@ -80,7 +87,9 @@ export class GateExecutionServiceError extends Error {
 export class GateExecutionService {
   constructor(private readonly execute: GateExecutor = executeGatesWithPolicy) {}
 
-  async run(input: GateExecutionServiceInput): Promise<GateExecutionServiceResult> {
+  async run(request: GateExecutionServiceInput): Promise<GateExecutionServiceResult> {
+    // Caller-owned fields must not change selection or publication after execution yields.
+    const input = { ...request, options: { ...request.options } };
     if (
       input.timeoutMs !== undefined &&
       (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 86_400_000)
@@ -92,10 +101,23 @@ export class GateExecutionService {
     }
     const plan = loadPlan(canonicalJSONStringify(input.plan));
     const validatedInput = { ...input, plan };
-    assertSelectionExists(validatedInput);
+    assertGateSelectionExists(validatedInput);
+    assertGateSelectionBounded(validatedInput);
+    const binding = bindGateDirectories(
+      validatedInput,
+      input.repoRoot === undefined ? process.cwd() : input.repoRoot
+    );
     const executionState = input.executionState ?? new ExecutionState(plan);
     const artifactDir = prepareOwnedArtifactDirectory(input.artifactDir);
-    const candidate = captureGateCandidateIdentity(input.repoRoot ?? process.cwd(), artifactDir);
+    let candidate: ReturnType<typeof captureGateCandidateIdentity>;
+    try {
+      candidate = captureGateCandidateIdentity(binding.repository.path, artifactDir);
+    } catch {
+      throw new GateExecutionServiceError(
+        "GATE_CANDIDATE_ROOT_INVALID",
+        "The candidate repository is unavailable"
+      );
+    }
     try {
       await this.execute(
         plan,
@@ -104,9 +126,10 @@ export class GateExecutionService {
         input.timeoutMs,
         input.progressReporter,
         input.skipValidation,
-        input.repoRoot,
+        binding.repository.path,
         {
           ...input.options,
+          resolvedGateWorkingDirectories: binding.workingDirectories,
           candidateDigest: candidate.worktreeDigest,
           onlyItem: input.onlyItem,
           onlyGate: input.onlyGate,
@@ -119,8 +142,21 @@ export class GateExecutionService {
       );
     }
 
-    const candidateAfter = captureGateCandidateIdentity(candidate.repositoryRoot, artifactDir);
-    if (!sameGateCandidate(candidate, candidateAfter)) {
+    let candidateUnchanged = false;
+    try {
+      const bindingAfter = bindGateDirectories(validatedInput, binding.repository.path);
+      const candidateAfter = captureGateCandidateIdentity(candidate.repositoryRoot, artifactDir);
+      candidateUnchanged =
+        sameDirectory(binding.repository, bindingAfter.repository) &&
+        Object.keys(binding.directories).every((key) => {
+          const after = bindingAfter.directories[key];
+          return after !== undefined && sameDirectory(binding.directories[key]!, after);
+        }) &&
+        sameGateCandidate(candidate, candidateAfter);
+    } catch {
+      // A disappeared or redirected root/working directory also invalidates the candidate.
+    }
+    if (!candidateUnchanged) {
       throw new GateExecutionServiceError(
         "GATE_CANDIDATE_CHANGED",
         "The repository candidate changed during gate execution; evidence was not published"
@@ -182,7 +218,17 @@ function prepareOwnedArtifactDirectory(requestedRoot: string): string {
   return runDirectory;
 }
 
-function assertSelectionExists(input: GateExecutionServiceInput): void {
+export function assertGateSelectionExists(
+  input: Pick<GateExecutionServiceInput, "plan" | "onlyItem" | "onlyGate">
+): void {
+  for (const selector of [input.onlyItem, input.onlyGate]) {
+    if (selector !== undefined && (typeof selector !== "string" || selector.length === 0)) {
+      throw new GateExecutionServiceError(
+        "GATE_SELECTION_NOT_FOUND",
+        "A provided item or gate selection must be a nonempty string"
+      );
+    }
+  }
   const selectedItems = input.onlyItem
     ? input.plan.items.filter(({ name }) => name === input.onlyItem)
     : input.plan.items;
@@ -201,6 +247,140 @@ function assertSelectionExists(input: GateExecutionServiceInput): void {
       "The selected gate does not exist on the selected plan items"
     );
   }
+}
+
+function assertGateSelectionBounded(
+  input: Pick<GateExecutionServiceInput, "plan" | "onlyItem" | "onlyGate">
+): void {
+  let selectedItems = 0;
+  for (const item of input.plan.items) {
+    if (input.onlyItem && item.name !== input.onlyItem) continue;
+    selectedItems++;
+    let selectedGates = 0;
+    for (const gate of item.gates) {
+      if (!input.onlyGate || gate.name === input.onlyGate) selectedGates++;
+    }
+    if (selectedItems > MAX_ITEMS || selectedGates > MAX_GATES_PER_ITEM) {
+      throw new GateExecutionServiceError(
+        "GATE_RESULT_LIMIT_EXCEEDED",
+        `Gate selection exceeds ${MAX_ITEMS} items or ${MAX_GATES_PER_ITEM} gates per item`
+      );
+    }
+  }
+}
+
+interface ObservedDirectory {
+  path: string;
+  device: bigint;
+  inode: bigint;
+}
+
+interface GateDirectoryBinding {
+  repository: ObservedDirectory;
+  directories: Readonly<Record<string, ObservedDirectory>>;
+  workingDirectories: Readonly<Record<string, string>>;
+}
+
+/** Portable consistency observations, not a filesystem lease or execution authority. */
+function bindGateDirectories(
+  input: Pick<GateExecutionServiceInput, "plan" | "onlyItem" | "onlyGate">,
+  requestedRoot: unknown
+): GateDirectoryBinding {
+  // These observations belong to this phase only. Postflight rebuilds both caches.
+  const observedReferences = new Map<string, ObservedDirectory>();
+  const repositoriesByDirectory = new Map<string, ObservedDirectory>();
+  const observeReference = (reference: string): ObservedDirectory => {
+    const lexicalPath = resolve(reference);
+    const cached = observedReferences.get(lexicalPath);
+    if (cached) return cached;
+    const observed = observeDirectory(lexicalPath);
+    observedReferences.set(lexicalPath, observed);
+    return observed;
+  };
+  const repositoryFor = (directory: ObservedDirectory): ObservedDirectory => {
+    const cached = repositoriesByDirectory.get(directory.path);
+    if (cached) return cached;
+    const observed = observeReference(resolveGateRepositoryRoot(directory.path));
+    repositoriesByDirectory.set(directory.path, observed);
+    return observed;
+  };
+  let repository: ObservedDirectory;
+  try {
+    const requested = directoryReference(requestedRoot);
+    repository = repositoryFor(observeReference(requested));
+    // This canonical root was established by the same phase's Git observation.
+    repositoriesByDirectory.set(repository.path, repository);
+  } catch {
+    throw new GateExecutionServiceError(
+      "GATE_CANDIDATE_ROOT_INVALID",
+      "The candidate root must identify an available Git repository"
+    );
+  }
+
+  const directories: Record<string, ObservedDirectory> = Object.create(null);
+  const workingDirectories: Record<string, string> = Object.create(null);
+  for (const item of input.plan.items) {
+    if (input.onlyItem && item.name !== input.onlyItem) continue;
+    for (const gate of item.gates) {
+      if (input.onlyGate && gate.name !== input.onlyGate) continue;
+      if (gate.runtime !== "local") continue;
+      let directory: ObservedDirectory;
+      let gateRepository: ObservedDirectory;
+      try {
+        const requested = gate.cwd === undefined ? "." : directoryReference(gate.cwd);
+        directory = observeReference(resolve(repository.path, requested));
+        gateRepository = repositoryFor(directory);
+      } catch {
+        throw new GateExecutionServiceError(
+          "GATE_WORKING_DIRECTORY_INVALID",
+          "A selected local gate working directory is unavailable"
+        );
+      }
+      const relativeDirectory = relative(repository.path, directory.path);
+      if (
+        !sameDirectory(repository, gateRepository) ||
+        relativeDirectory === ".." ||
+        relativeDirectory.startsWith(`..${sep}`) ||
+        isAbsolute(relativeDirectory)
+      ) {
+        throw new GateExecutionServiceError(
+          "GATE_WORKING_DIRECTORY_CONFLICT",
+          "A selected local gate working directory belongs to another candidate"
+        );
+      }
+      const key = JSON.stringify([item.name, gate.name]);
+      directories[key] = directory;
+      workingDirectories[key] = directory.path;
+    }
+  }
+  return {
+    repository,
+    directories: Object.freeze(directories),
+    workingDirectories: Object.freeze(workingDirectories),
+  };
+}
+
+function directoryReference(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.includes("\0") ||
+    Buffer.byteLength(value, "utf8") > MAX_ARTIFACT_REF_BYTES
+  ) {
+    throw new Error("Invalid directory reference");
+  }
+  return value;
+}
+
+function observeDirectory(reference: string): ObservedDirectory {
+  const path = realpathSync(reference);
+  const info = statSync(path, { bigint: true });
+  if (!info.isDirectory() || info.ino === 0n) throw new Error("Directory is unavailable");
+  return { path, device: info.dev, inode: info.ino };
+}
+
+function sameDirectory(left: ObservedDirectory, right: ObservedDirectory): boolean {
+  return left.device === right.device && left.inode === right.inode;
 }
 
 function bounded(value: string, maxBytes: number): string {

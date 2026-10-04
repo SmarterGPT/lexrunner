@@ -471,12 +471,20 @@ function createServer(options?: McpServerOptions): Server {
                 description:
                   "Explicit plan.json path (default: repository plan.json, then profile runner fallback)",
               },
+              repoRoot: {
+                type: "string",
+                minLength: 1,
+                maxLength: 4096,
+                description: "Explicit candidate repository root (default: server startup cwd)",
+              },
               onlyItem: {
                 type: "string",
+                minLength: 1,
                 description: "Run gates for specific item only",
               },
               onlyGate: {
                 type: "string",
+                minLength: 1,
                 description: "Run specific gate only",
               },
               outDir: {
@@ -1790,6 +1798,7 @@ async function handleGatesRun(
     const summary = (
       await new GateExecutionService().run({
         plan: artifact.plan,
+        repoRoot: validatedArgs.repoRoot,
         artifactDir: outDir,
         timeoutMs: validatedArgs.timeoutMs,
         onlyItem: validatedArgs.onlyItem,

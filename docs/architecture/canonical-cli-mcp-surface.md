@@ -114,6 +114,11 @@ listed in the matrix own implementation gaps.
 
 - Canonical `gate run` and MCP `gates.run` share `GateExecutionService` and its
   bounded summary. `gate execute` and top-level `execute` remain migration aliases.
+  CLI `--repo-root`, `--only-item`, and `--only-gate` map to MCP `repoRoot`,
+  `onlyItem`, and `onlyGate`. Invocation-local working directories are validated
+  against the physical candidate repository without rewriting frozen plan inputs.
+  Item dependencies require completed passing gates; selected subsets retain their
+  evidence scope and cannot qualify omitted required work.
 - Discovery, plan creation, integration status, and merge-order pairs now share bounded
   transport-neutral query services. Human output and legacy alias JSON remain adapter projections.
 - Canonical `weave apply`, MCP `merge.apply`, and compatibility `merge` share the persisted

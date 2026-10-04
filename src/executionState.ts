@@ -130,6 +130,48 @@ export class ExecutionState {
     this.updateNodeStatus(nodeName);
   }
 
+  /** Start a selected invocation; its qualification cannot reuse earlier gates. */
+  beginNodeExecution(nodeName: string): void {
+    const result = this.results.get(nodeName);
+    if (!result) throw new Error(`Node not found: ${nodeName}`);
+    result.gates = [];
+    result.status = "skipped";
+    result.eligibleForMerge = false;
+    delete result.blockedBy;
+  }
+
+  /** Recompute the result once an item's invocation has actually settled. */
+  completeNodeExecution(nodeName: string): void {
+    if (!this.results.has(nodeName)) throw new Error(`Node not found: ${nodeName}`);
+    this.updateNodeStatus(nodeName);
+  }
+
+  /** Block an unlaunched item without inventing results for its commands. */
+  blockNode(nodeName: string, blockedBy: readonly string[]): void {
+    const result = this.results.get(nodeName);
+    if (!result) throw new Error(`Node not found: ${nodeName}`);
+    result.status = "blocked";
+    result.blockedBy = [...new Set(blockedBy)];
+    result.eligibleForMerge = false;
+    for (const gate of result.gates) {
+      if (gate.status !== "pass" && gate.status !== "fail") gate.status = "blocked";
+    }
+  }
+
+  /** Executor exceptions are terminal failures, even before a gate returns. */
+  markNodeExecutionFailed(nodeName: string, error: unknown): void {
+    const result = this.results.get(nodeName);
+    if (!result) throw new Error(`Node not found: ${nodeName}`);
+    result.status = "fail";
+    result.eligibleForMerge = false;
+    this.recordErrorDiagnostic(
+      nodeName,
+      "item-execution",
+      error instanceof Error ? error : new Error(String(error)),
+      1
+    );
+  }
+
   /**
    * Update node status based on its gate results and policy
    */
@@ -151,6 +193,7 @@ export class ExecutionState {
     const gateResults = new Map(nodeResult.gates.map((g) => [g.gate, g]));
     let hasFailedGate = false;
     let hasRetryingGate = false;
+    let hasBlockedGate = false;
     let allRequiredGatesPassed = true;
 
     for (const gateName of requiredGates) {
@@ -171,6 +214,9 @@ export class ExecutionState {
           allRequiredGatesPassed = false;
           break;
         case "blocked":
+          hasBlockedGate = true;
+          allRequiredGatesPassed = false;
+          break;
         case "skipped":
           allRequiredGatesPassed = false;
           break;
@@ -187,6 +233,9 @@ export class ExecutionState {
     } else if (hasRetryingGate) {
       nodeResult.status = "retrying";
       nodeResult.eligibleForMerge = false;
+    } else if (hasBlockedGate) {
+      nodeResult.status = "blocked";
+      nodeResult.eligibleForMerge = false;
     } else if (allRequiredGatesPassed) {
       nodeResult.status = "pass";
       nodeResult.eligibleForMerge = true;
@@ -201,8 +250,6 @@ export class ExecutionState {
    * Propagate blocked status to dependent nodes
    */
   propagateBlockedStatus(): void {
-    const dependencyMap = this.buildDependencyMap();
-
     for (const [nodeName, nodeResult] of this.results) {
       const item = this.plan.items.find((i) => i.name === nodeName)!;
 
@@ -216,16 +263,7 @@ export class ExecutionState {
       }
 
       if (blockedBy.length > 0) {
-        nodeResult.status = "blocked";
-        nodeResult.blockedBy = blockedBy;
-        nodeResult.eligibleForMerge = false;
-
-        // Mark all gates as blocked
-        for (const gate of nodeResult.gates) {
-          if (gate.status !== "pass" && gate.status !== "fail") {
-            gate.status = "blocked";
-          }
-        }
+        this.blockNode(nodeName, blockedBy);
       }
     }
   }

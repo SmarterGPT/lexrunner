@@ -62,6 +62,7 @@ export type PlanCreateArgs = z.infer<typeof PlanCreateArgs>;
 
 export const GatesRunArgs = z.object({
   planFile: z.string().min(1).max(4096).optional(),
+  repoRoot: z.string().min(1).max(4096).optional(),
   onlyItem: z.string().optional(),
   onlyGate: z.string().optional(),
   outDir: z.string().optional(),

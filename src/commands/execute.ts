@@ -5,7 +5,11 @@
 import { Command } from "commander";
 import { loadPlan } from "../schema.js";
 import { computeMergeOrder } from "../mergeOrder.js";
-import { GateExecutionService } from "../application/gate-execution-service.js";
+import {
+  assertGateSelectionExists,
+  GateExecutionService,
+  GateExecutionServiceError,
+} from "../application/gate-execution-service.js";
 import {
   applyGateImpactSelection,
   GateImpactService,
@@ -22,6 +26,7 @@ import {
 } from "../autopilot/index.js";
 import { ProgressReporter } from "../util/progress.js";
 import { writeJsonOutput } from "../cli/output.js";
+import { mcpToolError } from "../errors/index.js";
 import { throwExit, CLIExitSignal } from "../cli/exitHandler.js";
 import {
   initAuditEmitter,
@@ -83,6 +88,9 @@ export function registerExecuteCommand(
     .description("Execute plan with policy-aware gate running and status tracking")
     .option("--plan <file>", "Path to plan.json file")
     .argument("[file]", "Path to plan.json file (alternative to --plan)")
+    .option("--repo-root <dir>", "Explicit repository candidate root (default: current directory)")
+    .option("--only-item <name>", "Run only the selected plan item; dependencies must already pass")
+    .option("--only-gate <name>", "Run only the selected gate; omitted gates remain unqualified")
     .option("--artifact-dir <dir>", "Output directory for artifacts", "./artifacts")
     .option("--timeout <ms>", "Gate timeout in milliseconds", "30000")
     .option("--dry-run", "Validate plan and show execution order without running gates")
@@ -137,7 +145,7 @@ Common Issues:
 
       try {
         // Purge cache unless --keep-cache is specified
-        if (!deps.jsonModeActive()) {
+        if (!(opts.json || deps.jsonModeActive())) {
           purgeCache(opts.profileDir, opts.keepCache);
         }
 
@@ -185,6 +193,7 @@ Common Issues:
 
         const planContent = fs.readFileSync(planFile, "utf-8");
         let plan = loadPlan(planContent);
+        const repoRoot = opts.repoRoot ?? process.cwd();
         const timeoutMs = Number(opts.timeout);
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86_400_000) {
           throw new Error("--timeout must be an integer from 1 through 86400000 milliseconds");
@@ -198,7 +207,7 @@ Common Issues:
             );
           }
           impactSelection = await new GateImpactService().select({
-            repoRoot: process.cwd(),
+            repoRoot,
             baseSha: opts.implementationBase,
             headSha: opts.implementationHead,
           });
@@ -207,6 +216,8 @@ Common Issues:
             impactReceiptPath = writeGateImpactReceipt(impactSelection, opts.artifactDir);
           }
         }
+
+        assertGateSelectionExists({ plan, onlyItem: opts.onlyItem, onlyGate: opts.onlyGate });
 
         // Parse tier overrides from CLI
         const tierOverrides = opts.tierOverride ? parseTierOverrides(opts.tierOverride) : [];
@@ -333,6 +344,7 @@ Common Issues:
             );
             const output = {
               dryRun: true,
+              selection: { onlyItem: opts.onlyItem ?? null, onlyGate: opts.onlyGate ?? null },
               plan: {
                 schemaVersion: plan.schemaVersion,
                 target: plan.target,
@@ -415,11 +427,8 @@ Common Issues:
 
         // Create progress reporter (disabled in JSON mode)
         const progressReporter = new ProgressReporter({
-          enabled: !deps.jsonModeActive(),
+          enabled: !(opts.json || deps.jsonModeActive()),
         });
-
-        // Capture repository root at the start for stable gate execution
-        const repoRoot = process.cwd();
 
         // Initialize Turn Cost tracker if enabled
         const turnCostTracker = opts.trackTurncost ? createTurnCostTracker() : undefined;
@@ -433,7 +442,9 @@ Common Issues:
           progressReporter,
           skipValidation,
           repoRoot,
-          options: { turnCostTracker },
+          onlyItem: opts.onlyItem,
+          onlyGate: opts.onlyGate,
+          options: { turnCostTracker, suppressStdout: Boolean(opts.json || deps.jsonModeActive()) },
         });
 
         // Get final results
@@ -604,6 +615,14 @@ Common Issues:
           await finalizeAuditGuard(auditEmitter, "error");
         }
 
+        if (registration.canonicalOutput && error instanceof GateExecutionServiceError) {
+          if (opts.json || deps.jsonModeActive()) {
+            writeJsonOutput(mcpToolError(error.code, error.message, { tool: "gates.run" }));
+          } else {
+            console.error(`${error.code}: ${error.message}`);
+          }
+          throwExit(1);
+        }
         deps.exitWith(error);
       }
     });

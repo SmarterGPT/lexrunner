@@ -11,6 +11,9 @@ export default defineConfig({
       "**/dist/**",
       "**/.smartergpt/**",
       "**/coverage/**",
+      // Retained diagnostic source snapshots are evidence, not executable tests.
+      "**/artifacts*/**",
+      "**/.artifacts*/**",
       // Exclude tests that perform git commits (require LEX_GIT_MODE=live)
       "**/tests/release-prepare.spec.ts",
       "**/tests/e2e-comprehensive.test.ts",
@@ -24,6 +27,10 @@ export default defineConfig({
       "**/tests/e2e-frozen-git-inputs.spec.ts",
       "**/tests/runs/worker-receipt-native-integration.spec.ts",
       "**/tests/workspaces/workspace-coordinator-sqlite-git.spec.ts",
+      "**/tests/application/gate-candidate-routing-git.spec.ts",
+      "**/tests/application/gate-execution-service.spec.ts",
+      "**/tests/mcp-candidate-routing-git.spec.ts",
+      "**/tests/commands/gate-run-selection.spec.ts",
       // Exclude slow CLI tests (run via test:cli:slow with LEX_ENABLE_SLOW_CLI_TESTS=true)
       "**/tests/cli-progress.spec.ts",
     ],

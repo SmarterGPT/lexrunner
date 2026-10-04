@@ -1125,18 +1125,23 @@ Modified Items:
 
 ---
 
-### `execute`
+<a id="execute"></a>
+
+### `gate run` (compatibility: `execute`)
 
 Execute plan with policy-aware gate running and status tracking.
 
 ```bash
-lex-pr execute [options] [file]
+lexrunner gate run [options] [file]
 
 Arguments:
   file                       Path to plan.json file (alternative to --plan)
 
 Options:
   --plan <file>              Path to plan.json file
+  --repo-root <dir>          Explicit repository candidate root (default: current directory)
+  --only-item <name>         Run only the selected item; omitted dependencies must already pass
+  --only-gate <name>         Run only the selected gate; omitted gates remain unqualified
   --artifact-dir <dir>       Output directory for artifacts (default: "./artifacts")
   --timeout <ms>             Gate timeout in milliseconds (default: "30000")
   --dry-run                  Validate plan and show execution order without running gates
@@ -1156,17 +1161,34 @@ Options:
 
 ```bash
 # Execute entire plan
-lex-pr execute plan.json
+lexrunner gate run plan.json
 
 # Execute specific item only
-lex-pr execute --only-item item-a plan.json
+lexrunner gate run --only-item item-a plan.json
+
+# Run a selected gate in an explicit repository from a shared non-Git workspace
+lexrunner gate run --plan plan.json --repo-root /path/to/repo --only-item item-a --only-gate unit
 
 # JSON output for monitoring
-lex-pr execute --json plan.json
+lexrunner gate run --json plan.json
 
 # Execute plan with vulnerability scanning
-lex-pr execute plan-with-vuln.json
+lexrunner gate run plan-with-vuln.json
 ```
+
+Item and gate selections use the same validation as MCP `gates.run`. Unknown items,
+unknown gates, or a gate absent from the selected item fail before commands run.
+Relative gate working directories resolve from the candidate repository root; each
+selected local command must belong to that same physical Git repository. Execution
+does not change the declared plan or gate digests.
+
+Dependencies must finish with every required gate passing before dependent commands
+start. A selected item whose omitted prerequisite has no passing execution evidence
+is blocked; the runner does not launch omitted prerequisites. `maxWorkers` bounds
+the number of simultaneously executing items. A selected gate does not qualify
+omitted required gates. The evidence manifest records the selection and full plan
+identity; a passing subset is not whole-plan merge eligibility. Dry runs validate
+selectors and report the full dependency graph with the requested selection.
 
 #### Built-in Gates
 

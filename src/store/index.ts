@@ -38,7 +38,8 @@ export {
 } from "./run-store.js";
 
 // Implementations
-export { InMemoryRunStore, InMemoryRunStoreOptions } from "./inmemory/index.js";
+export { InMemoryRunStore } from "./inmemory/index.js";
+export type { InMemoryRunStoreOptions } from "./inmemory/index.js";
 export { SqliteRunStore } from "./sqlite/index.js";
 
 // Controller coordination is intentionally separate from the frozen RunStore contract.
