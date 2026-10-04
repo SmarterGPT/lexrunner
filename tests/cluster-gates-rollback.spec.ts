@@ -58,7 +58,7 @@ describe("Cluster Gate Execution and Rollback", () => {
           gates: [
             {
               name: "lint",
-              run: "echo 'Linting...' && exit 0",
+              run: "node -e \"console.log('Linting...'); process.exitCode = 0\"",
               runtime: "local",
             },
           ],
@@ -96,6 +96,9 @@ describe("Cluster Gate Execution and Rollback", () => {
     expect(result.rollbackPerformed).toBe(false);
     expect(result.gateResults).toHaveLength(1);
     expect(result.gateResults[0].status).toBe("pass");
+    expect(result.gateResults[0].exitCode).toBe(0);
+    expect(result.gateResults[0].stdout?.trim()).toBe("Linting...");
+    expect(result.gateResults[0].stderr).toBe("");
   });
 
   it("should rollback on gate failure and store artifacts", async () => {
@@ -110,7 +113,7 @@ describe("Cluster Gate Execution and Rollback", () => {
           gates: [
             {
               name: "test",
-              run: "echo 'Test failed' >&2 && exit 1",
+              run: "node -e \"console.error('Test failed'); process.exitCode = 1\"",
               runtime: "local",
             },
           ],
@@ -156,6 +159,14 @@ describe("Cluster Gate Execution and Rollback", () => {
     expect(result.rollbackSha).toBeDefined();
     expect(result.artifactsStored).toBe(true);
     expect(result.artifactPaths.length).toBeGreaterThan(0);
+    expect(result.gateResults).toHaveLength(1);
+    expect(result.gateResults[0]).toMatchObject({
+      status: "fail",
+      exitCode: 1,
+      failureKind: "nonzero_exit",
+      stdout: "",
+    });
+    expect(result.gateResults[0].stderr?.trim()).toBe("Test failed");
 
     // Verify .weave directory created
     expect(fs.existsSync(weaveDir)).toBe(true);
@@ -172,6 +183,8 @@ describe("Cluster Gate Execution and Rollback", () => {
     expect(bundle.clusterIndex).toBe(0);
     expect(bundle.failedGates).toHaveLength(1);
     expect(bundle.failedGates[0].gate).toBe("test");
+    expect(bundle.failedGates[0].exitCode).toBe(1);
+    expect(bundle.failedGates[0].stderr.trim()).toBe("Test failed");
     expect(bundle.rollbackSha).toBeDefined();
 
     // Failure-delivery work must stay inside the GitOperations checkout rather
@@ -192,7 +205,7 @@ describe("Cluster Gate Execution and Rollback", () => {
           gates: [
             {
               name: "test",
-              run: "exit 1",
+              run: 'node -e "process.exit(1)"',
               runtime: "local",
             },
           ],
@@ -241,7 +254,7 @@ describe("Cluster Gate Execution and Rollback", () => {
           gates: [
             {
               name: "lint",
-              run: "exit 0",
+              run: 'node -e "process.exit(0)"',
               runtime: "local",
             },
           ],
@@ -252,7 +265,7 @@ describe("Cluster Gate Execution and Rollback", () => {
           gates: [
             {
               name: "lint",
-              run: "exit 0",
+              run: 'node -e "process.exit(0)"',
               runtime: "local",
             },
           ],
@@ -289,6 +302,7 @@ describe("Cluster Gate Execution and Rollback", () => {
     expect(result.gatesPassed).toBe(true);
     expect(result.gateResults).toHaveLength(2);
     expect(result.gateResults.every((gr) => gr.status === "pass")).toBe(true);
+    expect(result.gateResults.map((gr) => gr.exitCode)).toEqual([0, 0]);
   });
 
   it("should rollback if any gate in cluster fails", async () => {
@@ -302,7 +316,7 @@ describe("Cluster Gate Execution and Rollback", () => {
           gates: [
             {
               name: "lint",
-              run: "exit 0",
+              run: 'node -e "process.exit(0)"',
               runtime: "local",
             },
           ],
@@ -313,7 +327,7 @@ describe("Cluster Gate Execution and Rollback", () => {
           gates: [
             {
               name: "lint",
-              run: "exit 1", // Fail
+              run: 'node -e "process.exit(1)"', // Fail
               runtime: "local",
             },
           ],
@@ -351,5 +365,9 @@ describe("Cluster Gate Execution and Rollback", () => {
     expect(result.rollbackPerformed).toBe(true);
     expect(result.gateResults).toHaveLength(2);
     expect(result.gateResults.some((gr) => gr.status === "fail")).toBe(true);
+    expect(result.gateResults.map((gr) => ({ status: gr.status, exitCode: gr.exitCode }))).toEqual([
+      { status: "pass", exitCode: 0 },
+      { status: "fail", exitCode: 1 },
+    ]);
   });
 });
