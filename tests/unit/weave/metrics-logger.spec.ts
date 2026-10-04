@@ -2,7 +2,7 @@
  * Audit Logger Tests
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -100,19 +100,22 @@ describe("AuditLogger", () => {
   describe("startIntervention", () => {
     it("tracks timing automatically", async () => {
       const logger = new AuditLogger({ auditPath });
+      const now = vi.spyOn(Date, "now").mockReturnValue(1000);
 
-      const tracker = logger.startIntervention("INT-007");
+      try {
+        const tracker = logger.startIntervention("INT-007");
+        now.mockReturnValue(1123);
 
-      // Simulate some work
-      await new Promise((r) => setTimeout(r, 50));
+        await tracker.success();
 
-      await tracker.success();
+        const content = fs.readFileSync(auditPath, "utf-8");
+        const entry = JSON.parse(content.trim());
 
-      const content = fs.readFileSync(auditPath, "utf-8");
-      const entry = JSON.parse(content.trim());
-
-      expect(entry.success).toBe(true);
-      expect(entry.time_to_complete_ms).toBeGreaterThanOrEqual(50);
+        expect(entry.success).toBe(true);
+        expect(entry.time_to_complete_ms).toBe(123);
+      } finally {
+        now.mockRestore();
+      }
     });
 
     it("handles failure with error", async () => {
