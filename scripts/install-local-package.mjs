@@ -141,8 +141,11 @@ export function inspectLocalInstallTarget(prefix, projectRoot, platform = proces
   };
 }
 
-export function createLocalInstallPlan({ projectRoot, prefix, artifactsDir, npmRuntime, source }) {
-  const inputs = validateLocalInstallInputs(projectRoot);
+export function createLocalInstallPlan(options) {
+  return buildLocalInstallPlan(options, validateLocalInstallInputs(options.projectRoot));
+}
+
+function buildLocalInstallPlan({ projectRoot, prefix, artifactsDir, npmRuntime, source }, inputs) {
   const target = inspectLocalInstallTarget(prefix, projectRoot);
   return {
     schemaVersion: "lexrunner-local-install/v2",
@@ -293,17 +296,22 @@ export function runLocalPackageInstall({
       run("git-observe", "git", ["show", `${head}:package-lock.json`], root)
     );
     const inputs = validateLocalInstallInputs(root);
-    return {
+    const observed = {
       repositoryRoot,
       head,
-      tree: git(["rev-parse", "HEAD^{tree}"]),
+      tree: git(["rev-parse", head + "^{tree}"]),
       branch: git(["branch", "--show-current"]),
       dirty: git(["status", "--porcelain=v1", "--untracked-files=all"]),
       headManifestSha256,
       headLockSha256,
+      manifestSha256: inputs.manifestSha256,
+      lockSha256: inputs.lockSha256,
       inputsMatchHead:
         inputs.manifestSha256 === headManifestSha256 && inputs.lockSha256 === headLockSha256,
     };
+    if (git(["rev-parse", "HEAD"]) !== head)
+      throw new Error("Source checkpoint changed during observation; local installation refused.");
+    return observed;
   };
   let runtime;
   let source;
@@ -337,16 +345,25 @@ export function runLocalPackageInstall({
     runtime = observeNpmPolicyRuntime({ projectRoot: root, env });
     receipt.npmRuntime = runtime;
     source = observeSource();
+    if (
+      runtime.manifestSha256 !== inputs.manifestSha256 ||
+      source.manifestSha256 !== inputs.manifestSha256 ||
+      source.lockSha256 !== inputs.lockSha256
+    )
+      throw new Error("Source inputs changed during preflight; local installation refused.");
     const recordedCommands = receipt.commands;
     receipt = {
       ...receipt,
-      ...createLocalInstallPlan({
-        projectRoot: root,
-        prefix,
-        artifactsDir: outputRoot,
-        npmRuntime: runtime,
-        source,
-      }),
+      ...buildLocalInstallPlan(
+        {
+          projectRoot: root,
+          prefix,
+          artifactsDir: outputRoot,
+          npmRuntime: runtime,
+          source,
+        },
+        inputs
+      ),
       commands: recordedCommands,
     };
     fs.writeFileSync(path.join(outputRoot, "source-package.json"), inputs.manifestBytes);

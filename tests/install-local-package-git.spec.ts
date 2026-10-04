@@ -84,6 +84,61 @@ function fixture() {
 }
 
 describe("local installer source Git context", () => {
+  it.each(["lock", "manifest"])(
+    "refuses a clean %s checkpoint switch during runtime preflight before retaining or deploying inputs",
+    (changedInput) => {
+      const input = fixture();
+      for (const name of ["package.json", "package-lock.json"])
+        fs.copyFileSync(path.join(sourceRoot, name), path.join(input.foreignRoot, name));
+      git(["add", "package.json", "package-lock.json"], input.foreignRoot);
+      git(["commit", "--quiet", "-m", "capture owned input snapshot"], input.foreignRoot);
+      const initialHead = git(["rev-parse", "HEAD"], input.foreignRoot);
+      const npmCliPath = input.env.npm_execpath;
+      const originalProbe = fs.readFileSync(npmCliPath, "utf8");
+      fs.writeFileSync(
+        npmCliPath,
+        `const probeFs = require('node:fs');
+         const probePath = require('node:path');
+         const probeRepo = ${JSON.stringify(input.foreignRoot)};
+         const marker = probePath.join(probeRepo, '.git', 'preflight-switch.once');
+         if (process.argv[2] === '--version' && !probeFs.existsSync(marker)) {
+           const lockPath = probePath.join(probeRepo, 'package-lock.json');
+           const lock = JSON.parse(probeFs.readFileSync(lockPath, 'utf8'));
+           lock.packages['node_modules/@smartergpt/lex'].version = '4.0.4';
+           probeFs.writeFileSync(lockPath, JSON.stringify(lock, null, 2) + '\\n');
+           if (${JSON.stringify(changedInput)} === 'manifest') {
+             const manifestPath = probePath.join(probeRepo, 'package.json');
+             const manifest = JSON.parse(probeFs.readFileSync(manifestPath, 'utf8'));
+             manifest.description = 'Owned second preflight checkpoint';
+             probeFs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\\n');
+           }
+           const commandOptions = {cwd:probeRepo,env:process.env,windowsHide:true,timeout:10000,stdio:'pipe'};
+           const execute = require('node:child_process').execFileSync;
+           execute('git', ['add', 'package.json', 'package-lock.json'], commandOptions);
+           execute('git', ['-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'switch owned preflight checkpoint'], commandOptions);
+           probeFs.writeFileSync(marker, 'changed');
+         }
+         ${originalProbe}`
+      );
+      expect(() => runLocalPackageInstall({ ...input, projectRoot: input.foreignRoot })).toThrow(
+        "Source inputs changed during preflight"
+      );
+      expect(git(["rev-parse", "HEAD"], input.foreignRoot)).not.toBe(initialHead);
+      expect(git(["status", "--porcelain=v1"], input.foreignRoot)).toBe("");
+      const receipt = JSON.parse(
+        fs.readFileSync(path.join(input.artifactsDir, "receipt.json"), "utf8")
+      );
+      expect(receipt.status).toBe("failed");
+      expect(
+        receipt.commands.every((command: { name: string }) => command.name === "git-observe")
+      ).toBe(true);
+      expect(fs.existsSync(path.join(input.artifactsDir, "source-package.json"))).toBe(false);
+      expect(fs.existsSync(path.join(input.artifactsDir, "source-package-lock.json"))).toBe(false);
+      expect(fs.existsSync(input.prefix)).toBe(false);
+    },
+    20_000
+  );
+
   it("observes the canonical source HEAD/tree despite an actual foreign Git environment", () => {
     const input = fixture();
     const sourceHead = git(["rev-parse", "HEAD"], sourceRoot);

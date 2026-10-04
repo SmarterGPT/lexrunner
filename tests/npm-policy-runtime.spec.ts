@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -107,6 +108,11 @@ describe("observed npm install-policy runtime", () => {
     });
     expect(observation.npmCliSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(observation.nodeExecutableSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(observation.manifestSha256).toBe(
+      createHash("sha256")
+        .update(fs.readFileSync(path.join(input.projectRoot, "package.json")))
+        .digest("hex")
+    );
     expect(Object.isFrozen(observation)).toBe(true);
     expect(() => assertNpmPolicyRuntimeUnchanged(observation)).not.toThrow();
   });

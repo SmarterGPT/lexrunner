@@ -19,7 +19,9 @@ export function observeNpmPolicyRuntime({
   nodeExecutable = process.execPath,
 }) {
   const root = path.resolve(projectRoot);
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const manifestBytes = fs.readFileSync(path.join(root, "package.json"));
+  const manifest = JSON.parse(manifestBytes);
+  const manifestSha256 = createHash("sha256").update(manifestBytes).digest("hex");
   const pin = /^npm@(\d+\.\d+\.\d+)$/.exec(manifest.packageManager ?? "");
   if (!pin)
     throw new Error("Install-policy qualification requires an exact npm packageManager pin.");
@@ -92,6 +94,7 @@ export function observeNpmPolicyRuntime({
 
   return Object.freeze({
     ...identity,
+    manifestSha256,
     selection,
     nodeVersion,
     requiredNodeMajor,
