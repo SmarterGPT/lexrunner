@@ -23,6 +23,7 @@ import {
   type GateOperationHandle,
   type GateOperationStartInput,
 } from "../../src/application/gate-operation-service.js";
+import { captureGateCandidateIdentity } from "../../src/application/gate-candidate-identity.js";
 import { loadPlan } from "../../src/schema.js";
 import { canonicalJSONStringify } from "../../src/util/canonicalJson.js";
 import { candidateFixture, type CandidateFixture } from "../helpers/gate-candidate-fixture.js";
@@ -297,6 +298,89 @@ describe("durable gate operation argument contracts", () => {
 });
 
 describe("native artifact-backed gate operations", () => {
+  it("refuses resealed evidence for another candidate in every artifact verification mode", async () => {
+    const fixture = nativeFixture({ artifact: true });
+    const operation = await started(fixture);
+    await terminal(operation);
+    const directory = dirname(operation.operationFile);
+    const terminalFile = join(directory, "terminal.json");
+    const descriptorBytes = readFileSync(operation.operationFile);
+    const admittedCandidate = JSON.parse(descriptorBytes.toString("utf8")).candidate;
+    const terminalBytes = readFileSync(terminalFile);
+    const completed = JSON.parse(terminalBytes.toString("utf8"));
+    const reference = completed.result.artifactRefs.find(
+      (entry: { kind: string }) => entry.kind === "gate-evidence-manifest"
+    );
+    const manifestBytes = readFileSync(reference.path);
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    const receiptFile = join(directory, manifest.entries[0].receipt.path);
+    const receiptBytes = readFileSync(receiptFile);
+    const candidateFile = join(fixture.a, "candidate.txt");
+    const candidateBytes = readFileSync(candidateFile);
+    const selectors = [{}, { verifyArtifacts: false }, { verifyArtifacts: true }];
+    const expectValidControls = () => {
+      for (const selector of selectors) {
+        const observed = service.status({ ...operation, ...selector });
+        expect(observed).toMatchObject({
+          state: "completed",
+          outcome: "pass",
+          operation,
+          candidate: admittedCandidate,
+          authority: "unverified",
+        });
+        if (selector.verifyArtifacts === true) {
+          expect(observed.artifactVerification).toMatchObject({
+            status: "complete",
+            authority: "unverified",
+          });
+        } else expect(observed).not.toHaveProperty("artifactVerification");
+      }
+    };
+    expect(manifest.candidate).toEqual(admittedCandidate);
+    expectValidControls();
+    const commandMarkers = readFileSync(fixture.markers);
+    try {
+      writeFileSync(candidateFile, "changed after immutable operation admission\n");
+      const changedCandidate = captureGateCandidateIdentity(fixture.a, directory);
+      expect(changedCandidate.head).toBe(admittedCandidate.head);
+      expect(changedCandidate.worktreeDigest).not.toBe(admittedCandidate.worktreeDigest);
+      const receipt = JSON.parse(receiptBytes.toString("utf8"));
+      receipt.binding.candidateDigest = changedCandidate.worktreeDigest;
+      const resealedReceipt = canonicalJSONStringify(receipt);
+      writeFileSync(receiptFile, resealedReceipt);
+      manifest.candidate = changedCandidate;
+      manifest.entries[0].receipt.sha256 = prefixedHash(resealedReceipt);
+      const resealedManifest = canonicalJSONStringify(manifest);
+      writeFileSync(reference.path, resealedManifest);
+      reference.sha256 = prefixedHash(resealedManifest);
+      writeFileSync(terminalFile, canonicalJSONStringify(completed));
+      const evidenceFiles = [operation.operationFile, reference.path, receiptFile, terminalFile];
+      const before = evidenceFiles.map((file) => prefixedHash(readFileSync(file)));
+      for (const selector of selectors) {
+        const observed = service.status({ ...operation, ...selector });
+        expect(observed).toMatchObject({
+          state: "unknown",
+          lastReportedState: "completed",
+          errorCode: "GATE_OPERATION_EVIDENCE_INVALID",
+          candidate: admittedCandidate,
+          authority: "unverified",
+        });
+        expect(observed).not.toHaveProperty("outcome");
+        expect(observed).not.toHaveProperty("artifactVerification");
+      }
+      expect(evidenceFiles.map((file) => prefixedHash(readFileSync(file)))).toEqual(before);
+      expect(readFileSync(operation.operationFile)).toEqual(descriptorBytes);
+      expect(readFileSync(fixture.markers)).toEqual(commandMarkers);
+    } finally {
+      writeFileSync(candidateFile, candidateBytes);
+      writeFileSync(receiptFile, receiptBytes);
+      writeFileSync(reference.path, manifestBytes);
+      writeFileSync(terminalFile, terminalBytes);
+    }
+    expectValidControls();
+    expect(readFileSync(fixture.markers)).toEqual(commandMarkers);
+  }, 30_000);
+
   it("reads the complete operation closure and makes missing retained bytes unknown only when requested", async () => {
     const fixture = nativeFixture({ artifact: true });
     const operation = await started(fixture);

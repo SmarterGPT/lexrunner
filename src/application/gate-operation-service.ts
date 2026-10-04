@@ -429,9 +429,18 @@ export class GateOperationService {
         const indexedBytes = readBounded(manifest.path);
         if (hash(indexedBytes) !== manifest.sha256) throw new Error("Evidence digest changed");
         const indexed = JSON.parse(indexedBytes.toString("utf8")) as {
+          candidate?: unknown;
           selection?: { onlyItem: string | null; onlyGate: string | null };
           entries?: Array<{ item: string; gate: string }>;
         };
+        if (
+          !sameGateCandidate(
+            descriptor.candidate,
+            GateCandidateIdentitySchema.parse(indexed.candidate)
+          )
+        ) {
+          throw new Error("Evidence does not match the admitted candidate");
+        }
         if (
           indexed.selection?.onlyItem !== (descriptor.onlyItem ?? null) ||
           indexed.selection?.onlyGate !== (descriptor.onlyGate ?? null) ||
