@@ -18,6 +18,11 @@ import {
   sameGateCandidate,
   type GateCandidateIdentity,
 } from "./gate-candidate-identity.js";
+import {
+  RetainedGateEvidenceSession,
+  type RetainedGateEvidenceAdditionalReference,
+  type RetainedGateEvidenceReport,
+} from "./retained-gate-evidence.js";
 
 export const GATE_EVIDENCE_MANIFEST_SCHEMA_VERSION = "lexrunner-gate-evidence-manifest/v1" as const;
 const MANIFEST_FILE_NAME = "gate-evidence-manifest.json";
@@ -175,100 +180,174 @@ export function loadGateEvidence(input: {
   evidenceFile: string;
   evidenceSha256: string;
   repoRoot?: string;
+  verifyArtifacts?: boolean;
+  /** Internal operation-status pins, not arbitrary artifact discovery. Ignored by default. */
+  additionalReferences?: readonly RetainedGateEvidenceAdditionalReference[];
 }): {
   executionState: ExecutionState;
   reference: GateEvidenceArtifactReference;
   applied: number;
   observations: { passed: string[]; failed: string[]; other: string[] };
+  artifactVerification?: RetainedGateEvidenceReport;
 } {
+  if (input.verifyArtifacts !== undefined && typeof input.verifyArtifacts !== "boolean") {
+    throw evidenceError(
+      "GATE_EVIDENCE_REFERENCE_INVALID",
+      "Artifact verification selection is invalid"
+    );
+  }
   const plan = canonicalPlan(input.plan);
   const evidenceFile = resolveEvidenceReference(input.evidenceFile);
   if (!SHA256_PATTERN.test(input.evidenceSha256)) {
     throw evidenceError("GATE_EVIDENCE_REFERENCE_INVALID", "Evidence SHA-256 is invalid");
   }
-  const manifestBytes = readBoundedBytes(evidenceFile, "Evidence manifest could not be read");
-  const actualManifestHash = prefixedBytesHash(manifestBytes);
-  if (actualManifestHash !== input.evidenceSha256) {
-    throw evidenceError("GATE_EVIDENCE_DIGEST_MISMATCH", "Evidence manifest digest does not match");
+  let retained: RetainedGateEvidenceSession | undefined;
+  if (input.verifyArtifacts === true) {
+    try {
+      retained = new RetainedGateEvidenceSession(input.evidenceFile);
+    } catch {
+      throw evidenceError("GATE_EVIDENCE_REFERENCE_INVALID", "Evidence reference is invalid");
+    }
   }
-
-  let manifest: GateEvidenceManifest;
   try {
-    manifest = GateEvidenceManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
-  } catch {
-    throw evidenceError("GATE_EVIDENCE_UNREADABLE", "Evidence manifest is not valid or bounded");
-  }
-  if (
-    manifest.plan.digest !== computeCanonicalHash(plan) ||
-    manifest.plan.schemaVersion !== plan.schemaVersion ||
-    manifest.plan.target !== plan.target ||
-    manifest.plan.itemCount !== plan.items.length
-  ) {
-    throw evidenceError("GATE_EVIDENCE_PLAN_MISMATCH", "Evidence manifest belongs to another plan");
-  }
-  const currentCandidate = captureGateCandidateIdentity(
-    input.repoRoot ?? process.cwd(),
-    path.dirname(evidenceFile)
-  );
-  if (!sameGateCandidate(manifest.candidate, currentCandidate)) {
-    throw evidenceError(
-      "GATE_EVIDENCE_PLAN_MISMATCH",
-      "Gate evidence belongs to a stale or different repository candidate"
+    const manifestBytes = readEvidenceBytes(
+      retained,
+      "manifest",
+      evidenceFile,
+      input.evidenceSha256,
+      "Evidence manifest could not be read"
     );
-  }
+    const actualManifestHash = prefixedBytesHash(manifestBytes);
+    if (actualManifestHash !== input.evidenceSha256) {
+      throw evidenceError(
+        "GATE_EVIDENCE_DIGEST_MISMATCH",
+        "Evidence manifest digest does not match"
+      );
+    }
 
-  const executionState = new ExecutionState(plan);
-  const seen = new Set<string>();
-  for (const entry of manifest.entries) {
-    const identity = `${entry.item}\0${entry.gate}`;
-    if (seen.has(identity)) {
+    let manifest: GateEvidenceManifest;
+    try {
+      manifest = GateEvidenceManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
+    } catch {
+      throw evidenceError("GATE_EVIDENCE_UNREADABLE", "Evidence manifest is not valid or bounded");
+    }
+    if (
+      manifest.plan.digest !== computeCanonicalHash(plan) ||
+      manifest.plan.schemaVersion !== plan.schemaVersion ||
+      manifest.plan.target !== plan.target ||
+      manifest.plan.itemCount !== plan.items.length
+    ) {
       throw evidenceError(
-        "GATE_EVIDENCE_ENTRY_MISMATCH",
-        "Evidence contains a duplicate gate identity"
+        "GATE_EVIDENCE_PLAN_MISMATCH",
+        "Evidence manifest belongs to another plan"
       );
     }
-    seen.add(identity);
-    const item = plan.items.find(({ name }) => name === entry.item);
-    const gate = item?.gates.find(({ name }) => name === entry.gate);
-    if (!item || !gate || computeCanonicalHash(gate) !== entry.declaredGateDigest) {
+    const currentCandidate = captureGateCandidateIdentity(
+      input.repoRoot ?? process.cwd(),
+      path.dirname(evidenceFile)
+    );
+    if (!sameGateCandidate(manifest.candidate, currentCandidate)) {
       throw evidenceError(
-        "GATE_EVIDENCE_ENTRY_MISMATCH",
-        "Evidence does not match a declared plan gate"
+        "GATE_EVIDENCE_PLAN_MISMATCH",
+        "Gate evidence belongs to a stale or different repository candidate"
       );
     }
-    const receiptPath = resolveContainedReceipt(evidenceFile, entry.receipt.path);
-    const receiptBytes = readBoundedBytes(receiptPath, "Gate receipt could not be read");
-    if (prefixedBytesHash(receiptBytes) !== entry.receipt.sha256) {
-      throw evidenceError("GATE_EVIDENCE_DIGEST_MISMATCH", "Gate receipt digest does not match");
+    retained?.observeAdditionalReferences(input.additionalReferences ?? []);
+
+    const executionState = new ExecutionState(plan);
+    const appliedEntries: GateEvidenceManifest["entries"] = [];
+    const seen = new Set<string>();
+    for (const entry of manifest.entries) {
+      const identity = `${entry.item}\0${entry.gate}`;
+      if (seen.has(identity)) {
+        throw evidenceError(
+          "GATE_EVIDENCE_ENTRY_MISMATCH",
+          "Evidence contains a duplicate gate identity"
+        );
+      }
+      seen.add(identity);
+      const item = plan.items.find(({ name }) => name === entry.item);
+      const gate = item?.gates.find(({ name }) => name === entry.gate);
+      if (!item || !gate || computeCanonicalHash(gate) !== entry.declaredGateDigest) {
+        throw evidenceError(
+          "GATE_EVIDENCE_ENTRY_MISMATCH",
+          "Evidence does not match a declared plan gate"
+        );
+      }
+      if (retained && !retained.canReadReference()) continue;
+      const receiptPath = resolveContainedReceipt(evidenceFile, entry.receipt.path);
+      let receiptBytes: Buffer;
+      try {
+        receiptBytes = retained
+          ? retained.readMetadata("execution-receipt", entry.receipt.path, entry.receipt.sha256)
+          : readBoundedBytes(receiptPath, "Gate receipt could not be read");
+      } catch (error) {
+        if (retained?.isReadLimitFailure(error)) continue;
+        throw evidenceError("GATE_EVIDENCE_UNREADABLE", "Gate receipt could not be read");
+      }
+      if (prefixedBytesHash(receiptBytes) !== entry.receipt.sha256) {
+        throw evidenceError("GATE_EVIDENCE_DIGEST_MISMATCH", "Gate receipt digest does not match");
+      }
+      const receipt = validateReceipt(receiptBytes, entry, manifest.candidate.worktreeDigest);
+      retained?.observeReceipt(receipt, gate, receiptPath, currentCandidate.repositoryRoot);
+      executionState.updateGateResult(entry.item, {
+        gate: entry.gate,
+        ...entry.result,
+        artifacts: [receiptPath],
+      });
+      appliedEntries.push(entry);
     }
-    validateReceipt(receiptBytes, entry, manifest.candidate.worktreeDigest);
-    executionState.updateGateResult(entry.item, {
-      gate: entry.gate,
-      ...entry.result,
-      artifacts: [receiptPath],
+    executionState.propagateBlockedStatus();
+    const artifactVerification = retained?.finish(() => {
+      try {
+        const after = captureGateCandidateIdentity(
+          input.repoRoot ?? process.cwd(),
+          path.dirname(evidenceFile)
+        );
+        if (!sameGateCandidate(currentCandidate, after)) retained!.mark("CANDIDATE_CHANGED");
+      } catch {
+        retained!.mark("CANDIDATE_UNAVAILABLE");
+      }
     });
+    return {
+      executionState,
+      reference: {
+        kind: "gate-evidence-manifest",
+        path: evidenceFile,
+        sha256: actualManifestHash,
+      },
+      applied: appliedEntries.length,
+      observations: {
+        passed: appliedEntries
+          .filter(({ result }) => result.status === "pass")
+          .map(({ item, gate }) => `${item}/${gate}`),
+        failed: appliedEntries
+          .filter(({ result }) => result.status === "fail")
+          .map(({ item, gate }) => `${item}/${gate}`),
+        other: appliedEntries
+          .filter(({ result }) => result.status !== "pass" && result.status !== "fail")
+          .map(({ item, gate }) => `${item}/${gate}`),
+      },
+      ...(artifactVerification ? { artifactVerification } : {}),
+    };
+  } finally {
+    retained?.close();
   }
-  executionState.propagateBlockedStatus();
-  return {
-    executionState,
-    reference: {
-      kind: "gate-evidence-manifest",
-      path: evidenceFile,
-      sha256: actualManifestHash,
-    },
-    applied: manifest.entries.length,
-    observations: {
-      passed: manifest.entries
-        .filter(({ result }) => result.status === "pass")
-        .map(({ item, gate }) => `${item}/${gate}`),
-      failed: manifest.entries
-        .filter(({ result }) => result.status === "fail")
-        .map(({ item, gate }) => `${item}/${gate}`),
-      other: manifest.entries
-        .filter(({ result }) => result.status !== "pass" && result.status !== "fail")
-        .map(({ item, gate }) => `${item}/${gate}`),
-    },
-  };
+}
+
+function readEvidenceBytes(
+  retained: RetainedGateEvidenceSession | undefined,
+  kind: "manifest" | "execution-receipt",
+  file: string,
+  expectedHash: string,
+  message: string
+): Buffer {
+  if (!retained) return readBoundedBytes(file, message);
+  try {
+    return retained.readMetadata(kind, file, expectedHash);
+  } catch {
+    throw evidenceError("GATE_EVIDENCE_UNREADABLE", message);
+  }
 }
 
 function findFinalReceipt(result: GateResult, artifactDir: string): string | undefined {
@@ -338,7 +417,7 @@ function validateReceipt(
   receiptBytes: Buffer,
   entry: GateEvidenceManifest["entries"][number],
   candidateDigest: string
-): void {
+): ReturnType<typeof parseLocalGateExecutionReceipt> {
   let receipt: ReturnType<typeof parseLocalGateExecutionReceipt>;
   try {
     receipt = parseLocalGateExecutionReceipt(JSON.parse(receiptBytes.toString("utf8")));
@@ -367,6 +446,7 @@ function validateReceipt(
       "Gate receipt outcome does not match evidence"
     );
   }
+  return receipt;
 }
 
 function readBoundedBytes(filePath: string, message: string): Buffer {

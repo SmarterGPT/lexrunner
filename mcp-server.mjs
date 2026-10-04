@@ -94,7 +94,9 @@ const tools = {
         inputSchema:
           operation === "start"
             ? core.GateOperationStartJsonSchema
-            : core.GateOperationObserveJsonSchema,
+            : operation === "status"
+              ? core.GateOperationStatusJsonSchema
+              : core.GateOperationObserveJsonSchema,
         call: async (args) => {
           try {
             const result = await new core.GateOperationService()[operation](args);
@@ -958,10 +960,24 @@ const tools = {
           pattern: "^sha256:[a-f0-9]{64}$",
           description: "Expected SHA-256 returned with the gate evidence manifest",
         },
+        verifyArtifacts: {
+          type: "boolean",
+          description:
+            "Read back referenced artifact bytes; requires explicit evidenceFile and evidenceSha256",
+        },
       },
     },
     call: async (args) => {
       try {
+        if (args.verifyArtifacts !== undefined && typeof args.verifyArtifacts !== "boolean") {
+          throw new Error("verifyArtifacts must be a boolean");
+        }
+        if (
+          args.verifyArtifacts === true &&
+          (args.evidenceFile === undefined || args.evidenceSha256 === undefined)
+        ) {
+          throw new Error("verifyArtifacts requires explicit evidenceFile and evidenceSha256");
+        }
         if (
           args.repoRoot !== undefined &&
           (typeof args.repoRoot !== "string" ||
@@ -970,10 +986,6 @@ const tools = {
         ) {
           throw new Error("repoRoot is invalid");
         }
-        const repoRoot =
-          args.repoRoot === undefined
-            ? process.cwd()
-            : core.resolveGateRepositoryRoot(args.repoRoot);
         const hasEvidenceFile = args.evidenceFile !== undefined;
         const hasEvidenceDigest = args.evidenceSha256 !== undefined;
         if (hasEvidenceFile !== hasEvidenceDigest) {
@@ -989,6 +1001,10 @@ const tools = {
         ) {
           throw new Error("evidenceFile or evidenceSha256 is invalid");
         }
+        const repoRoot =
+          args.repoRoot === undefined
+            ? process.cwd()
+            : core.resolveGateRepositoryRoot(args.repoRoot);
         const artifact = new core.PlanArtifactService().resolve({
           planFile: args.planFile,
           workingDir: repoRoot,
@@ -1002,6 +1018,7 @@ const tools = {
                   evidenceFile: resolve(repoRoot, args.evidenceFile),
                   evidenceSha256: args.evidenceSha256,
                   repoRoot,
+                  verifyArtifacts: args.verifyArtifacts,
                 }
               : undefined
           ),

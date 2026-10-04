@@ -39,7 +39,7 @@ export function registerGateOperationCommands(gate: Command): void {
       }
     });
   for (const name of ["status", "cancel"] as const) {
-    gate
+    const command = gate
       .command(name)
       .description(
         name === "status"
@@ -49,19 +49,27 @@ export function registerGateOperationCommands(gate: Command): void {
       .requiredOption("--repo-root <path>", "Owning repository")
       .requiredOption("--operation <path>", "Immutable operation descriptor")
       .requiredOption("--operation-sha256 <digest>", "Expected sha256: descriptor digest")
-      .option("--json", "Output JSON")
-      .action((options) => {
-        const handle: GateOperationHandle = {
-          repoRoot: options.repoRoot,
-          operationFile: options.operation,
-          operationSha256: options.operationSha256,
-        };
-        try {
-          writeJsonOutput(new GateOperationService()[name](handle));
-        } catch (error) {
-          operationError(error);
-        }
-      });
+      .option("--json", "Output JSON");
+    if (name === "status") {
+      command.option("--verify-artifacts", "Read back this operation's referenced artifact bytes");
+    }
+    command.action((options) => {
+      const handle: GateOperationHandle = {
+        repoRoot: options.repoRoot,
+        operationFile: options.operation,
+        operationSha256: options.operationSha256,
+      };
+      try {
+        const service = new GateOperationService();
+        writeJsonOutput(
+          name === "status"
+            ? service.status({ ...handle, verifyArtifacts: options.verifyArtifacts })
+            : service.cancel(handle)
+        );
+      } catch (error) {
+        operationError(error);
+      }
+    });
   }
 }
 function operationError(error: unknown): never {

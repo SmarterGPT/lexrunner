@@ -18,6 +18,7 @@ import {
   GateOperationObserveArgs,
   GateOperationService,
   GateOperationStartArgs,
+  GateOperationStatusArgs,
   runGateOperationWorker,
   type GateOperationHandle,
   type GateOperationStartInput,
@@ -121,7 +122,7 @@ function shellQuote(value: string): string {
 }
 
 function nativeFixture(
-  options: { held?: boolean; exitCode?: number; later?: boolean } = {}
+  options: { held?: boolean; exitCode?: number; later?: boolean; artifact?: boolean } = {}
 ): NativeFixture {
   const fixture = candidateFixture();
   const markers = join(fixture.root, "markers.log");
@@ -140,6 +141,7 @@ const timer = setInterval(() => {
   }
   clearInterval(timer);
   fs.appendFileSync(marker, name + ':finished\\n');
+  if (${options.artifact === true}) fs.writeFileSync(marker + '.json', JSON.stringify({ name, completed: true }));
   process.exit(Number(code));
 }, 20);
 `
@@ -152,7 +154,13 @@ const timer = setInterval(() => {
   const first = {
     name: "first",
     deps: [],
-    gates: [{ name: "probe", run: command("first", options.held ?? false, options.exitCode ?? 0) }],
+    gates: [
+      {
+        name: "probe",
+        run: command("first", options.held ?? false, options.exitCode ?? 0),
+        ...(options.artifact ? { artifacts: [markers + ".json"] } : {}),
+      },
+    ],
   };
   const second = {
     name: "later",
@@ -243,6 +251,21 @@ function freshWorkerDescriptor(
 }
 
 describe("durable gate operation argument contracts", () => {
+  it("admits read-back only on status without changing the operation handle contract", () => {
+    const handle = {
+      repoRoot: "repo",
+      operationFile: "operation.json",
+      operationSha256: "sha256:" + "a".repeat(64),
+    };
+    expect(GateOperationStatusArgs.parse({ ...handle, verifyArtifacts: true })).toEqual({
+      ...handle,
+      verifyArtifacts: true,
+    });
+    expect(() => GateOperationObserveArgs.parse({ ...handle, verifyArtifacts: true })).toThrow();
+    for (const verifyArtifacts of ["true", 1, null, {}]) {
+      expect(() => GateOperationStatusArgs.parse({ ...handle, verifyArtifacts })).toThrow();
+    }
+  });
   it("requires explicit roots, artifacts, plan and idempotency while refusing unbounded selectors", () => {
     expect(() => GateOperationStartArgs.parse({})).toThrow();
     const base = {
@@ -274,6 +297,58 @@ describe("durable gate operation argument contracts", () => {
 });
 
 describe("native artifact-backed gate operations", () => {
+  it("reads the complete operation closure and makes missing retained bytes unknown only when requested", async () => {
+    const fixture = nativeFixture({ artifact: true });
+    const operation = await started(fixture);
+    await terminal(operation);
+    const checked = service.status({ ...operation, verifyArtifacts: true });
+    expect(checked).toMatchObject({
+      state: "completed",
+      outcome: "pass",
+      operation,
+      authority: "unverified",
+      artifactVerification: { status: "complete", authority: "unverified" },
+    });
+    const report = checked.artifactVerification as {
+      references: Array<{ kind: string; path: string; outcome: string }>;
+    };
+    expect(report.references.map(({ kind }) => kind).sort()).toEqual([
+      "execution-receipt",
+      "manifest",
+      "operation-descriptor",
+      "operation-terminal",
+      "retained-artifact",
+    ]);
+    expect(report.references.every(({ path }) => !path.includes(fixture.root))).toBe(true);
+    const directory = dirname(operation.operationFile);
+    const manifest = JSON.parse(
+      readFileSync(join(directory, "gate-evidence-manifest.json"), "utf8")
+    );
+    const receipt = JSON.parse(
+      readFileSync(join(directory, manifest.entries[0].receipt.path), "utf8")
+    );
+    const retained = receipt.artifacts[0].retainedPath;
+    unlinkSync(retained);
+    expect(service.status(operation)).toMatchObject({ state: "completed", outcome: "pass" });
+    expect(service.status({ ...operation, verifyArtifacts: false })).not.toHaveProperty(
+      "artifactVerification"
+    );
+    const incomplete = service.status({ ...operation, verifyArtifacts: true });
+    expect(incomplete).toMatchObject({
+      state: "unknown",
+      lastReportedState: "completed",
+      errorCode: "GATE_OPERATION_ARTIFACTS_INCOMPLETE",
+      recordedOutcome: "pass",
+      artifactVerification: { status: "incomplete", authority: "unverified" },
+    });
+    expect(incomplete).not.toHaveProperty("outcome");
+    expect((incomplete.artifactVerification as typeof report).references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "retained-artifact", outcome: "missing" }),
+      ])
+    );
+    expect(markerLines(fixture)).toEqual(["first:started", "first:finished"]);
+  }, 30_000);
   it.skipIf(process.platform !== "win32")(
     "records native Win32 heartbeat replacement denial during an open read and successful publication after release",
     async () => {

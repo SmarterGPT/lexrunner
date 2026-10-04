@@ -24,12 +24,27 @@ export const TASK_CONTRACT_VERSION = "1.0.0" as const;
 // =============================================================================
 
 /**
- * Compute canonical SHA256 hash of a JSON object.
+ * Versioned name for the existing compact JSON SHA256 representation.
+ * The label is metadata; it is not added to the hashed bytes.
+ */
+export const COMPACT_JSON_HASH_PROFILE = "lexrunner.compact-json.sha256.v1" as const;
+
+/**
+ * Compute the existing compact JSON hash of a schema-validated plain JSON value.
  *
  * Used to bind receipts to snapshots and verify integrity.
- * Canonicalization: JSON.stringify with sorted keys.
+ * The preimage is UTF-8 JSON.stringify with the existing sorted-key replacer,
+ * without indentation, a trailing newline, or a domain prefix. Array order and
+ * JavaScript JSON number/string serialization are preserved. This is not JCS.
  *
- * @param obj - Object to hash
+ * This helper does not validate input or make arbitrary JavaScript objects safe.
+ * Existing JSON.stringify and replacer quirks remain unchanged for compatibility,
+ * including toJSON/accessor behavior and special-key handling. Existing record
+ * schemas may admit __proto__, so schema validation alone is not a safety bound.
+ * This export reproduces known contract hashes, not arbitrary data authentication.
+ * See docs/evidence-verification.md before using it outside an existing contract.
+ *
+ * @param obj - Value validated against its owning JSON contract
  * @returns SHA256 hash prefixed with "sha256:"
  */
 export function computeCanonicalHash(obj: unknown): string {

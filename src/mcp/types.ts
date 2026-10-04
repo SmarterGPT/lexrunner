@@ -163,9 +163,13 @@ export const StatusArgs = z
       .string()
       .regex(/^sha256:[a-f0-9]{64}$/u)
       .optional(),
+    verifyArtifacts: z.boolean().optional(),
   })
   .refine((value) => Boolean(value.evidenceFile) === Boolean(value.evidenceSha256), {
     message: "evidenceFile and evidenceSha256 must be supplied together",
+  })
+  .refine((value) => value.verifyArtifacts !== true || Boolean(value.evidenceFile), {
+    message: "verifyArtifacts requires explicit evidenceFile and evidenceSha256",
   });
 export type StatusArgs = z.infer<typeof StatusArgs>;
 

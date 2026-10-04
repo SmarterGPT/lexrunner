@@ -26,6 +26,7 @@ export function registerStatusCommand(program: Command, jsonModeActive: () => bo
     .option("--repo-root <path>", "Explicit candidate repository root (default: current directory)")
     .option("--evidence <file>", "Explicit gate evidence manifest from execute/gates_run")
     .option("--evidence-sha256 <sha256>", "Expected SHA-256 for --evidence")
+    .option("--verify-artifacts", "Read back referenced artifact bytes from explicit gate evidence")
     .argument("[file]", "Path to plan.json file (alternative to --plan)")
     .option("--json", "Output JSON format")
     .addHelpText(
@@ -34,6 +35,7 @@ export function registerStatusCommand(program: Command, jsonModeActive: () => bo
 Examples:
   $ lexrunner status plan.json                     # Show plan status
   $ lexrunner status --evidence gates/gate-evidence-manifest.json --evidence-sha256 sha256:<digest>
+  $ lexrunner weave status --evidence gates/gate-evidence-manifest.json --evidence-sha256 sha256:<digest> --verify-artifacts
   $ lexrunner status --json                        # JSON output for dashboards
   $ lexrunner status --json | jq '.mergeSummary'   # Extract merge summary
 
@@ -45,6 +47,12 @@ Common Issues:
       const planFile = opts.plan || file || "plan.json";
 
       try {
+        if (Boolean(opts.evidence) !== Boolean(opts.evidenceSha256)) {
+          throw new Error("--evidence and --evidence-sha256 must be supplied together");
+        }
+        if (opts.verifyArtifacts === true && !opts.evidence) {
+          throw new Error("--verify-artifacts requires explicit --evidence and --evidence-sha256");
+        }
         if (
           opts.repoRoot !== undefined &&
           (!opts.repoRoot ||
@@ -58,9 +66,6 @@ Common Issues:
         const planContent = fs.readFileSync(path.resolve(repoRoot, planFile), "utf-8");
         const plan = loadPlan(planContent);
 
-        if (Boolean(opts.evidence) !== Boolean(opts.evidenceSha256)) {
-          throw new Error("--evidence and --evidence-sha256 must be supplied together");
-        }
         const result = new IntegrationStatusQueryService().run(
           plan,
           opts.evidence
@@ -68,6 +73,7 @@ Common Issues:
                 evidenceFile: path.resolve(repoRoot, opts.evidence),
                 evidenceSha256: opts.evidenceSha256,
                 repoRoot,
+                verifyArtifacts: opts.verifyArtifacts,
               }
             : undefined
         );
@@ -100,6 +106,9 @@ Common Issues:
             console.log(
               `Evidence: ${result.evidence.observations.passed.length} passed, ${result.evidence.observations.failed.length} failed (${result.evidence.authority})`
             );
+            if (result.evidence.artifactVerification) {
+              console.log(`Artifact read-back: ${result.evidence.artifactVerification.status}`);
+            }
           }
         }
       } catch (error) {

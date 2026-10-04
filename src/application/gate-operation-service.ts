@@ -35,6 +35,7 @@ import {
 } from "./gate-execution-service.js";
 import { loadGateEvidence } from "./gate-evidence-service.js";
 import { PlanArtifactService } from "./plan-artifact-service.js";
+import type { RetainedGateEvidenceReport } from "./retained-gate-evidence.js";
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -61,8 +62,13 @@ export const GateOperationObserveArgs = z
   .strict();
 export const GateOperationStartJsonSchema = z.toJSONSchema(GateOperationStartArgs);
 export const GateOperationObserveJsonSchema = z.toJSONSchema(GateOperationObserveArgs);
+export const GateOperationStatusArgs = GateOperationObserveArgs.extend({
+  verifyArtifacts: z.boolean().optional(),
+});
+export const GateOperationStatusJsonSchema = z.toJSONSchema(GateOperationStatusArgs);
 export type GateOperationStartInput = z.infer<typeof GateOperationStartArgs>;
 export type GateOperationHandle = z.infer<typeof GateOperationObserveArgs>;
+export type GateOperationStatusInput = z.infer<typeof GateOperationStatusArgs>;
 
 const codeIdentity = z.object({ path: pathSchema, sha256: z.string().regex(HASH) }).strict();
 const Descriptor = z
@@ -386,8 +392,8 @@ export class GateOperationService {
     };
   }
 
-  status(raw: GateOperationHandle): Record<string, unknown> {
-    const handle = GateOperationObserveArgs.parse(raw);
+  status(raw: GateOperationStatusInput): Record<string, unknown> {
+    const { verifyArtifacts, ...handle } = GateOperationStatusArgs.parse(raw);
     const descriptor = descriptorAt(handle);
     const terminalFile = join(descriptor.directory, "terminal.json");
     const base = {
@@ -410,6 +416,7 @@ export class GateOperationService {
           errorCode: terminal.errorCode,
           deferredHeartbeatPublications: terminal.deferredHeartbeatPublications,
         };
+      let artifactVerification: RetainedGateEvidenceReport | undefined;
       try {
         const result = terminal.result as BoundedGateRunResult;
         const manifest = result?.artifactRefs?.find((ref) => ref.kind === "gate-evidence-manifest");
@@ -442,7 +449,17 @@ export class GateOperationService {
           repoRoot: handle.repoRoot,
           evidenceFile: manifest.path,
           evidenceSha256: manifest.sha256,
+          verifyArtifacts,
+          additionalReferences: [
+            {
+              kind: "operation-descriptor",
+              path: handle.operationFile,
+              sha256: handle.operationSha256,
+            },
+            { kind: "operation-terminal", path: terminalFile, sha256: hash(terminalBytes) },
+          ],
         });
+        artifactVerification = evidence.artifactVerification;
         const plan = loadPlan(canonicalJSONStringify(descriptor.plan));
         for (const name of computeMergeOrder(plan).flat()) {
           if (descriptor.onlyItem && name !== descriptor.onlyItem) continue;
@@ -495,10 +512,11 @@ export class GateOperationService {
         if (
           canonicalJSONStringify(expected) !== canonicalJSONStringify(actual) ||
           result.allGreen !== expected.every((item) => item.status === "pass") ||
-          !sameGateCandidate(
-            descriptor.candidate,
-            captureGateCandidateIdentity(handle.repoRoot, descriptor.directory)
-          )
+          (verifyArtifacts !== true &&
+            !sameGateCandidate(
+              descriptor.candidate,
+              captureGateCandidateIdentity(handle.repoRoot, descriptor.directory)
+            ))
         )
           throw new Error("Invalid result projection");
         const observedResult = {
@@ -507,6 +525,16 @@ export class GateOperationService {
           allGreen: result.allGreen,
           artifactRefs: [{ kind: "gate-results-directory", path: descriptor.directory }, manifest],
         };
+        if (evidence.artifactVerification?.status === "incomplete") {
+          return {
+            ...base,
+            state: "unknown",
+            lastReportedState: "completed",
+            errorCode: "GATE_OPERATION_ARTIFACTS_INCOMPLETE",
+            recordedOutcome: result.allGreen ? "pass" : "fail",
+            artifactVerification: evidence.artifactVerification,
+          };
+        }
         return {
           ...base,
           state: "completed",
@@ -515,13 +543,20 @@ export class GateOperationService {
           result: observedResult,
           deferredHeartbeatPublications: terminal.deferredHeartbeatPublications,
           terminalArtifact: { path: terminalFile, sha256: hash(terminalBytes) },
+          ...(evidence.artifactVerification
+            ? { artifactVerification: evidence.artifactVerification }
+            : {}),
         };
       } catch {
         return {
           ...base,
           state: "unknown",
           lastReportedState: "completed",
-          errorCode: "GATE_OPERATION_EVIDENCE_INVALID",
+          errorCode:
+            artifactVerification?.status === "incomplete"
+              ? "GATE_OPERATION_ARTIFACTS_INCOMPLETE"
+              : "GATE_OPERATION_EVIDENCE_INVALID",
+          ...(artifactVerification ? { artifactVerification } : {}),
         };
       }
     }

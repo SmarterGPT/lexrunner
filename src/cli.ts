@@ -1290,13 +1290,26 @@ export { InMemoryAttemptAwaitableStore } from "./store/inmemory/attempt-awaitabl
 export { SqliteAttemptAwaitableStore } from "./store/sqlite/attempt-awaitable-store.js";
 
 // AX-004: MCP/CLI parity exports
+export { COMPACT_JSON_HASH_PROFILE, computeCanonicalHash } from "./schemas/task-contract.js";
 export { resolveGateRepositoryRoot } from "./application/gate-candidate-identity.js";
 export {
   GateOperationService,
   GateOperationServiceError,
   GateOperationStartJsonSchema,
   GateOperationObserveJsonSchema,
+  GateOperationStatusJsonSchema,
 } from "./application/gate-operation-service.js";
+export type {
+  GateOperationHandle,
+  GateOperationStatusInput,
+} from "./application/gate-operation-service.js";
+export type {
+  RetainedGateEvidenceReport,
+  RetainedGateEvidenceReference,
+  RetainedGateEvidenceOutcome,
+  RetainedGateEvidenceReasonCode,
+} from "./application/retained-gate-evidence.js";
+export { RETAINED_GATE_EVIDENCE_LIMITS } from "./application/retained-gate-evidence.js";
 export { computeMergeOrder } from "./mergeOrder.js";
 export { createGitHubAPI, GitHubAPI } from "./github/api.js";
 export { createGitHubClient } from "./github/client.js";

@@ -34,6 +34,7 @@ export default defineConfig({
       "**/tests/cluster-gates-rollback.spec.ts",
       "**/tests/install-local-package-git.spec.ts",
       "**/tests/status-candidate-routing-git.spec.ts",
+      "**/tests/status-artifacts-adapters-git.spec.ts",
       "**/tests/application/gate-operation-git.spec.ts",
       // Exclude slow CLI tests (run via test:cli:slow with LEX_ENABLE_SLOW_CLI_TESTS=true)
       "**/tests/cli-progress.spec.ts",

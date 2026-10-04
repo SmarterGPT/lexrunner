@@ -528,12 +528,41 @@ same frozen plan.
 }
 ```
 
-Pass the returned manifest `path` and `sha256` to `weave_status` as `evidenceFile` and
+Pass the returned manifest `path` and `sha256` to published `status` (source alias `weave_status`) as `evidenceFile` and
 `evidenceSha256`. Status does not scan the output directory or remember an active run. It validates
 the plan, candidate, gate, receipt, timeout, and hash bindings and reports the matching gate
 observations with `authority: "unverified"`. Those observations do not create merge eligibility:
 that requires the separately trusted, plan-pinned verifier receipt tracked by #865. Each execution
 uses a fresh unique child of `outDir`, and the returned artifact reference names that exact run.
+
+To also read back the referenced artifact files, opt in with `verifyArtifacts: true`:
+
+```json
+{
+  "name": "status",
+  "arguments": {
+    "repoRoot": "/path/to/candidate",
+    "planFile": "plan.json",
+    "evidenceFile": "/path/to/gate-evidence-manifest.json",
+    "evidenceSha256": "sha256:<returned-manifest-digest>",
+    "verifyArtifacts": true
+  }
+}
+```
+
+Only boolean values are accepted. Omitting `verifyArtifacts` or supplying `false` preserves
+receipt-integrity status without artifact-file read-back. Supplying `true` requires the explicit
+manifest path and hash; status never discovers evidence by scanning directories. The bounded
+`evidence.artifactVerification` report says `complete` or `incomplete` and retains
+`authority: "unverified"`. Missing, changed or unverifiable artifact bytes cannot be reported
+as complete. This read-back is an observation of the referenced bytes, not merge authority or
+proof of native runtime behavior.
+
+The same option belongs to `gates.status` when observing an explicit durable operation handle.
+Its report is at top-level `artifactVerification`. Incomplete read-back cannot report a passing
+completed operation; it reports an unknown observation with
+`GATE_OPERATION_ARTIFACTS_INCOMPLETE`. The immutable operation handle is unchanged.
+`gates.start` and `gates.cancel` reject this status-only setting, including `false`.
 
 **Example (using repository or profile fallback):**
 

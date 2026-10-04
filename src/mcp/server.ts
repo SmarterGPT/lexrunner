@@ -28,8 +28,10 @@ import {
   GateOperationService,
   GateOperationStartArgs,
   GateOperationObserveArgs,
+  GateOperationStatusArgs,
   GateOperationStartJsonSchema,
   GateOperationObserveJsonSchema,
+  GateOperationStatusJsonSchema,
 } from "../application/gate-operation-service.js";
 import { resolveGateRepositoryRoot } from "../application/gate-candidate-identity.js";
 import {
@@ -520,7 +522,7 @@ function createServer(options?: McpServerOptions): Server {
           name: "gates_status",
           description:
             "Observe one explicit gate operation without restarting commands or granting merge authority",
-          inputSchema: { ...GateOperationObserveJsonSchema, type: "object" },
+          inputSchema: { ...GateOperationStatusJsonSchema, type: "object" },
         },
         {
           name: "gates_cancel",
@@ -871,6 +873,11 @@ function createServer(options?: McpServerOptions): Server {
                 type: "string",
                 pattern: "^sha256:[a-f0-9]{64}$",
                 description: "Expected SHA-256 returned with the gate evidence manifest",
+              },
+              verifyArtifacts: {
+                type: "boolean",
+                description:
+                  "Read back referenced artifact bytes; requires explicit evidenceFile and evidenceSha256",
               },
             },
           },
@@ -1882,7 +1889,7 @@ async function handleGateOperation(name: string, args: unknown) {
         ? await service.start(GateOperationStartArgs.parse(args))
         : name === "gates_cancel"
           ? service.cancel(GateOperationObserveArgs.parse(args))
-          : service.status(GateOperationObserveArgs.parse(args));
+          : service.status(GateOperationStatusArgs.parse(args));
     return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
@@ -2507,6 +2514,7 @@ async function handleStatus(args: {
   repoRoot?: string;
   evidenceFile?: string;
   evidenceSha256?: string;
+  verifyArtifacts?: boolean;
 }): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
     const repoRoot =
@@ -2523,6 +2531,7 @@ async function handleStatus(args: {
             evidenceFile: path.resolve(repoRoot, args.evidenceFile),
             evidenceSha256: args.evidenceSha256,
             repoRoot,
+            verifyArtifacts: args.verifyArtifacts,
           }
         : undefined
     );

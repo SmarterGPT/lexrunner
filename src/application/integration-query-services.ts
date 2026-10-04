@@ -12,6 +12,7 @@ import type { TierOverride } from "../tiers/schema.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import { createFileAnalyzer } from "../planner/fileAnalysis.js";
 import { loadGateEvidence, type GateEvidenceArtifactReference } from "./gate-evidence-service.js";
+import type { RetainedGateEvidenceReport } from "./retained-gate-evidence.js";
 
 const MAX_COLLECTION = 256;
 const MAX_LABEL_BYTES = 512;
@@ -120,13 +121,19 @@ export interface BoundedIntegrationStatus {
     applied: number;
     authority: "unverified";
     observations: { passed: string[]; failed: string[]; other: string[] };
+    artifactVerification?: RetainedGateEvidenceReport;
   };
 }
 
 export class IntegrationStatusQueryService {
   run(
     plan: Plan,
-    evidence?: { evidenceFile: string; evidenceSha256: string; repoRoot?: string }
+    evidence?: {
+      evidenceFile: string;
+      evidenceSha256: string;
+      repoRoot?: string;
+      verifyArtifacts?: boolean;
+    }
   ): BoundedIntegrationStatus {
     const validated = validateBoundedPlan(plan);
     const projection = evidence ? loadGateEvidence({ plan: validated, ...evidence }) : undefined;
@@ -149,6 +156,9 @@ export class IntegrationStatusQueryService {
               applied: projection.applied,
               authority: "unverified" as const,
               observations: projection.observations,
+              ...(projection.artifactVerification
+                ? { artifactVerification: projection.artifactVerification }
+                : {}),
             },
           }
         : {}),
