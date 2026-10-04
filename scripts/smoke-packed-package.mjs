@@ -7,14 +7,25 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { resolveContainedPackageTarget } from "./packed-package-paths.mjs";
+import {
+  createPackedConsumerManifest,
+  servePackedTarball,
+  installPackedConsumer,
+  reviewPackedArtifactLifecycle,
+  observePackedArtifactPostinstall,
+  readPackedArtifactManifest,
+  smokeUnreviewedInstallScript,
+} from "./packed-consumer-install-policy.mjs";
+import { observeNpmPolicyRuntime, assertNpmPolicyRuntimeUnchanged } from "./npm-policy-runtime.mjs";
 import { smokeGateExecution } from "./smoke-gate-execution.mjs";
 
 const projectRoot = process.cwd();
-const packageVersion = JSON.parse(
-  fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")
-).version;
+const sourceManifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+const packageVersion = sourceManifest.version;
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lexrunner-packed-smoke-"));
 const consumerRoot = path.join(temporaryRoot, "consumer");
+let tarballServer;
+let preserveTemporaryRoot = false;
 const requiredAttemptTools = [
   "materialize_attempt_input",
   "preflight_attempt_containment",
@@ -38,7 +49,8 @@ const requiredAttemptTools = [
 ];
 
 try {
-  const npmCliPath = resolveNpmCliPath();
+  const npmRuntime = observeNpmPolicyRuntime({ projectRoot });
+  const npmCliPath = npmRuntime.npmCliPath;
   const packed = JSON.parse(
     execFileSync(
       process.execPath,
@@ -47,25 +59,70 @@ try {
     )
   )[0];
   const tarball = path.join(temporaryRoot, packed.filename);
+  tarballServer = await servePackedTarball(tarball);
+  if (tarballServer.integrity !== packed.integrity) {
+    throw new Error("Packed tarball changed between npm pack and transport byte capture");
+  }
+  const packedManifest = await readPackedArtifactManifest({
+    npmRuntime,
+    tarballPath: tarball,
+    expectedIntegrity: tarballServer.integrity,
+  });
+  if (packedManifest.name !== sourceManifest.name || packedManifest.version !== packageVersion) {
+    throw new Error("Packed manifest identity does not match the source candidate");
+  }
+  const consumerManifest = createPackedConsumerManifest(
+    { ...packedManifest, allowScripts: sourceManifest.allowScripts },
+    tarballServer.url
+  );
+  const unreviewedInstallScript = await smokeUnreviewedInstallScript({
+    npmRuntime,
+    fixtureRoot: path.join(temporaryRoot, "unreviewed-install-script"),
+    consumerManifest,
+  });
 
   fs.mkdirSync(consumerRoot);
   fs.writeFileSync(
     path.join(consumerRoot, "package.json"),
-    `${JSON.stringify({ name: "lexrunner-packed-smoke", private: true, type: "module" })}\n`
+    `${JSON.stringify(consumerManifest)}\n`
   );
-  execFileSync(
+  const installResult = await installPackedConsumer({ npmRuntime, consumerRoot });
+  const packedArtifactPostinstall = observePackedArtifactPostinstall(packedManifest, installResult);
+
+  assertNpmPolicyRuntimeUnchanged(npmRuntime);
+  const pendingScripts = execFileSync(
     process.execPath,
     [
       npmCliPath,
-      "install",
-      "--prefer-offline",
-      "--no-audit",
-      "--no-fund",
-      "--no-package-lock",
-      "--no-save",
-      tarball,
+      "approve-scripts",
+      "--allow-scripts-pending",
+      "--global=false",
+      "--ignore-scripts=false",
+      "--dangerously-allow-all-scripts=false",
     ],
-    { cwd: consumerRoot, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }
+    { cwd: consumerRoot, encoding: "utf8" }
+  );
+  if (!pendingScripts.includes("No packages with unreviewed install scripts.")) {
+    throw new Error(`Packed consumer has unreviewed install scripts: ${pendingScripts}`);
+  }
+  const nativeSqlite = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        "--eval",
+        `
+          const Database = require("better-sqlite3-multiple-ciphers");
+          const database = new Database(":memory:");
+          try {
+            const result = database.prepare("SELECT 42 AS value").get();
+            if (result.value !== 42) throw new Error("native SQLite query failed");
+            const version = require("better-sqlite3-multiple-ciphers/package.json").version;
+            console.log(JSON.stringify({ version, query: "passed" }));
+          } finally { database.close(); }
+        `,
+      ],
+      { cwd: consumerRoot, encoding: "utf8" }
+    )
   );
 
   execFileSync(
@@ -201,6 +258,26 @@ try {
   process.stdout.write(
     `${JSON.stringify({
       installed: "@smartergpt/lexrunner",
+      npmRuntime,
+      installScriptPolicy: {
+        strict: true,
+        pendingInstallScripts: 0,
+        unreviewedInstallScript,
+        nativeSqlite,
+        consumerPolicy: consumerManifest.allowScripts,
+        packedArtifactLifecycle: {
+          ...reviewPackedArtifactLifecycle(packedManifest),
+          invoked: packedArtifactPostinstall,
+          falseRuleBinSuppression: "observed_with_npm_11_16",
+        },
+        transport: {
+          kind: "loopback_http",
+          ownedUrl: tarballServer.url,
+          reason: "npm_11_16_windows_file_policy_identity_mismatch",
+          tarballSha256: tarballServer.sha256,
+          tarballIntegrity: tarballServer.integrity,
+        },
+      },
       import: "passed",
       require: "passed",
       cli: "passed",
@@ -211,22 +288,23 @@ try {
       gateExecution,
     })}\n`
   );
-} finally {
-  fs.rmSync(temporaryRoot, { recursive: true, force: true });
-}
-
-function resolveNpmCliPath(env = process.env, nodeExecutable = process.execPath) {
-  const configured = env.npm_execpath?.trim();
-  if (configured) {
-    if (path.win32.isAbsolute(configured) || path.posix.isAbsolute(configured)) return configured;
-    return path.resolve(configured);
+} catch (error) {
+  preserveTemporaryRoot = error.resourceRelease === "uncertain";
+  if (preserveTemporaryRoot) {
+    process.stderr.write(
+      `${JSON.stringify({
+        status: "failed",
+        resourceRelease: "uncertain",
+        ownedProcessClosed: error.ownedProcessClosed,
+        ownedProcessId: error.ownedProcessId,
+        retainedFixtureRoot: temporaryRoot,
+      })}\n`
+    );
   }
-  const pathApi = path.posix.isAbsolute(nodeExecutable)
-    ? path.posix
-    : path.win32.isAbsolute(nodeExecutable)
-      ? path.win32
-      : path;
-  return pathApi.join(pathApi.dirname(nodeExecutable), "node_modules", "npm", "bin", "npm-cli.js");
+  throw error;
+} finally {
+  await tarballServer?.close();
+  if (!preserveTemporaryRoot) fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
 function assertBinShim(binRoot, name) {

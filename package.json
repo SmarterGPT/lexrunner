@@ -97,6 +97,7 @@
     "validate:build-artifacts": "tsx scripts/validate-build-artifacts.ts",
     "validate:package": "tsx scripts/validate-package-boundary.ts",
     "check:install-scripts": "node scripts/check-install-script-policy.mjs",
+    "install:local": "node scripts/install-local-package.mjs",
     "test:package": "node scripts/smoke-packed-package.mjs",
     "docs:check": "node scripts/check-doc-links.mjs",
     "docs:surface": "node scripts/render-doc-surfaces.mjs",

@@ -1,0 +1,226 @@
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  createPackedConsumerManifest,
+  packedConsumerInstallArguments,
+  servePackedTarball,
+  reviewPackedArtifactLifecycle,
+  runOwnedPackedInstallCommand,
+} from "../scripts/packed-consumer-install-policy.mjs";
+
+const sourceManifest = {
+  name: "@smartergpt/lexrunner",
+  scripts: JSON.parse(
+    fs.readFileSync(path.resolve(import.meta.dirname, "..", "package.json"), "utf8")
+  ).scripts,
+  allowScripts: {
+    "better-sqlite3-multiple-ciphers@12.11.1": true,
+    "esbuild@0.28.1": true,
+    "@smartergpt/lex": false,
+  },
+};
+const tarballSpecifier = "http://127.0.0.1:12345/packed-candidate.tgz";
+
+describe("packed consumer install-script boundary", () => {
+  it("retains the Lex denial and exact native approvals in the consumer that owns installation", () => {
+    const manifest = createPackedConsumerManifest(sourceManifest, tarballSpecifier);
+    const dependency = manifest.dependencies[sourceManifest.name];
+    expect(dependency).toBe(tarballSpecifier);
+    expect(manifest.allowScripts[dependency]).toBe(true);
+    expect(manifest.allowScripts["@smartergpt/lex"]).toBe(false);
+    expect(manifest.allowScripts["better-sqlite3-multiple-ciphers@12.11.1"]).toBe(true);
+    expect(Object.keys(sourceManifest.allowScripts)).toHaveLength(3);
+  });
+
+  it("fails before installation if the source Lex denial is missing or changed", () => {
+    for (const denial of [undefined, true]) {
+      expect(() =>
+        createPackedConsumerManifest(
+          {
+            ...sourceManifest,
+            allowScripts: { ...sourceManifest.allowScripts, "@smartergpt/lex": denial },
+          },
+          tarballSpecifier
+        )
+      ).toThrow("reviewed @smartergpt/lex script denial");
+    }
+  });
+
+  it("refuses lifecycle edits before approving any packed artifact script", () => {
+    for (const scripts of [
+      { ...sourceManifest.scripts, postinstall: "node arbitrary-script.mjs" },
+      { ...sourceManifest.scripts, prepare: "node arbitrary-script.mjs" },
+      { ...sourceManifest.scripts, install: "node arbitrary-script.mjs" },
+    ]) {
+      expect(() => reviewPackedArtifactLifecycle({ ...sourceManifest, scripts })).toThrow(
+        "differs from the reviewed"
+      );
+    }
+  });
+
+  it("refuses approval for an unowned or ambiguous remote tarball URL", () => {
+    for (const specifier of [
+      "https://example.com/candidate.tgz",
+      "file:../candidate.tgz",
+      "http://127.0.0.1:1234/candidate.tgz?other=artifact",
+    ]) {
+      expect(() => createPackedConsumerManifest(sourceManifest, specifier)).toThrow();
+    }
+  });
+
+  it("rejects broad or range approvals rather than changing consumer permission", () => {
+    for (const specifier of ["better-sqlite3-multiple-ciphers", "esbuild@*", "esbuild@^0.28.1"]) {
+      expect(() =>
+        createPackedConsumerManifest(
+          {
+            ...sourceManifest,
+            allowScripts: { ...sourceManifest.allowScripts, [specifier]: true },
+          },
+          tarballSpecifier
+        )
+      ).toThrow("exact registry script approvals");
+    }
+  });
+
+  it("rejects absent or malformed source policy", () => {
+    for (const allowScripts of [
+      undefined,
+      [],
+      { ...sourceManifest.allowScripts, esbuild: "true" },
+    ]) {
+      expect(() =>
+        createPackedConsumerManifest({ ...sourceManifest, allowScripts }, tarballSpecifier)
+      ).toThrow();
+    }
+  });
+
+  it("requires strict enforcement and actively disables inherited suppression or bypass", () => {
+    const args = packedConsumerInstallArguments();
+    expect(args).toContain("--global=false");
+    expect(args).toContain("--strict-allow-scripts");
+    expect(args).toContain("--ignore-scripts=false");
+    expect(args).toContain("--dangerously-allow-all-scripts=false");
+    expect(args).not.toContain("--no-package-lock");
+    expect(args).not.toContain("--no-save");
+  });
+
+  it("serves only the captured packed bytes at the exact loopback artifact URL", async () => {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lexrunner-tarball-server-test-"));
+    const tarballPath = path.join(temporaryRoot, "candidate.tgz");
+    const bytes = Buffer.from("isolated packed artifact fixture");
+    fs.writeFileSync(tarballPath, bytes);
+    const server = await servePackedTarball(tarballPath);
+    try {
+      fs.writeFileSync(tarballPath, "later disk mutation");
+      const response = await fetch(server.url);
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+      const otherPath = new URL("/package.json", server.url);
+      expect((await fetch(otherPath)).status).toBe(404);
+      expect((await fetch(server.url, { method: "POST" })).status).toBe(404);
+    } finally {
+      await server.close();
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+});
+describe("owned packed npm process shutdown", () => {
+  afterEach(() => vi.useRealTimers());
+  const start = (overrides = {}) => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 12345;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = vi.fn(() => true);
+    const promise = runOwnedPackedInstallCommand({
+      nodeExecutable: "fixture-node",
+      npmCliPath: "fixture-npm-cli.js",
+      consumerRoot: "fixture-consumer",
+      spawnProcess: () => child,
+      commandTimeoutMs: 1_000,
+      releaseTimeoutMs: 100,
+      maxOutputBytes: 5,
+      ...overrides,
+    });
+    return { child, promise };
+  };
+
+  it("keeps failure pending until the owned close event after output overflow", async () => {
+    vi.useFakeTimers();
+    const { child, promise } = start();
+    let settled = false;
+    const failure = promise.then(
+      () => undefined,
+      (error) => {
+        settled = true;
+        return error;
+      }
+    );
+    child.stdout.emit("data", Buffer.from("overflow"));
+    await Promise.resolve();
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    child.emit("close", null, "SIGTERM");
+    expect(await failure).toMatchObject({
+      ownedProcessClosed: true,
+      resourceRelease: "uncertain",
+      retainedConsumerRoot: "fixture-consumer",
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds command duration while awaiting owned close before timeout rejection", async () => {
+    vi.useFakeTimers();
+    const { child, promise } = start();
+    let settled = false;
+    const failure = promise.then(
+      () => undefined,
+      (error) => {
+        settled = true;
+        return error;
+      }
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    child.emit("close", null, "SIGTERM");
+    expect((await failure).message).toContain("exceeded 1000ms");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reports uncertain release rather than authorizing cleanup when owned close never arrives", async () => {
+    vi.useFakeTimers();
+    const { child, promise } = start();
+    const failure = promise.then(
+      () => undefined,
+      (error) => error
+    );
+    child.stderr.emit("data", Buffer.from("overflow"));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await failure).toMatchObject({
+      ownedProcessClosed: false,
+      resourceRelease: "uncertain",
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears the command timer when the owned process completes normally", async () => {
+    vi.useFakeTimers();
+    const { child, promise } = start();
+    child.stdout.emit("data", Buffer.from("ok"));
+    child.emit("close", 0, null);
+    expect(await promise).toEqual({ status: "passed", output: "ok" });
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
