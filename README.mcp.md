@@ -6,6 +6,12 @@ blocks protected mutations such as merging; it is not a read-only sandbox.
 
 Start with [installation and interface choices](docs/first-use-compatibility.md).
 
+For long local gate plans, use `gates.start` with explicit `repoRoot`, `planFile`,
+`outDir` and `idempotencyKey`. Retain the returned operation path/hash for
+`gates.status` or `gates.cancel`; observer disconnect does not cancel the worker.
+See [durable gate operations](docs/gates.md#long-running-operations-and-reconnects)
+for idempotency scope, cooperative cancellation and unknown-state recovery.
+
 **Architecture:** This server is aligned with LexBrain and LexMap MCP implementations, using direct stdio JSON-RPC 2.0 protocol handling for consistency and maintainability across the Lex ecosystem.
 
 ## Tool Naming Convention

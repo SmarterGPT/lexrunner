@@ -30,6 +30,14 @@ const shared: Options = {
 export default defineConfig([
   {
     ...shared,
+    entry: ["src/gate-worker.ts"],
+    format: ["esm"],
+    splitting: false,
+    dts: false,
+    clean: false,
+  },
+  {
+    ...shared,
     format: ["esm"],
     dts: {
       // Public package-schema entries compile canonical portable definitions from

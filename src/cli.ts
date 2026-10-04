@@ -51,6 +51,7 @@ import { registerGateAttestCommand } from "./commands/gateAttest.js";
 import { registerGateImportCommand } from "./commands/gateImport.js";
 import { registerGateImportChecksCommand } from "./commands/gateImportChecks.js";
 import { registerGateSelectCommand } from "./commands/gate-select.js";
+import { registerGateOperationCommands } from "./commands/gate-operation.js";
 import { registerGateTestCommand } from "./cli/commands/gate/test.js";
 import { registerGovernanceReportCommand } from "./commands/governanceReport.js";
 import { registerGovernanceCleanupCommand } from "./commands/governanceCleanup.js";
@@ -514,6 +515,7 @@ registerMonitorCommand(fanoutCmd);
 
 // Gate category - Quality gate execution
 const gateCmd = program.command("gate").description("Quality gate execution");
+registerGateOperationCommands(gateCmd);
 
 registerExecuteCommand(
   gateCmd,
@@ -1288,6 +1290,13 @@ export { InMemoryAttemptAwaitableStore } from "./store/inmemory/attempt-awaitabl
 export { SqliteAttemptAwaitableStore } from "./store/sqlite/attempt-awaitable-store.js";
 
 // AX-004: MCP/CLI parity exports
+export { resolveGateRepositoryRoot } from "./application/gate-candidate-identity.js";
+export {
+  GateOperationService,
+  GateOperationServiceError,
+  GateOperationStartJsonSchema,
+  GateOperationObserveJsonSchema,
+} from "./application/gate-operation-service.js";
 export { computeMergeOrder } from "./mergeOrder.js";
 export { createGitHubAPI, GitHubAPI } from "./github/api.js";
 export { createGitHubClient } from "./github/client.js";

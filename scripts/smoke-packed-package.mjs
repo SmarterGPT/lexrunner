@@ -20,6 +20,7 @@ import {
 } from "./packed-consumer-install-policy.mjs";
 import { observeNpmPolicyRuntime, assertNpmPolicyRuntimeUnchanged } from "./npm-policy-runtime.mjs";
 import { smokeGateExecution } from "./smoke-gate-execution.mjs";
+import { smokeGateOperations } from "./smoke-gate-operations.mjs";
 
 const projectRoot = process.cwd();
 const sourceManifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
@@ -280,6 +281,11 @@ try {
     mcp: resolvePackageBinTarget(installedPackageRoot, installedManifest, "lexrunner-mcp"),
     fixtureRoot: path.join(temporaryRoot, "gate-execution"),
   });
+  const gateOperations = await smokeGateOperations({
+    cli: canonicalCli,
+    mcp: resolvePackageBinTarget(installedPackageRoot, installedManifest, "lexrunner-mcp"),
+    fixtureRoot: path.join(temporaryRoot, "gate-operations"),
+  });
   process.stdout.write(
     `${JSON.stringify({
       installed: "@smartergpt/lexrunner",
@@ -312,6 +318,7 @@ try {
       mcpTools: toolCount,
       mcpAttemptTools: requiredAttemptTools.length,
       gateExecution,
+      gateOperations,
     })}\n`
   );
 } catch (error) {

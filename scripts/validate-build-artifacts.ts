@@ -14,6 +14,7 @@ export interface PackageArtifactTarget {
 }
 
 const REQUIRED_INTERNAL_BUILD_ARTIFACTS: PackageArtifactTarget[] = [
+  { source: "Detached gate worker", target: "./dist/gate-worker.js" },
   { source: "Frame emission CI", target: "./dist/hooks/events.js" },
   { source: "Frame emission CI", target: "./dist/hooks/events.d.ts" },
 ];

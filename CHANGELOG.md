@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- Explicit durable gate operations through CLI `gate start/status/cancel` and MCP
+  `gates.start/status/cancel`. A detached worker retains a frozen plan, candidate,
+  idempotent admission and gate receipts across observer disconnects.
+- Cooperative cancellation stops future commands and retries after active gates settle.
+  Missing or stale worker observations remain unknown and never trigger automatic replay.
+
+### Fixed
+
+- Evidence status accepts an explicit repository root from a non-Git MCP startup
+  folder, while retaining candidate/hash validation and unverified merge authority.
+
 ## [2.4.0] - 2026-09-09
 
 ### Added

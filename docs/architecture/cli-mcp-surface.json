@@ -58,6 +58,11 @@
       "success": "human-oriented local or interactive output; JSON may exist for diagnostics but is not an MCP parity promise",
       "error": "actionable local diagnostic with non-zero exit status",
       "transport": "intentionally CLI-only"
+    },
+    "gate-operation-v1": {
+      "success": "bounded explicit operation descriptor/observation/cancel-request with immutable artifact hash and unverified authority",
+      "error": "stable operation failure code; no automatic replay or inferred cancellation",
+      "transport": "CLI and MCP share GateOperationService; worker owns execution independent of observer"
     }
   },
   "cli": {
@@ -113,6 +118,9 @@
       "gate run",
       "gate select",
       "gate test",
+      "gate start",
+      "gate status",
+      "gate cancel",
       "gate-report",
       "gate-report validate",
       "governance:cleanup",
@@ -250,6 +258,10 @@
           "attempt worker heartbeat",
           "attempt worker status"
         ]
+      },
+      {
+        "profile": "gate-operation-v1",
+        "operations": ["gate start", "gate status", "gate cancel"]
       }
     ],
     "defaultCanonicalOperationContract": "bounded-ax-v1",
@@ -265,6 +277,9 @@
       "doctor",
       "end_attempt_worker",
       "gates.run",
+      "gates.start",
+      "gates.status",
+      "gates.cancel",
       "get_attempt_acceptance",
       "get_attempt_receipt",
       "get_attempt_status",
@@ -308,7 +323,11 @@
         "owner": "frozen RunStore integration records",
         "removeIn": "3.0.0"
       },
-      { "tool": "health", "replacement": "doctor", "removeIn": "3.0.0" }
+      {
+        "tool": "health",
+        "replacement": "doctor",
+        "removeIn": "3.0.0"
+      }
     ],
     "internal-only": [],
     "remove": [],
@@ -336,6 +355,10 @@
           "inspect_native_wsl_projection_quarantine",
           "verify_attempt"
         ]
+      },
+      {
+        "profile": "gate-operation-v1",
+        "operations": ["gates.start", "gates.status", "gates.cancel"]
       }
     ],
     "defaultCanonicalOperationContract": "bounded-ax-v1",
@@ -379,6 +402,21 @@
         "tool": "gates.run",
         "cli": "gate run",
         "owner": "GateExecutionService"
+      },
+      {
+        "tool": "gates.start",
+        "cli": "gate start",
+        "owner": "GateOperationService"
+      },
+      {
+        "tool": "gates.status",
+        "cli": "gate status",
+        "owner": "GateOperationService"
+      },
+      {
+        "tool": "gates.cancel",
+        "cli": "gate cancel",
+        "owner": "GateOperationService"
       },
       {
         "tool": "get_attempt_acceptance",

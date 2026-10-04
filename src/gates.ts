@@ -1,6 +1,16 @@
 import { spawn } from "child_process";
 import { createHash } from "node:crypto";
-import { Plan, Gate, PlanItem, Policy, GateResult, GateStatus, RetryConfig } from "./schema.js";
+import { performance } from "node:perf_hooks";
+import {
+  Plan,
+  Gate,
+  PlanItem,
+  Policy,
+  GateResult,
+  GateStatus,
+  RetryConfig,
+  type PerformanceConfig,
+} from "./schema.js";
 import { ExecutionState } from "./executionState.js";
 import path from "path";
 import fs from "fs";
@@ -100,8 +110,10 @@ export async function executeGate(
   turnCostTracker?: MergeWeaveTurnCost,
   suppressStdout: boolean = false,
   candidateDigest?: string,
-  resolvedWorkingDirectory?: string
+  resolvedWorkingDirectory?: string,
+  shouldCancel?: () => boolean
 ): Promise<GateResult> {
+  if (shouldCancel?.()) return cancelledGateAdmission(gate.name);
   // Validate gate input before execution (unless explicitly skipped)
   if (!skipValidation && gate.input) {
     try {
@@ -128,6 +140,7 @@ export async function executeGate(
   let totalDuration = 0;
 
   for (let attempt = 1; attempt <= retryConfig.maxAttempts; attempt++) {
+    if (shouldCancel?.()) return stopGateRetries(gate.name, lastResult);
     // Add backoff delay for retries
     if (attempt > 1 && retryConfig.backoffSeconds > 0) {
       const delayMs = retryConfig.backoffSeconds * 1000;
@@ -136,8 +149,11 @@ export async function executeGate(
           `⏳ Retrying gate '${gate.name}' (attempt ${attempt}/${retryConfig.maxAttempts}) after ${retryConfig.backoffSeconds}s delay...`
         );
       }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (!(await waitForGateRetry(delayMs, shouldCancel))) {
+        return stopGateRetries(gate.name, lastResult);
+      }
     }
+    if (shouldCancel?.()) return stopGateRetries(gate.name, lastResult);
 
     const result = await executeGateAttempt(
       gate,
@@ -147,10 +163,18 @@ export async function executeGate(
       repoRoot,
       itemName,
       candidateDigest,
-      resolvedWorkingDirectory
+      resolvedWorkingDirectory,
+      shouldCancel
     );
+    if (result.attempts === 0 && shouldCancel?.()) {
+      return stopGateRetries(gate.name, lastResult);
+    }
     lastResult = result;
     totalDuration += result.duration || 0;
+
+    // Cooperative cancellation drains the admitted command. Its observed outcome
+    // stays intact, but a cancellation request never admits a retry.
+    if (shouldCancel?.()) return result;
 
     // Track gate latency in Turn Cost if tracker is provided
     if (turnCostTracker && result.duration) {
@@ -258,6 +282,40 @@ export async function executeGate(
   return lastResult!;
 }
 
+function cancelledGateAdmission(gateName: string): GateResult {
+  return {
+    gate: gateName,
+    status: "blocked",
+    duration: 0,
+    stdout: "",
+    stderr: "GATE_RUN_CANCELLED: command was not admitted",
+    artifacts: [],
+    attempts: 0,
+    lastAttempt: new Date().toISOString(),
+  };
+}
+
+function stopGateRetries(gateName: string, result: GateResult | null): GateResult {
+  if (!result) return cancelledGateAdmission(gateName);
+  // The retained attempt receipt describes an observed failure, not a future
+  // retry. Restore that outcome when cancellation stops the retry backoff.
+  return result.status === "retrying" ? { ...result, status: "fail" } : result;
+}
+
+async function waitForGateRetry(delayMs: number, shouldCancel?: () => boolean): Promise<boolean> {
+  if (!shouldCancel) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return true;
+  }
+  const deadline = performance.now() + delayMs;
+  while (!shouldCancel()) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 100)));
+  }
+  return false;
+}
+
 /**
  * Write flake report artifact when retries occur
  */
@@ -314,7 +372,8 @@ async function executeGateAttempt(
   repoRoot?: string,
   itemName?: string,
   candidateDigest?: string,
-  resolvedWorkingDirectory?: string
+  resolvedWorkingDirectory?: string,
+  shouldCancel?: () => boolean
 ): Promise<GateResult> {
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
@@ -346,7 +405,8 @@ async function executeGateAttempt(
         repoRoot,
         itemName,
         candidateDigest,
-        resolvedWorkingDirectory
+        resolvedWorkingDirectory,
+        shouldCancel
       );
   }
 }
@@ -364,7 +424,8 @@ async function executeLocalGate(
   repoRoot?: string,
   itemName?: string,
   candidateDigest?: string,
-  resolvedWorkingDirectory?: string
+  resolvedWorkingDirectory?: string,
+  shouldCancel?: () => boolean
 ): Promise<GateResult> {
   // Use gate.cwd if specified, otherwise fall back to repoRoot (captured at execution start).
   // If neither is available, use process.cwd() as a last resort fallback.
@@ -464,6 +525,10 @@ async function executeLocalGate(
       candidateDigest,
     });
   }
+
+  // Command validation yields to the event loop. Recheck cancellation before
+  // creating a process; cancellation cannot terminate an already admitted gate.
+  if (shouldCancel?.()) return cancelledGateAdmission(gate.name);
 
   return new Promise((resolve, reject) => {
     let timedOut = false;
@@ -969,6 +1034,7 @@ export async function executeItemGates(
     suppressStdout?: boolean;
     candidateDigest?: string;
     resolvedGateWorkingDirectories?: Readonly<Record<string, string>>;
+    shouldCancel?: () => boolean;
   }
 ): Promise<GateResult[]> {
   if (!item.gates || item.gates.length === 0) {
@@ -986,6 +1052,10 @@ export async function executeItemGates(
   for (const gate of item.gates) {
     if (options?.onlyGate && gate.name !== options.onlyGate) {
       continue;
+    }
+    if (options?.shouldCancel?.()) {
+      executionState.blockNode(item.name, []);
+      break;
     }
     // Check if gate should be blocked based on policy
     if (shouldBlockGate(gate, policy)) {
@@ -1046,7 +1116,8 @@ export async function executeItemGates(
       options?.turnCostTracker,
       options?.suppressStdout,
       options?.candidateDigest,
-      options?.resolvedGateWorkingDirectories?.[JSON.stringify([item.name, gate.name])]
+      options?.resolvedGateWorkingDirectories?.[JSON.stringify([item.name, gate.name])],
+      options?.shouldCancel
     );
     result.timeoutMs = gate.timeoutMs ?? timeoutMs;
     results.push(result);
@@ -1119,6 +1190,7 @@ export async function executeGatesWithPolicy(
     suppressStdout?: boolean;
     candidateDigest?: string;
     resolvedGateWorkingDirectories?: Readonly<Record<string, string>>;
+    shouldCancel?: () => boolean;
   }
 ): Promise<void> {
   // Capture repository root once at the start of execution
@@ -1148,7 +1220,7 @@ export async function executeGatesWithPolicy(
   };
 
   // Initialize performance monitoring
-  const perfConfig = policy.performance || {};
+  const perfConfig: Partial<PerformanceConfig> = policy.performance || {};
   const memoryMonitor = new MemoryMonitor(perfConfig);
 
   // Ensure base artifact directory exists
@@ -1193,8 +1265,24 @@ export async function executeGatesWithPolicy(
 
   try {
     while (pending.size > 0 || running.size > 0) {
-      await memoryMonitor.throttleIfNeeded();
+      // Poll memory throttling here so cancellation can stop admission even
+      // while memory remains high. Admitted commands keep their own timeout.
+      if (!options?.shouldCancel) {
+        await memoryMonitor.throttleIfNeeded();
+      } else {
+        while (perfConfig.throttleOnMemory !== false && memoryMonitor.isMemoryHigh()) {
+          if (options.shouldCancel()) break;
+          if (global.gc) global.gc();
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
       for (const node of pending) {
+        if (options?.shouldCancel?.()) {
+          // Clear previous selected invocation evidence before blocking it.
+          executionState.beginNodeExecution(node);
+          block(node, []);
+          continue;
+        }
         const result = executionState.getNodeResult(node)!;
         if (result.status === "fail" || result.status === "blocked") {
           pending.delete(node);
@@ -1224,6 +1312,10 @@ export async function executeGatesWithPolicy(
               // Only admitted selected items are reset. Omitted prerequisite
               // evidence is preserved; skipped required commands are not PASS.
               executionState.beginNodeExecution(node);
+              if (options?.shouldCancel?.()) {
+                executionState.blockNode(node, []);
+                return;
+              }
               reportProgress(() => progressReporter?.nodeStart(node));
               await executeItemGates(
                 item,
@@ -1235,7 +1327,11 @@ export async function executeGatesWithPolicy(
                 workingDir,
                 options
               );
-              executionState.completeNodeExecution(node);
+              if (options?.shouldCancel?.()) {
+                executionState.blockNode(node, []);
+              } else {
+                executionState.completeNodeExecution(node);
+              }
             } catch (error) {
               executionState.markNodeExecutionFailed(node, error);
               console.error(`Error executing gates for ${node}:`, error);

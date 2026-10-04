@@ -157,6 +157,7 @@ export type DiscoverArgs = z.infer<typeof DiscoverArgs>;
 export const StatusArgs = z
   .object({
     planFile: z.string().optional(),
+    repoRoot: z.string().min(1).max(4096).optional(),
     evidenceFile: z.string().min(1).max(4096).optional(),
     evidenceSha256: z
       .string()

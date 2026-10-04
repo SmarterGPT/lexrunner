@@ -11,6 +11,7 @@ import {
   captureGateCandidateIdentity,
   resolveGateRepositoryRoot,
   sameGateCandidate,
+  type GateCandidateIdentity,
 } from "./gate-candidate-identity.js";
 import {
   writeGateEvidenceManifest,
@@ -35,6 +36,9 @@ export interface GateExecutionServiceInput {
   onlyItem?: string;
   onlyGate?: string;
   executionState?: ExecutionState;
+  /** Internal detached-worker binding: all metadata shares this excluded run directory. */
+  preparedArtifactDir?: string;
+  expectedCandidate?: GateCandidateIdentity;
 }
 
 export interface BoundedGateRunResult {
@@ -108,7 +112,15 @@ export class GateExecutionService {
       input.repoRoot === undefined ? process.cwd() : input.repoRoot
     );
     const executionState = input.executionState ?? new ExecutionState(plan);
-    const artifactDir = prepareOwnedArtifactDirectory(input.artifactDir);
+    const artifactDir = input.preparedArtifactDir
+      ? realpathSync(input.preparedArtifactDir)
+      : prepareOwnedArtifactDirectory(input.artifactDir);
+    if (input.preparedArtifactDir && artifactDir !== realpathSync(input.artifactDir)) {
+      throw new GateExecutionServiceError(
+        "GATE_WORKING_DIRECTORY_CONFLICT",
+        "Prepared artifacts must use the operation directory"
+      );
+    }
     let candidate: ReturnType<typeof captureGateCandidateIdentity>;
     try {
       candidate = captureGateCandidateIdentity(binding.repository.path, artifactDir);
@@ -116,6 +128,12 @@ export class GateExecutionService {
       throw new GateExecutionServiceError(
         "GATE_CANDIDATE_ROOT_INVALID",
         "The candidate repository is unavailable"
+      );
+    }
+    if (input.expectedCandidate && !sameGateCandidate(input.expectedCandidate, candidate)) {
+      throw new GateExecutionServiceError(
+        "GATE_CANDIDATE_CHANGED",
+        "The admission candidate changed before gate execution"
       );
     }
     try {
