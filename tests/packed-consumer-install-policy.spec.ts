@@ -12,6 +12,7 @@ import {
   reviewPackedArtifactLifecycle,
   runOwnedPackedInstallCommand,
   ownedNpmLifecycleEnvironment,
+  observePackedArtifactPostinstall,
 } from "../scripts/packed-consumer-install-policy.mjs";
 
 const sourceManifest = {
@@ -274,6 +275,87 @@ describe("owned packed npm process shutdown", () => {
     child.emit("close", 0, null);
     expect(await promise).toEqual({ status: "passed", output: "ok" });
     expect(child.kill).not.toHaveBeenCalled();
+    expect(activeTimers.size).toBe(0);
+  });
+
+  it("observes the exact approved postinstall when its UTF-8 glyph spans chunks", async () => {
+    vi.useFakeTimers();
+    const manifest = { ...sourceManifest, version: "2.4.0" };
+    const prefix = `> ${manifest.name}@${manifest.version} postinstall\n`;
+    const glyph = Buffer.from("📦");
+    const suffix =
+      ' lexrunner installed! Run "npx lexrunner init" to set up your workspace. The "lex-pr" compatibility alias remains supported.\n';
+    for (const streamName of ["stdout", "stderr"] as const) {
+      for (const split of [1, 2, 3]) {
+        const { child, promise, activeTimers } = start({ maxOutputBytes: 1_024 });
+        child[streamName].emit(
+          "data",
+          Buffer.concat([Buffer.from(prefix), glyph.subarray(0, split)])
+        );
+        child[streamName].emit("data", Buffer.concat([glyph.subarray(split), Buffer.from(suffix)]));
+        child.emit("close", 0, null);
+        const result = await promise;
+        expect(result).toEqual({ status: "passed", output: `${prefix}📦${suffix}` });
+        expect(observePackedArtifactPostinstall(manifest, result)).toMatchObject({
+          event: "postinstall",
+          status: "passed",
+        });
+        expect(child.kill).not.toHaveBeenCalled();
+        expect(activeTimers.size).toBe(0);
+      }
+    }
+  });
+
+  it("keeps each stream's pending UTF-8 bytes separate and flushes them on owned close", async () => {
+    vi.useFakeTimers();
+    const { child, promise, activeTimers } = start({ maxOutputBytes: 10 });
+    const stdoutGlyph = Buffer.from("📦");
+    const stderrGlyph = Buffer.from("é");
+    child.stdout.emit("data", stdoutGlyph.subarray(0, 2));
+    child.stderr.emit("data", stderrGlyph.subarray(0, 1));
+    child.stdout.emit("data", stdoutGlyph.subarray(2));
+    child.stderr.emit("data", stderrGlyph.subarray(1));
+    child.stdout.emit("data", Buffer.from([0xe2, 0x82]));
+    child.stderr.emit("data", Buffer.from([0xf0, 0x9f]));
+    child.emit("close", 0, null);
+    expect(await promise).toEqual({ status: "passed", output: "📦é��" });
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(activeTimers.size).toBe(0);
+  });
+
+  it("accepts multibyte output exactly at the aggregate raw-byte budget", async () => {
+    vi.useFakeTimers();
+    const { child, promise, activeTimers } = start({ maxOutputBytes: 6 });
+    const glyph = Buffer.from("📦");
+    child.stdout.emit("data", glyph.subarray(0, 1));
+    child.stderr.emit("data", Buffer.from("é"));
+    child.stdout.emit("data", glyph.subarray(1));
+    child.emit("close", 0, null);
+    expect(await promise).toEqual({ status: "passed", output: "é📦" });
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(activeTimers.size).toBe(0);
+  });
+
+  it("terminates on a byte beyond the aggregate multibyte output budget and awaits owned close", async () => {
+    vi.useFakeTimers();
+    const { child, promise, activeTimers } = start({ maxOutputBytes: 6 });
+    const failure = promise.then(
+      () => undefined,
+      (error) => error
+    );
+    child.stdout.emit("data", Buffer.from("📦"));
+    child.stderr.emit("data", Buffer.from("é"));
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stderr.emit("data", Buffer.from("x"));
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(activeTimers.size).toBe(1);
+    child.emit("close", null, "SIGTERM");
+    expect(await failure).toMatchObject({
+      message: expect.stringContaining("exceeded the output budget"),
+      ownedProcessClosed: true,
+      resourceRelease: "uncertain",
+      retainedConsumerRoot: "fixture-consumer",
+    });
     expect(activeTimers.size).toBe(0);
   });
 

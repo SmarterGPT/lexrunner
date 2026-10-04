@@ -4,6 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 import { assertNpmPolicyRuntimeUnchanged } from "./npm-policy-runtime.mjs";
@@ -180,6 +181,8 @@ export function runOwnedPackedInstallCommand({
       }
     );
     let output = "";
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     let bytes = 0;
     let failure;
     let terminationRequested = false;
@@ -224,15 +227,15 @@ export function runOwnedPackedInstallCommand({
         failure = new Error(`${reason.message}; owned termination failed: ${error.message}`);
       }
     };
-    const collect = (chunk) => {
+    const collect = (decoder) => (chunk) => {
       if (failure || settled) return;
       bytes += chunk.length;
       if (bytes > maxOutputBytes) {
         stopOwnedProcess(new Error("Packed consumer install exceeded the output budget"));
-      } else output += chunk.toString();
+      } else output += decoder.write(chunk);
     };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
+    child.stdout.on("data", collect(stdoutDecoder));
+    child.stderr.on("data", collect(stderrDecoder));
     child.stdout.on("error", stopOwnedProcess);
     child.stderr.on("error", stopOwnedProcess);
     child.once("error", (error) => {
@@ -241,6 +244,7 @@ export function runOwnedPackedInstallCommand({
       awaitOwnedClose();
     });
     child.once("close", (code, signal) => {
+      output += stdoutDecoder.end() + stderrDecoder.end();
       if (failure) {
         const release = terminationRequested ? "uncertain" : "owned_process_closed";
         finish(

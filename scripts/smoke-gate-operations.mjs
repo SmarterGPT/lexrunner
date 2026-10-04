@@ -11,6 +11,12 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { execa } from "execa";
 
+import {
+  boundedSmoke as bounded,
+  drainGateOperationFixtures,
+  ownMcpConnection,
+} from "./owned-mcp-smoke.mjs";
+
 const TERMINAL = new Set(["completed", "cancelled", "failed"]);
 const OBSERVATION_TIMEOUT_MS = 15_000;
 const TOOL_TIMEOUT_MS = 5_000;
@@ -152,10 +158,10 @@ export async function smokeGateOperations({ cli, mcp, fixtureRoot }) {
     assert.notEqual(startRequestId, undefined);
     assert.equal(cancellationRequestId, startRequestId);
     await markerStarted(lostAcknowledgement, "a-unit");
-    recoverHandle(lostAcknowledgement);
-    assert.ok(lostAcknowledgement.handle, "original timed-out request omitted its descriptor");
     assert.equal(ended(lostAcknowledgement).length, 0);
     await close(connection);
+    recoverHandle(lostAcknowledgement);
+    assert.ok(lostAcknowledgement.handle, "original timed-out request omitted its descriptor");
     connection = await connect();
     const originalRunning = await call(connection, "status", lostAcknowledgement.handle);
     assert.equal(originalRunning.state, "running");
@@ -280,28 +286,15 @@ export async function smokeGateOperations({ cli, mcp, fixtureRoot }) {
   } catch (error) {
     failure = error;
   } finally {
-    for (const current of fixtures) {
-      for (const name of current.gates) release(current, name);
-    }
-    // A lost start acknowledgement may have left a descriptor. Recover that
-    // exact durable claim for observation; cleanup never restarts a command.
-    for (const current of fixtures) recoverHandle(current);
-    const cleanup = await Promise.allSettled([
-      ...fixtures
-        .filter((current) => current.handle)
-        .map((current) => terminal(() => cliObserve("status", current.handle))),
-      ...[...connections].map((connection) => close(connection)),
-    ]);
-    const uncertain = cleanup.filter(({ status }) => status === "rejected");
-    if (uncertain.length) {
-      const error = new Error(
-        `Packed gate operation cleanup was not confirmed; retain ${fixtureRoot}`,
-        { cause: failure ?? uncertain[0].reason }
-      );
-      error.resourceRelease = "uncertain";
-      error.retainedFixtureRoot = fixtureRoot;
-      throw error;
-    }
+    await drainGateOperationFixtures({
+      fixtures,
+      connections,
+      release,
+      recoverHandle,
+      observeTerminal: (handle) => terminal(() => cliObserve("status", handle)),
+      fixtureRoot,
+      failure,
+    });
   }
   if (failure) throw failure;
   return observations;
@@ -315,16 +308,14 @@ export async function smokeGateOperations({ cli, mcp, fixtureRoot }) {
       env: { ...environment, ALLOW_MUTATIONS: "false", LEX_PR_PROFILE_DIR: profile },
       stderr: "pipe",
     });
-    const connection = { client, transport, closed: false };
+    const connection = ownMcpConnection(client, transport, { fixtureRoot });
     connections.add(connection);
-    await bounded(client.connect(transport), 15_000, "owned MCP transport connect");
+    await connection.connect();
     return connection;
   }
 
   async function close(connection) {
-    if (connection.closed) return;
-    await bounded(connection.client.close(), 10_000, "owned MCP transport close");
-    connection.closed = true;
+    await connection.close();
     connections.delete(connection);
   }
 
@@ -477,20 +468,6 @@ async function terminal(observe) {
   throw new Error(
     "Gate operation did not reach an observed terminal state: " + JSON.stringify(observation)
   );
-}
-
-async function bounded(operation, timeoutMs, label) {
-  let timer;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(label + " exceeded its deadline")), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function events(current) {

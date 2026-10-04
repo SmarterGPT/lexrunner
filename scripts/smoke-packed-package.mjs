@@ -21,6 +21,7 @@ import {
 import { observeNpmPolicyRuntime, assertNpmPolicyRuntimeUnchanged } from "./npm-policy-runtime.mjs";
 import { smokeGateExecution } from "./smoke-gate-execution.mjs";
 import { smokeGateOperations } from "./smoke-gate-operations.mjs";
+import { ownMcpConnection } from "./owned-mcp-smoke.mjs";
 
 const projectRoot = process.cwd();
 const sourceManifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
@@ -431,6 +432,7 @@ async function smokeMcp(binPath, cwd, expectedVersion) {
     env: { ...process.env, ALLOW_MUTATIONS: "false" },
     stderr: "pipe",
   });
+  const connection = ownMcpConnection(client, transport, { fixtureRoot: cwd });
   let stderr = "";
   transport.stderr?.on("data", (chunk) => {
     stderr += chunk.toString();
@@ -440,7 +442,7 @@ async function smokeMcp(binPath, cwd, expectedVersion) {
   try {
     return await Promise.race([
       (async () => {
-        await client.connect(transport);
+        await connection.connect();
         const actualVersion = client.getServerVersion()?.version;
         if (actualVersion !== expectedVersion) {
           throw new Error(`Packed MCP reported unexpected version: ${actualVersion}`);
@@ -463,6 +465,6 @@ async function smokeMcp(binPath, cwd, expectedVersion) {
     ]);
   } finally {
     clearTimeout(timeout);
-    await client.close();
+    await connection.close();
   }
 }

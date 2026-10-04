@@ -7,6 +7,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { execa } from "execa";
 
+import { drainBlockingGateFixtures, ownMcpConnection } from "./owned-mcp-smoke.mjs";
+
 /** Exercise installed tarball entry points against disposable, explicitly selected candidates. */
 export async function smokeGateExecution({ cli, mcp, fixtureRoot }) {
   const gateTimeoutMs = 10_000;
@@ -40,12 +42,16 @@ export async function smokeGateExecution({ cli, mcp, fixtureRoot }) {
     },
     stderr: "pipe",
   });
+  const connection = ownMcpConnection(client, transport, { fixtureRoot });
+  const connections = new Set([connection]);
+  const unresolvedProducers = new Set();
   let invocation = 0;
+  let failure;
   try {
     const help = await execa(process.execPath, [cli, "gate", "run", "--help"], { timeout: 15_000 });
     for (const flag of ["--repo-root", "--only-item", "--only-gate"])
       assert.ok(help.stdout.includes(flag));
-    await client.connect(transport);
+    await connection.connect();
     const { tools } = await client.listTools();
     assert.ok(tools.find(({ name }) => name === "gates.run")?.inputSchema.properties.repoRoot);
 
@@ -101,24 +107,28 @@ export async function smokeGateExecution({ cli, mcp, fixtureRoot }) {
     await refused(conflict, { repoRoot: repoB }, /GATE_WORKING_DIRECTORY_CONFLICT/);
 
     const gitStartupClient = new Client({ name: "lexrunner-packed-null-root", version: "1.0.0" });
+    const gitStartupConnection = ownMcpConnection(
+      gitStartupClient,
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [mcp],
+        cwd: repoA,
+        env: {
+          ...fixtureEnvironment,
+          ALLOW_MUTATIONS: "false",
+          LEX_PR_PROFILE_DIR: path.join(fixtureRoot, "private-profile"),
+        },
+        stderr: "pipe",
+      }),
+      { fixtureRoot }
+    );
+    connections.add(gitStartupConnection);
     try {
-      await gitStartupClient.connect(
-        new StdioClientTransport({
-          command: process.execPath,
-          args: [mcp],
-          cwd: repoA,
-          env: {
-            ...fixtureEnvironment,
-            ALLOW_MUTATIONS: "false",
-            LEX_PR_PROFILE_DIR: path.join(fixtureRoot, "private-profile"),
-          },
-          stderr: "pipe",
-        })
-      );
+      await gitStartupConnection.connect();
       const nullRoot = fixture("null-root-git-startup", repoA);
       await refused(nullRoot, { repoRoot: null }, /GATE_CANDIDATE_ROOT_INVALID/, gitStartupClient);
     } finally {
-      await gitStartupClient.close();
+      await gitStartupConnection.close();
     }
 
     const filtered = fixture("filtered-required", repoA);
@@ -144,8 +154,11 @@ export async function smokeGateExecution({ cli, mcp, fixtureRoot }) {
       dependencyOrdering: "passed",
       maxWorkers1: "passed",
     };
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    await client.close();
+    await drainBlockingGateFixtures({ connections, unresolvedProducers, fixtureRoot, failure });
   }
 
   function candidate(name) {
@@ -204,8 +217,9 @@ export async function smokeGateExecution({ cli, mcp, fixtureRoot }) {
     return { repo, log, planFile };
   }
 
-  function cliRun(current, selection) {
-    return execa(
+  async function cliRun(current, selection) {
+    unresolvedProducers.add(current);
+    const result = await execa(
       process.execPath,
       [
         cli,
@@ -228,9 +242,18 @@ export async function smokeGateExecution({ cli, mcp, fixtureRoot }) {
       ],
       { cwd: startup, env: fixtureEnvironment, reject: false, timeout: 30_000 }
     );
+    const parsed = JSON.parse(result.stdout);
+    if (
+      (typeof parsed.allGreen === "boolean" && Array.isArray(parsed.items)) ||
+      parsed.code === "GATE_SELECTION_NOT_FOUND"
+    ) {
+      unresolvedProducers.delete(current);
+    }
+    return result;
   }
 
   async function mcpRun(current, extra = {}, activeClient = client) {
+    unresolvedProducers.add(current);
     const result = await activeClient.callTool(
       {
         name: "gates.run",
@@ -246,12 +269,17 @@ export async function smokeGateExecution({ cli, mcp, fixtureRoot }) {
       { timeout: 30_000 }
     );
     if (result.isError) throw new Error(JSON.stringify(result.content));
-    return JSON.parse(result.content.find(({ type }) => type === "text").text);
+    const parsed = JSON.parse(result.content.find(({ type }) => type === "text").text);
+    if (typeof parsed.allGreen === "boolean" && Array.isArray(parsed.items)) {
+      unresolvedProducers.delete(current);
+    }
+    return parsed;
   }
 
   async function refused(current, extra, code, activeClient = client) {
     await assert.rejects(() => mcpRun(current, extra, activeClient), code);
     assert.deepEqual(started(current), []);
+    unresolvedProducers.delete(current);
   }
 }
 
