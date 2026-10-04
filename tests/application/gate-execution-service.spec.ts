@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,10 +9,17 @@ import {
 } from "../../src/application/gate-execution-service.js";
 import type { ExecutionState } from "../../src/executionState.js";
 import type { Plan } from "../../src/schema.js";
+import {
+  candidateFixture,
+  containsManifest,
+  type CandidateFixture,
+} from "../helpers/gate-candidate-fixture.js";
 
 const temporaryDirectories: string[] = [];
+const candidateFixtures: CandidateFixture[] = [];
 
 afterEach(() => {
+  for (const fixture of candidateFixtures.splice(0)) fixture.dispose();
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
@@ -20,7 +27,8 @@ afterEach(() => {
 
 describe("GateExecutionService", () => {
   it("projects only bounded gate evidence and artifact references", async () => {
-    const artifactDir = temporaryArtifactDirectory();
+    const fixture = temporaryCandidate();
+    const artifactDir = fixture.artifacts;
     const execute = vi.fn(async (_plan: Plan, state: ExecutionState) => {
       state.updateGateResult("one", {
         gate: "test",
@@ -35,6 +43,7 @@ describe("GateExecutionService", () => {
     const result = await new GateExecutionService(execute).run({
       plan: plan(["one"], ["test"]),
       artifactDir,
+      repoRoot: fixture.a,
     });
     expect(result.summary).toMatchObject({
       contract: "bounded-ax-v1",
@@ -47,14 +56,21 @@ describe("GateExecutionService", () => {
   });
 
   it("applies the same item and gate filters used by MCP", async () => {
+    const fixture = temporaryCandidate();
     const execute = vi.fn(async (_plan: Plan, state: ExecutionState, ...args: unknown[]) => {
       const options = args[5] as { onlyItem?: string; onlyGate?: string };
-      expect(options).toMatchObject({ onlyItem: "two", onlyGate: "lint" });
+      expect(args[4]).toBe(fixture.a);
+      expect(options).toMatchObject({
+        onlyItem: "two",
+        onlyGate: "lint",
+        resolvedGateWorkingDirectories: { [JSON.stringify(["two", "lint"])]: fixture.a },
+      });
       state.updateGateResult("two", { gate: "lint", status: "pass", attempts: 1 });
     });
     const result = await new GateExecutionService(execute).run({
       plan: plan(["one", "two"]),
-      artifactDir: temporaryArtifactDirectory(),
+      artifactDir: fixture.artifacts,
+      repoRoot: fixture.a,
       onlyItem: "two",
       onlyGate: "lint",
     });
@@ -101,11 +117,12 @@ describe("GateExecutionService", () => {
   );
 
   it("maps executor failures and excessive collections to stable bounded codes", async () => {
+    const fixture = temporaryCandidate();
     const failed = new GateExecutionService(async () => {
       throw new Error("secret command output");
     });
     await expect(
-      failed.run({ plan: plan(["one"]), artifactDir: temporaryArtifactDirectory() })
+      failed.run({ plan: plan(["one"]), artifactDir: fixture.artifacts, repoRoot: fixture.a })
     ).rejects.toMatchObject({ code: "GATE_EXECUTION_FAILED" });
 
     const oversized = new GateExecutionService(async () => undefined);
@@ -120,7 +137,40 @@ describe("GateExecutionService", () => {
       })
     );
   });
+
+  it.each(["items", "gates"] as const)(
+    "refuses excessive selected %s before repository lookup, executor entry or artifact creation",
+    async (collection) => {
+      const parent = temporaryArtifactDirectory();
+      const artifactDir = join(parent, "must-not-be-created");
+      const execute = vi.fn(async () => undefined);
+      const oversizedPlan =
+        collection === "items"
+          ? plan(Array.from({ length: 257 }, (_, index) => `item-${index}`))
+          : plan(
+              ["one"],
+              Array.from({ length: 65 }, (_, index) => `gate-${index}`)
+            );
+      await expect(
+        new GateExecutionService(execute).run({
+          plan: oversizedPlan,
+          artifactDir,
+          // An unavailable candidate would give another code if lookup ran first.
+          repoRoot: join(parent, "missing-repository"),
+        })
+      ).rejects.toMatchObject({ code: "GATE_RESULT_LIMIT_EXCEEDED" });
+      expect(execute).not.toHaveBeenCalled();
+      expect(existsSync(artifactDir)).toBe(false);
+      expect(containsManifest(parent)).toBe(false);
+    }
+  );
 });
+
+function temporaryCandidate(): CandidateFixture {
+  const fixture = candidateFixture();
+  candidateFixtures.push(fixture);
+  return fixture;
+}
 
 function plan(names: string[], gateNames = ["test", "lint"]): Plan {
   return {

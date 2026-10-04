@@ -1,26 +1,31 @@
 import { spawnSync } from "node:child_process";
+import { observeNpmPolicyRuntime, assertNpmPolicyRuntimeUnchanged } from "./npm-policy-runtime.mjs";
 
-const npmExecPath = process.env.npm_execpath;
-if (!npmExecPath) {
-  console.error("Run this check through npm so the active package-manager executable is explicit.");
-  process.exit(1);
+try {
+  if (process.argv.length !== 2)
+    throw new Error("Install-script policy check does not accept caller switches.");
+  const npmRuntime = observeNpmPolicyRuntime({ projectRoot: process.cwd() });
+  assertNpmPolicyRuntimeUnchanged(npmRuntime);
+
+  const result = spawnSync(
+    npmRuntime.nodeExecutable,
+    [npmRuntime.npmCliPath, "approve-scripts", "--allow-scripts-pending"],
+    { encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true, shell: false }
+  );
+  assertNpmPolicyRuntimeUnchanged(npmRuntime);
+
+  if (result.error)
+    throw new Error(`Unable to inspect npm install-script policy: ${result.error.message}`);
+
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  if (
+    result.status !== 0 ||
+    result.stdout?.trim() !== "No packages with unreviewed install scripts."
+  ) {
+    throw new Error(output || "npm did not return an install-script policy result.");
+  }
+  console.log(JSON.stringify({ status: "verified", pendingInstallScripts: 0, npmRuntime }));
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
 }
-
-const result = spawnSync(
-  process.execPath,
-  [npmExecPath, "approve-scripts", "--allow-scripts-pending"],
-  { encoding: "utf8" }
-);
-
-if (result.error) {
-  console.error(`Unable to inspect npm install-script policy: ${result.error.message}`);
-  process.exit(1);
-}
-
-const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-if (result.status !== 0 || !output.includes("No packages with unreviewed install scripts.")) {
-  console.error(output || "npm did not return an install-script policy result.");
-  process.exit(result.status || 1);
-}
-
-console.log(JSON.stringify({ status: "verified", pendingInstallScripts: 0 }));

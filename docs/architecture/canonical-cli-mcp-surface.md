@@ -94,6 +94,39 @@ already follow this rule. Several inline merge-weave/workspace MCP handlers do
 not yet share a service with their CLI counterpart; the matrix records the
 intended owner so follow-up work can be independently tested.
 
+### Opt-in gate artifact read-back
+
+Published MCP `status` and CLI `weave status` share the same optional artifact read-back.
+The top-level compatibility CLI `status` retains the option too. MCP uses the optional boolean
+`verifyArtifacts`; CLI uses the valueless `--verify-artifacts` flag:
+
+```bash
+lexrunner weave status --repo-root /path/to/candidate --plan plan.json \
+  --evidence /path/to/gate-evidence-manifest.json \
+  --evidence-sha256 sha256:<returned-manifest-digest> --verify-artifacts --json
+
+lexrunner gate status --repo-root /path/to/candidate \
+  --operation /path/to/operation.json \
+  --operation-sha256 sha256:<returned-operation-digest> --verify-artifacts --json
+```
+
+Adapters validate and pass this option to the owning application service; they do not implement
+hashing, artifact traversal or verification policy. Integration status requires both explicit
+evidence references when opting in. Omitted/false MCP values and a missing CLI flag retain the
+existing receipt-integrity behavior without artifact-file read-back. Non-boolean MCP values
+are rejected before repository or evidence I/O.
+
+Integration status places the bounded report at `evidence.artifactVerification`; durable
+`gates.status`/`gate status` place it at top-level `artifactVerification`. Human integration
+status displays `Artifact read-back: complete` or `incomplete`. A complete report still has
+`authority: "unverified"` and cannot mint merge eligibility. Missing or changed artifact bytes
+remain incomplete; an opted-in durable operation observation cannot claim completed/pass while
+that read-back is incomplete. The read option does not change descriptor identity, restart work,
+request cancellation or create coordination state.
+
+The source MCP aliases `weave_status` and `gates_status` use the same option. Start/cancel
+schemas and CLI subcommands do not accept it, even when the MCP value is false.
+
 ## Output contracts
 
 The JSON matrix defines three profiles:
@@ -114,6 +147,11 @@ listed in the matrix own implementation gaps.
 
 - Canonical `gate run` and MCP `gates.run` share `GateExecutionService` and its
   bounded summary. `gate execute` and top-level `execute` remain migration aliases.
+  CLI `--repo-root`, `--only-item`, and `--only-gate` map to MCP `repoRoot`,
+  `onlyItem`, and `onlyGate`. Invocation-local working directories are validated
+  against the physical candidate repository without rewriting frozen plan inputs.
+  Item dependencies require completed passing gates; selected subsets retain their
+  evidence scope and cannot qualify omitted required work.
 - Discovery, plan creation, integration status, and merge-order pairs now share bounded
   transport-neutral query services. Human output and legacy alias JSON remain adapter projections.
 - Canonical `weave apply`, MCP `merge.apply`, and compatibility `merge` share the persisted

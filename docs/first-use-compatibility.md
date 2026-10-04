@@ -30,6 +30,10 @@ authorize those tool calls separately through your client's controls.
 
 [Detailed MCP reference](../README.mcp.md) · [Tool contracts](AX.md)
 
+Maintainers adopting reviewed source changes can use the repository's
+[local dogfood installer](local-dogfood-install.md), which retains the exact
+dependency lock and native-script policy across the global installation boundary.
+
 ## Why does LexRunner depend on Lex 4.0.3?
 
 LexRunner 2.4.0 declares exact `@smartergpt/lex@4.0.3`. The

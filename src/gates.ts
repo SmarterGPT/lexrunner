@@ -1,6 +1,16 @@
 import { spawn } from "child_process";
 import { createHash } from "node:crypto";
-import { Plan, Gate, PlanItem, Policy, GateResult, GateStatus, RetryConfig } from "./schema.js";
+import { performance } from "node:perf_hooks";
+import {
+  Plan,
+  Gate,
+  PlanItem,
+  Policy,
+  GateResult,
+  GateStatus,
+  RetryConfig,
+  type PerformanceConfig,
+} from "./schema.js";
 import { ExecutionState } from "./executionState.js";
 import path from "path";
 import fs from "fs";
@@ -99,8 +109,11 @@ export async function executeGate(
   repoRoot?: string,
   turnCostTracker?: MergeWeaveTurnCost,
   suppressStdout: boolean = false,
-  candidateDigest?: string
+  candidateDigest?: string,
+  resolvedWorkingDirectory?: string,
+  shouldCancel?: () => boolean
 ): Promise<GateResult> {
+  if (shouldCancel?.()) return cancelledGateAdmission(gate.name);
   // Validate gate input before execution (unless explicitly skipped)
   if (!skipValidation && gate.input) {
     try {
@@ -127,6 +140,7 @@ export async function executeGate(
   let totalDuration = 0;
 
   for (let attempt = 1; attempt <= retryConfig.maxAttempts; attempt++) {
+    if (shouldCancel?.()) return stopGateRetries(gate.name, lastResult);
     // Add backoff delay for retries
     if (attempt > 1 && retryConfig.backoffSeconds > 0) {
       const delayMs = retryConfig.backoffSeconds * 1000;
@@ -135,8 +149,11 @@ export async function executeGate(
           `⏳ Retrying gate '${gate.name}' (attempt ${attempt}/${retryConfig.maxAttempts}) after ${retryConfig.backoffSeconds}s delay...`
         );
       }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (!(await waitForGateRetry(delayMs, shouldCancel))) {
+        return stopGateRetries(gate.name, lastResult);
+      }
     }
+    if (shouldCancel?.()) return stopGateRetries(gate.name, lastResult);
 
     const result = await executeGateAttempt(
       gate,
@@ -145,10 +162,19 @@ export async function executeGate(
       timeoutMs,
       repoRoot,
       itemName,
-      candidateDigest
+      candidateDigest,
+      resolvedWorkingDirectory,
+      shouldCancel
     );
+    if (result.attempts === 0 && shouldCancel?.()) {
+      return stopGateRetries(gate.name, lastResult);
+    }
     lastResult = result;
     totalDuration += result.duration || 0;
+
+    // Cooperative cancellation drains the admitted command. Its observed outcome
+    // stays intact, but a cancellation request never admits a retry.
+    if (shouldCancel?.()) return result;
 
     // Track gate latency in Turn Cost if tracker is provided
     if (turnCostTracker && result.duration) {
@@ -256,6 +282,40 @@ export async function executeGate(
   return lastResult!;
 }
 
+function cancelledGateAdmission(gateName: string): GateResult {
+  return {
+    gate: gateName,
+    status: "blocked",
+    duration: 0,
+    stdout: "",
+    stderr: "GATE_RUN_CANCELLED: command was not admitted",
+    artifacts: [],
+    attempts: 0,
+    lastAttempt: new Date().toISOString(),
+  };
+}
+
+function stopGateRetries(gateName: string, result: GateResult | null): GateResult {
+  if (!result) return cancelledGateAdmission(gateName);
+  // The retained attempt receipt describes an observed failure, not a future
+  // retry. Restore that outcome when cancellation stops the retry backoff.
+  return result.status === "retrying" ? { ...result, status: "fail" } : result;
+}
+
+async function waitForGateRetry(delayMs: number, shouldCancel?: () => boolean): Promise<boolean> {
+  if (!shouldCancel) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return true;
+  }
+  const deadline = performance.now() + delayMs;
+  while (!shouldCancel()) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 100)));
+  }
+  return false;
+}
+
 /**
  * Write flake report artifact when retries occur
  */
@@ -311,7 +371,9 @@ async function executeGateAttempt(
   timeoutMs: number,
   repoRoot?: string,
   itemName?: string,
-  candidateDigest?: string
+  candidateDigest?: string,
+  resolvedWorkingDirectory?: string,
+  shouldCancel?: () => boolean
 ): Promise<GateResult> {
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
@@ -342,7 +404,9 @@ async function executeGateAttempt(
         timeoutMs,
         repoRoot,
         itemName,
-        candidateDigest
+        candidateDigest,
+        resolvedWorkingDirectory,
+        shouldCancel
       );
   }
 }
@@ -359,11 +423,15 @@ async function executeLocalGate(
   timeoutMs: number,
   repoRoot?: string,
   itemName?: string,
-  candidateDigest?: string
+  candidateDigest?: string,
+  resolvedWorkingDirectory?: string,
+  shouldCancel?: () => boolean
 ): Promise<GateResult> {
   // Use gate.cwd if specified, otherwise fall back to repoRoot (captured at execution start).
   // If neither is available, use process.cwd() as a last resort fallback.
-  const workingDirectory = path.resolve(gate.cwd || repoRoot || process.cwd());
+  const workingDirectory = path.resolve(
+    resolvedWorkingDirectory ?? (gate.cwd || repoRoot || process.cwd())
+  );
   const gateArtifactDirectory = path.join(artifactDir, artifactIdentitySegment(gate.name));
   const environment = sanitizedGateEnvironment(gate.env);
   const shell = resolveLocalGateShell(gate.run);
@@ -458,7 +526,11 @@ async function executeLocalGate(
     });
   }
 
-  return new Promise((resolve) => {
+  // Command validation yields to the event loop. Recheck cancellation before
+  // creating a process; cancellation cannot terminate an already admitted gate.
+  if (shouldCancel?.()) return cancelledGateAdmission(gate.name);
+
+  return new Promise((resolve, reject) => {
     let timedOut = false;
     let settled = false;
     const childProcess = spawn(shellExecutable, shell.arguments, {
@@ -490,95 +562,105 @@ async function executeLocalGate(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      const cleanup = timeoutCleanup ? await timeoutCleanup : undefined;
-      const duration = Date.now() - startTime;
-      const stdout = Buffer.concat(stdoutChunks);
-      const stderr = Buffer.concat(stderrChunks);
-      const stdoutText = stdout.toString("utf8");
-      const stderrText = stderr.toString("utf8");
+      try {
+        const cleanup = timeoutCleanup ? await timeoutCleanup : undefined;
+        const duration = Date.now() - startTime;
+        const stdout = Buffer.concat(stdoutChunks);
+        const stderr = Buffer.concat(stderrChunks);
+        const stdoutText = stdout.toString("utf8");
+        const stderrText = stderr.toString("utf8");
 
-      const projectedStderr = timedOut
-        ? `GATE_TIMEOUT: exceeded ${timeoutMs}ms; descendantsReaped=${cleanup?.descendantsReaped ?? false}`
-        : stderrText.trim();
-      resolve(
-        finalizeLocalGateAttempt({
-          gate,
-          artifactBaselines,
-          gateArtifactDirectory,
-          workingDirectory,
-          attempt,
-          startedAt,
-          startTime,
-          shell,
-          shellExecutable,
-          shellIdentityBefore,
-          spawned: true,
-          stdout,
-          stderr,
-          result: {
-            gate: gate.name,
-            status: exitCode === 0 && !timedOut ? "pass" : "fail",
-            exitCode: timedOut ? 124 : (exitCode ?? 1),
-            duration,
-            stdout: stdoutText.trim(),
-            stderr: projectedStderr,
-            failureKind: timedOut ? "timeout" : exitCode === 0 ? undefined : "nonzero_exit",
-            ...(cleanup ? { timeoutCleanup: cleanup } : {}),
-            artifacts: [],
-            attempts: attempt,
-            lastAttempt: startedAt,
-          },
-          itemName,
-          timeoutMs,
-          candidateDigest,
-        })
-      );
+        const projectedStderr = timedOut
+          ? `GATE_TIMEOUT: exceeded ${timeoutMs}ms; descendantsReaped=${cleanup?.descendantsReaped ?? false}`
+          : stderrText.trim();
+        resolve(
+          finalizeLocalGateAttempt({
+            gate,
+            artifactBaselines,
+            gateArtifactDirectory,
+            workingDirectory,
+            attempt,
+            startedAt,
+            startTime,
+            shell,
+            shellExecutable,
+            shellIdentityBefore,
+            spawned: true,
+            stdout,
+            stderr,
+            result: {
+              gate: gate.name,
+              status: exitCode === 0 && !timedOut ? "pass" : "fail",
+              exitCode: timedOut ? 124 : (exitCode ?? 1),
+              duration,
+              stdout: stdoutText.trim(),
+              stderr: projectedStderr,
+              failureKind: timedOut ? "timeout" : exitCode === 0 ? undefined : "nonzero_exit",
+              ...(cleanup ? { timeoutCleanup: cleanup } : {}),
+              artifacts: [],
+              attempts: attempt,
+              lastAttempt: startedAt,
+            },
+            itemName,
+            timeoutMs,
+            candidateDigest,
+          })
+        );
+      } catch (error) {
+        // EventEmitter does not forward callback exceptions to this promise.
+        // Retention/cleanup failures must reach the item's terminal failure path.
+        reject(error);
+      }
     });
 
     childProcess.on("error", (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      const duration = Date.now() - startTime;
-      const stdout = Buffer.concat(stdoutChunks);
+      try {
+        const duration = Date.now() - startTime;
+        const stdout = Buffer.concat(stdoutChunks);
 
-      // Classify the error for better diagnostics
-      const classified = classifyError(error, `Gate '${gate.name}' process error`);
-      console.error(formatErrorForUser(classified));
+        // Classify the error for better diagnostics
+        const classified = classifyError(error, `Gate '${gate.name}' process error`);
+        console.error(formatErrorForUser(classified));
 
-      const projectedStderr = `${classified.context}: ${error.message}`;
-      resolve(
-        finalizeLocalGateAttempt({
-          gate,
-          artifactBaselines,
-          gateArtifactDirectory,
-          workingDirectory,
-          attempt,
-          startedAt,
-          startTime,
-          shell,
-          shellExecutable,
-          shellIdentityBefore,
-          spawned: false,
-          stdout,
-          stderr: Buffer.from(projectedStderr, "utf8"),
-          result: {
-            gate: gate.name,
-            status: "fail",
-            exitCode: 1,
-            duration,
-            stdout: stdout.toString("utf8").trim(),
-            stderr: projectedStderr,
-            failureKind: "spawn_error",
-            artifacts: [],
-            attempts: attempt,
-            lastAttempt: startedAt,
-          },
-          itemName,
-          timeoutMs,
-          candidateDigest,
-        })
-      );
+        const projectedStderr = `${classified.context}: ${error.message}`;
+        resolve(
+          finalizeLocalGateAttempt({
+            gate,
+            artifactBaselines,
+            gateArtifactDirectory,
+            workingDirectory,
+            attempt,
+            startedAt,
+            startTime,
+            shell,
+            shellExecutable,
+            shellIdentityBefore,
+            spawned: false,
+            stdout,
+            stderr: Buffer.from(projectedStderr, "utf8"),
+            result: {
+              gate: gate.name,
+              status: "fail",
+              exitCode: 1,
+              duration,
+              stdout: stdout.toString("utf8").trim(),
+              stderr: projectedStderr,
+              failureKind: "spawn_error",
+              artifacts: [],
+              attempts: attempt,
+              lastAttempt: startedAt,
+            },
+            itemName,
+            timeoutMs,
+            candidateDigest,
+          })
+        );
+      } catch (retentionError) {
+        reject(retentionError);
+      }
     });
   });
 }
@@ -951,6 +1033,8 @@ export async function executeItemGates(
     emitReceipt?: boolean;
     suppressStdout?: boolean;
     candidateDigest?: string;
+    resolvedGateWorkingDirectories?: Readonly<Record<string, string>>;
+    shouldCancel?: () => boolean;
   }
 ): Promise<GateResult[]> {
   if (!item.gates || item.gates.length === 0) {
@@ -968,6 +1052,10 @@ export async function executeItemGates(
   for (const gate of item.gates) {
     if (options?.onlyGate && gate.name !== options.onlyGate) {
       continue;
+    }
+    if (options?.shouldCancel?.()) {
+      executionState.blockNode(item.name, []);
+      break;
     }
     // Check if gate should be blocked based on policy
     if (shouldBlockGate(gate, policy)) {
@@ -1027,7 +1115,9 @@ export async function executeItemGates(
       repoRoot,
       options?.turnCostTracker,
       options?.suppressStdout,
-      options?.candidateDigest
+      options?.candidateDigest,
+      options?.resolvedGateWorkingDirectories?.[JSON.stringify([item.name, gate.name])],
+      options?.shouldCancel
     );
     result.timeoutMs = gate.timeoutMs ?? timeoutMs;
     results.push(result);
@@ -1099,6 +1189,8 @@ export async function executeGatesWithPolicy(
     emitReceipt?: boolean;
     suppressStdout?: boolean;
     candidateDigest?: string;
+    resolvedGateWorkingDirectories?: Readonly<Record<string, string>>;
+    shouldCancel?: () => boolean;
   }
 ): Promise<void> {
   // Capture repository root once at the start of execution
@@ -1128,7 +1220,7 @@ export async function executeGatesWithPolicy(
   };
 
   // Initialize performance monitoring
-  const perfConfig = policy.performance || {};
+  const perfConfig: Partial<PerformanceConfig> = policy.performance || {};
   const memoryMonitor = new MemoryMonitor(perfConfig);
 
   // Ensure base artifact directory exists
@@ -1141,94 +1233,142 @@ export async function executeGatesWithPolicy(
     (itemName) => !options?.onlyItem || itemName === options.onlyItem
   );
 
-  // Execute gates in dependency order with concurrency control
+  // Status labels are not invocation lifetime: a prerequisite selected for
+  // re-execution must settle in this invocation, even if it entered with PASS.
   const maxWorkers = policy.maxWorkers;
-  const pendingNodes = [...executionOrder];
-  const executing = new Set<string>();
-  const completedNodes = new Set<string>();
-
-  while (completedNodes.size < executionOrder.length) {
-    // Check memory and throttle if needed
-    await memoryMonitor.throttleIfNeeded();
-
-    // Find all eligible nodes that can start now
-    const eligible: string[] = [];
-    for (const node of pendingNodes) {
-      if (executing.size >= maxWorkers) {
-        break; // Hit worker limit
-      }
-      if (findNextEligibleNode([node], executing, executionState) === node) {
-        eligible.push(node);
-      }
-    }
-
-    // Start all eligible nodes
-    const promises: Promise<void>[] = [];
-    for (const node of eligible) {
-      const nodeIndex = pendingNodes.indexOf(node);
-      pendingNodes.splice(nodeIndex, 1);
-      executing.add(node);
-
-      // Update active workers metric
-      metrics.setGauge(METRICS.ACTIVE_WORKERS, executing.size);
-
-      // Report node start progress
-      if (progressReporter) {
-        progressReporter.nodeStart(node);
-      }
-
-      const item = plan.items.find((i) => i.name === node)!;
-      const promise = executeItemGates(
-        item,
-        policy,
-        executionState,
-        artifactDir,
-        effectiveTimeoutMs,
-        skipValidation,
-        workingDir,
-        options
-      )
-        .then(() => {
-          executing.delete(node);
-          completedNodes.add(node);
-          metrics.setGauge(METRICS.ACTIVE_WORKERS, executing.size);
-          executionState.propagateBlockedStatus();
-
-          // Report node completion progress
-          if (progressReporter) {
-            progressReporter.nodeComplete(node, true);
-          }
-        })
-        .catch((error) => {
-          console.error(`Error executing gates for ${node}:`, error);
-          executing.delete(node);
-          completedNodes.add(node);
-          metrics.setGauge(METRICS.ACTIVE_WORKERS, executing.size);
-
-          // Report node completion progress
-          if (progressReporter) {
-            progressReporter.nodeComplete(node, false);
-          }
-        });
-
-      promises.push(promise);
-    }
-
-    // Wait for at least one to complete before checking for more work
-    if (promises.length > 0) {
-      await Promise.race(promises);
-    } else if (executing.size > 0) {
-      // No new eligible nodes, but some are still executing
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    } else {
-      // No executing and no eligible - should not happen if graph is valid
-      break;
-    }
+  if (!Number.isInteger(maxWorkers) || maxWorkers < 1) {
+    throw new Error("Gate maxWorkers must be a positive integer");
+  }
+  const items = new Map(plan.items.map((item) => [item.name, item]));
+  const selected = new Set(executionOrder);
+  const pending = new Set(executionOrder);
+  const running = new Map<string, Promise<void>>();
+  const settled = new Set<string>();
+  for (const node of executionOrder) {
+    if (!executionState.getNodeResult(node)) throw new Error(`Node not found: ${node}`);
   }
 
-  // Final wait for any remaining workers
-  while (executing.size > 0) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  // Progress is observational; a broken observer must not abandon admitted jobs.
+  const reportProgress = (callback: () => void): void => {
+    try {
+      callback();
+    } catch {
+      console.warn("Gate progress reporting failed; execution results remain authoritative");
+    }
+  };
+  const block = (node: string, blockedBy: string[]): void => {
+    executionState.blockNode(node, blockedBy);
+    pending.delete(node);
+    settled.add(node);
+    reportProgress(() => progressReporter?.nodeComplete(node, false));
+  };
+
+  try {
+    while (pending.size > 0 || running.size > 0) {
+      // Poll memory throttling here so cancellation can stop admission even
+      // while memory remains high. Admitted commands keep their own timeout.
+      if (!options?.shouldCancel) {
+        await memoryMonitor.throttleIfNeeded();
+      } else {
+        while (perfConfig.throttleOnMemory !== false && memoryMonitor.isMemoryHigh()) {
+          if (options.shouldCancel()) break;
+          if (global.gc) global.gc();
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+      for (const node of pending) {
+        if (options?.shouldCancel?.()) {
+          // Clear previous selected invocation evidence before blocking it.
+          executionState.beginNodeExecution(node);
+          block(node, []);
+          continue;
+        }
+        const result = executionState.getNodeResult(node)!;
+        if (result.status === "fail" || result.status === "blocked") {
+          pending.delete(node);
+          settled.add(node);
+          reportProgress(() => progressReporter?.nodeComplete(node, false));
+          continue;
+        }
+        const item = items.get(node)!;
+        const blockedBy = item.deps.filter((dep) => {
+          // Unselected dependencies are never launched or assigned synthetic PASS.
+          // Their evidence must already be present in this explicit state.
+          const completed = !selected.has(dep) || settled.has(dep);
+          return completed && executionState.getNodeResult(dep)?.status !== "pass";
+        });
+        if (blockedBy.length > 0) {
+          block(node, blockedBy);
+          continue;
+        }
+        if (item.deps.some((dep) => selected.has(dep) && !settled.has(dep))) continue;
+        if (running.size >= maxWorkers) continue;
+
+        pending.delete(node);
+        // Reserve the slot before any observer or gate can execute.
+        const worker = Promise.resolve()
+          .then(async () => {
+            try {
+              // Only admitted selected items are reset. Omitted prerequisite
+              // evidence is preserved; skipped required commands are not PASS.
+              executionState.beginNodeExecution(node);
+              if (options?.shouldCancel?.()) {
+                executionState.blockNode(node, []);
+                return;
+              }
+              reportProgress(() => progressReporter?.nodeStart(node));
+              await executeItemGates(
+                item,
+                policy,
+                executionState,
+                artifactDir,
+                effectiveTimeoutMs,
+                skipValidation,
+                workingDir,
+                options
+              );
+              if (options?.shouldCancel?.()) {
+                executionState.blockNode(node, []);
+              } else {
+                executionState.completeNodeExecution(node);
+              }
+            } catch (error) {
+              executionState.markNodeExecutionFailed(node, error);
+              console.error(`Error executing gates for ${node}:`, error);
+            }
+          })
+          .finally(() => {
+            running.delete(node);
+            settled.add(node);
+            metrics.setGauge(METRICS.ACTIVE_WORKERS, running.size);
+            reportProgress(() =>
+              progressReporter?.nodeComplete(
+                node,
+                executionState.getNodeResult(node)?.status === "pass"
+              )
+            );
+          });
+        running.set(node, worker);
+        metrics.setGauge(METRICS.ACTIVE_WORKERS, running.size);
+      }
+
+      if (running.size > 0) {
+        await Promise.race(running.values());
+      } else if (pending.size > 0) {
+        // A validated DAG always makes progress. Fail closed for an unresolved
+        // explicit state rather than silently returning pending items as green.
+        for (const node of pending) {
+          block(
+            node,
+            items
+              .get(node)!
+              .deps.filter((dep) => executionState.getNodeResult(dep)?.status !== "pass")
+          );
+        }
+      }
+    }
+  } finally {
+    await Promise.all(running.values());
   }
 }
 
@@ -1248,11 +1388,8 @@ function buildExecutionOrder(plan: Plan): string[] {
 
     visiting.add(nodeName);
     const node = plan.items.find((item) => item.name === nodeName);
-    if (node) {
-      for (const dep of node.deps) {
-        visit(dep);
-      }
-    }
+    if (!node) throw new Error(`Dependency not found: ${nodeName}`);
+    for (const dep of node.deps) visit(dep);
     visiting.delete(nodeName);
     visited.add(nodeName);
     order.push(nodeName);
@@ -1263,32 +1400,6 @@ function buildExecutionOrder(plan: Plan): string[] {
   }
 
   return order;
-}
-
-/**
- * Find the next eligible node for execution
- */
-function findNextEligibleNode(
-  pending: string[],
-  executing: Set<string>,
-  executionState: ExecutionState
-): string | null {
-  for (const nodeName of pending) {
-    if (executing.has(nodeName)) continue;
-
-    const nodeResult = executionState.getNodeResult(nodeName);
-    if (!nodeResult) continue;
-
-    // Check if node is blocked
-    if (nodeResult.status === "blocked" || nodeResult.status === "fail") {
-      continue;
-    }
-
-    // Node is eligible if not blocked and not already executing
-    return nodeName;
-  }
-
-  return null;
 }
 
 /**

@@ -1,18 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, writeFile, rm, mkdir } from "fs/promises";
-import { join } from "path";
+import { mkdtemp, writeFile, rm, mkdir, realpath } from "fs/promises";
+import { basename, dirname, join, resolve } from "path";
 import { tmpdir } from "os";
 import { executeGate } from "../src/gates.js";
 import { Gate, Policy } from "../src/schema.js";
 import { resetCommandValidator, CommandWhitelist } from "../src/security/commandValidator.js";
 
 describe("Gate Execution with Command Validation", () => {
-  let testDir: string;
+  let testDir: string | undefined;
   let artifactDir: string;
   let whitelistPath: string;
+  let originalCwd: string;
+  let temporaryRoot: string;
 
   beforeEach(async () => {
-    testDir = await mkdtemp(join(tmpdir(), "gate-validation-test-"));
+    originalCwd = process.cwd();
+    testDir = undefined;
+    temporaryRoot = await realpath(tmpdir());
+    testDir = await mkdtemp(join(temporaryRoot, "gate-validation-test-"));
     artifactDir = join(testDir, "artifacts");
     whitelistPath = join(testDir, ".smartergpt", "allowed-commands.json");
 
@@ -26,8 +31,19 @@ describe("Gate Execution with Command Validation", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    // Windows holds the worker's current directory open until it leaves it.
+    process.chdir(originalCwd);
     resetCommandValidator();
+    if (testDir !== undefined) {
+      const cleanupTarget = resolve(testDir);
+      if (
+        dirname(cleanupTarget) !== temporaryRoot ||
+        !basename(cleanupTarget).startsWith("gate-validation-test-")
+      ) {
+        throw new Error("Refusing to remove a directory outside this fixture's temporary root.");
+      }
+      await rm(cleanupTarget, { recursive: true, force: true });
+    }
   });
 
   describe("Strict Mode Gate Execution", () => {

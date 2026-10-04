@@ -4,6 +4,57 @@ Gates are quality checks that must pass before code can be merged. This document
 
 ## Overview
 
+## Long-running operations and reconnects
+
+Use CLI `gate start` or MCP `gates.start` for local command gates that may outlive an
+MCP caller timeout. The existing `gate run` / `gates.run` interfaces remain synchronous.
+
+```powershell
+lexrunner gate start --repo-root D:/dev/project --plan plan.json --out artifacts/gates --idempotency-key qualification-1 --json
+lexrunner gate status --repo-root D:/dev/project --operation <operationFile> --operation-sha256 sha256:<digest> --json
+lexrunner gate cancel --repo-root D:/dev/project --operation <operationFile> --operation-sha256 sha256:<digest> --json
+```
+
+Start returns an immutable descriptor path and SHA-256. Retain both. The worker
+owns the frozen plan snapshot and bound repository candidate; it continues when
+the observer disconnects or the MCP server exits. No coordination database is used.
+Use an ignored artifact directory or one outside the checkout so unrelated artifact
+writes do not change the candidate being tested.
+
+The idempotency key is scoped to the physical output directory. Repeating the same
+key, directory and exact inputs returns the original operation without spawning
+commands again. A changed candidate, plan, selection, timeout or worker binding
+conflicts. An interrupted admission or stale heartbeat is unknown; it never
+authorizes automatic relaunch. Status validates terminal execution receipts and
+candidate identity rather than treating a saved success field as proof.
+
+Cancellation uses `after-active-gates`: the request stops new items, commands and
+retries, while active commands finish under their declared timeouts. The request
+response reports `cancelRequested`; only the worker reports terminal `cancelled`
+after admitted commands settle. Completed publication can win a race with an
+unobserved cancellation request. This mode has no prompt-termination or additional
+descendant-cleanup guarantee.
+Worker loss without a terminal artifact remains unknown, including after cancellation.
+
+On Windows, a status reader can briefly prevent heartbeat-file replacement. The
+worker retains the previous complete snapshot and retries on its next heartbeat;
+the collision does not cancel active work. Terminal diagnostics record deferred
+heartbeat publications. A stale snapshot still reports unknown worker freshness.
+
+Durable operations support local command gates with execution receipts. Container,
+CI-service, the special `vuln` gate and pre-execution `input` validators are refused
+before launch. The artifact filesystem must support atomic rename and hard links
+for complete, exclusive record publication. An incomplete admission is retained
+for inspection and never automatically relaunched. The ordinary
+portable execution contract does not establish protected native custody or merge
+authority. All operation observations retain `authority: "unverified"`.
+
+To read an existing synchronous gate manifest from a shared startup folder, pass
+`--repo-root` to `weave status`, or `repoRoot` to MCP `status`, together with its
+explicit evidence path and `sha256:` digest.
+
+## Command gates
+
 Gates in lexrunner execute commands to verify code quality, run tests, perform security scans, and more. Each gate can have:
 
 - A command to execute (`run`)

@@ -45,12 +45,12 @@ itself is tested against `inspectRegisteredCliSurface()` and the published MCP `
 
 <!-- BEGIN GENERATED AX SURFACE -->
 
-Matrix schema: **1.0.0**. Live inventory: **140 CLI registrations** and **34 MCP tools**.
+Matrix schema: **1.0.0**. Live inventory: **143 CLI registrations** and **37 MCP tools**.
 
 | Surface | Canonical | Compatibility | Deprecated | Internal only | Remove |
 | ------- | --------: | ------------: | ---------: | ------------: | -----: |
-| CLI     |       101 |             9 |         15 |            15 |      0 |
-| MCP     |        30 |             0 |          4 |             0 |      0 |
+| CLI     |       104 |             9 |         15 |            15 |      0 |
+| MCP     |        33 |             0 |          4 |             0 |      0 |
 
 ### Canonical CLI/MCP semantic pairs
 
@@ -64,6 +64,9 @@ Matrix schema: **1.0.0**. Live inventory: **140 CLI registrations** and **34 MCP
 | `doctor`                                   | `lexrunner workspace doctor`              | `WorkspaceDiagnosticsService`           |
 | `end_attempt_worker`                       | `lexrunner attempt worker end`            | `AgentWorkWorkerSessionService`         |
 | `gates.run`                                | `lexrunner gate run`                      | `GateExecutionService`                  |
+| `gates.start`                              | `lexrunner gate start`                    | `GateOperationService`                  |
+| `gates.status`                             | `lexrunner gate status`                   | `GateOperationService`                  |
+| `gates.cancel`                             | `lexrunner gate cancel`                   | `GateOperationService`                  |
 | `get_attempt_acceptance`                   | `lexrunner attempt acceptance status`     | `AgentWorkAttemptAcceptanceService`     |
 | `get_attempt_receipt`                      | `lexrunner attempt receipt status`        | `AgentWorkAttemptReceiptService`        |
 | `get_attempt_status`                       | `lexrunner attempt status`                | `AgentWorkLifecycleService`             |

@@ -62,6 +62,9 @@ describe("Execute Command", () => {
 
       // Core options
       expect(options).toContain("--plan");
+      expect(options).toContain("--repo-root");
+      expect(options).toContain("--only-item");
+      expect(options).toContain("--only-gate");
       expect(options).toContain("--artifact-dir");
       expect(options).toContain("--timeout");
       expect(options).toContain("--dry-run");

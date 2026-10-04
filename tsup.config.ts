@@ -30,6 +30,16 @@ const shared: Options = {
 export default defineConfig([
   {
     ...shared,
+    entry: ["src/gate-worker.ts"],
+    format: ["esm"],
+    splitting: false,
+    // Keep the standalone worker within the existing packed-size budget.
+    minify: true,
+    dts: false,
+    clean: false,
+  },
+  {
+    ...shared,
     format: ["esm"],
     dts: {
       // Public package-schema entries compile canonical portable definitions from

@@ -45,10 +45,19 @@ The packaging job:
    repository URLs;
 4. rejects paths outside the allowlist, more than 120 files, or more than 7 MB
    unpacked;
-5. installs the real tarball into a clean consumer, preferring the npm cache; and
+5. installs the real tarball into a clean consumer with its own explicit strict
+   script policy and refreshed registry metadata; and
 6. smokes ESM imports and CommonJS require (including the projection contract
    and planner), the CLI bin, a bounded read-only Attempt status, and MCP
    `tools/list`, including all published Attempt lifecycle tools.
+
+The check qualifies the actual pinned npm runtime and proves native SQLite
+usability and refusal of an unreviewed script package that claims an approved
+native package name/version. The inspected immutable Runner tarball receives
+an exact owned loopback URL approval; Lex's scripts remain denied. The loopback
+transport avoids npm 11.16.0's Windows `file:` policy mismatch, and preserves the
+real installed executable shims that npm otherwise suppresses for a denied package.
+See [local adoption and installation boundaries](../local-dogfood-install.md).
 
 The separate `release:publish:check` gate runs npm's own publication dry-run and fails on metadata
 normalization warnings. For a clean signed tag it prints the final command but never publishes;

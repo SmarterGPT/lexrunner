@@ -81,6 +81,33 @@ function sharedServiceError(error, tool, fallbackCode) {
 
 // MCP Tool implementations
 const tools = {
+  ...Object.fromEntries(
+    ["start", "status", "cancel"].map((operation) => [
+      "gates." + operation,
+      {
+        description:
+          operation === "start"
+            ? "Start durable gate work; reuse the same idempotency key after a lost acknowledgement"
+            : operation === "cancel"
+              ? "Request cancellation after active gates settle; stops future command admission"
+              : "Observe an explicit gate operation without restarting commands or granting merge authority",
+        inputSchema:
+          operation === "start"
+            ? core.GateOperationStartJsonSchema
+            : operation === "status"
+              ? core.GateOperationStatusJsonSchema
+              : core.GateOperationObserveJsonSchema,
+        call: async (args) => {
+          try {
+            const result = await new core.GateOperationService()[operation](args);
+            return { content: [{ type: "text", text: JSON.stringify(result) }] };
+          } catch (error) {
+            throw sharedServiceError(error, "gates." + operation, "GATE_OPERATION_FAILED");
+          }
+        },
+      },
+    ])
+  ),
   preflight_attempt_containment: {
     description:
       "Read physical-containment capability before constructing an agent-work Attempt packet",
@@ -442,7 +469,8 @@ const tools = {
   },
 
   "gates.run": {
-    description: "Execute gates for plan items",
+    description:
+      "Execute short gates synchronously; use gates.start for long or reconnectable work",
     inputSchema: {
       type: "object",
       properties: {
@@ -451,12 +479,20 @@ const tools = {
           description:
             "Explicit plan.json path (default: repository plan.json, then profile runner fallback)",
         },
+        repoRoot: {
+          type: "string",
+          minLength: 1,
+          maxLength: 4096,
+          description: "Explicit candidate repository root (default: server startup cwd)",
+        },
         onlyItem: {
           type: "string",
+          minLength: 1,
           description: "Run gates for specific item only",
         },
         onlyGate: {
           type: "string",
+          minLength: 1,
           description: "Run specific gate only",
         },
         outDir: {
@@ -492,6 +528,7 @@ const tools = {
         const summary = (
           await new core.GateExecutionService().run({
             plan: artifact.plan,
+            repoRoot: args.repoRoot,
             artifactDir: outDir,
             timeoutMs: args.timeoutMs,
             onlyItem: args.onlyItem,
@@ -906,6 +943,12 @@ const tools = {
           description:
             "Explicit plan.json path (default: repository plan.json, then profile runner fallback)",
         },
+        repoRoot: {
+          type: "string",
+          minLength: 1,
+          maxLength: 4096,
+          description: "Explicit candidate repository root (default: server current directory)",
+        },
         evidenceFile: {
           type: "string",
           minLength: 1,
@@ -917,10 +960,32 @@ const tools = {
           pattern: "^sha256:[a-f0-9]{64}$",
           description: "Expected SHA-256 returned with the gate evidence manifest",
         },
+        verifyArtifacts: {
+          type: "boolean",
+          description:
+            "Read back referenced artifact bytes; requires explicit evidenceFile and evidenceSha256",
+        },
       },
     },
     call: async (args) => {
       try {
+        if (args.verifyArtifacts !== undefined && typeof args.verifyArtifacts !== "boolean") {
+          throw new Error("verifyArtifacts must be a boolean");
+        }
+        if (
+          args.verifyArtifacts === true &&
+          (args.evidenceFile === undefined || args.evidenceSha256 === undefined)
+        ) {
+          throw new Error("verifyArtifacts requires explicit evidenceFile and evidenceSha256");
+        }
+        if (
+          args.repoRoot !== undefined &&
+          (typeof args.repoRoot !== "string" ||
+            args.repoRoot.length < 1 ||
+            Buffer.byteLength(args.repoRoot, "utf8") > 4096)
+        ) {
+          throw new Error("repoRoot is invalid");
+        }
         const hasEvidenceFile = args.evidenceFile !== undefined;
         const hasEvidenceDigest = args.evidenceSha256 !== undefined;
         if (hasEvidenceFile !== hasEvidenceDigest) {
@@ -936,9 +1001,13 @@ const tools = {
         ) {
           throw new Error("evidenceFile or evidenceSha256 is invalid");
         }
+        const repoRoot =
+          args.repoRoot === undefined
+            ? process.cwd()
+            : core.resolveGateRepositoryRoot(args.repoRoot);
         const artifact = new core.PlanArtifactService().resolve({
           planFile: args.planFile,
-          workingDir: process.cwd(),
+          workingDir: repoRoot,
           profileDir: config.profileDir,
         });
         const result = {
@@ -946,9 +1015,10 @@ const tools = {
             artifact.plan,
             args.evidenceFile
               ? {
-                  evidenceFile: args.evidenceFile,
+                  evidenceFile: resolve(repoRoot, args.evidenceFile),
                   evidenceSha256: args.evidenceSha256,
-                  repoRoot: process.cwd(),
+                  repoRoot,
+                  verifyArtifacts: args.verifyArtifacts,
                 }
               : undefined
           ),

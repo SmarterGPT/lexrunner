@@ -62,6 +62,7 @@ export type PlanCreateArgs = z.infer<typeof PlanCreateArgs>;
 
 export const GatesRunArgs = z.object({
   planFile: z.string().min(1).max(4096).optional(),
+  repoRoot: z.string().min(1).max(4096).optional(),
   onlyItem: z.string().optional(),
   onlyGate: z.string().optional(),
   outDir: z.string().optional(),
@@ -156,14 +157,19 @@ export type DiscoverArgs = z.infer<typeof DiscoverArgs>;
 export const StatusArgs = z
   .object({
     planFile: z.string().optional(),
+    repoRoot: z.string().min(1).max(4096).optional(),
     evidenceFile: z.string().min(1).max(4096).optional(),
     evidenceSha256: z
       .string()
       .regex(/^sha256:[a-f0-9]{64}$/u)
       .optional(),
+    verifyArtifacts: z.boolean().optional(),
   })
   .refine((value) => Boolean(value.evidenceFile) === Boolean(value.evidenceSha256), {
     message: "evidenceFile and evidenceSha256 must be supplied together",
+  })
+  .refine((value) => value.verifyArtifacts !== true || Boolean(value.evidenceFile), {
+    message: "verifyArtifacts requires explicit evidenceFile and evidenceSha256",
   });
 export type StatusArgs = z.infer<typeof StatusArgs>;
 

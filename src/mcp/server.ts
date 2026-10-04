@@ -25,6 +25,16 @@ import {
 } from "../application/gate-execution-service.js";
 import { GateEvidenceServiceError } from "../application/gate-evidence-service.js";
 import {
+  GateOperationService,
+  GateOperationStartArgs,
+  GateOperationObserveArgs,
+  GateOperationStatusArgs,
+  GateOperationStartJsonSchema,
+  GateOperationObserveJsonSchema,
+  GateOperationStatusJsonSchema,
+} from "../application/gate-operation-service.js";
+import { resolveGateRepositoryRoot } from "../application/gate-candidate-identity.js";
+import {
   DiscoveryQueryService,
   IntegrationQueryServiceError,
   IntegrationStatusQueryService,
@@ -462,7 +472,8 @@ function createServer(options?: McpServerOptions): Server {
         },
         {
           name: "gates_run",
-          description: "Execute gates for plan items",
+          description:
+            "Execute short gates synchronously; use gates_start for long or reconnectable work",
           inputSchema: {
             type: "object",
             properties: {
@@ -471,12 +482,20 @@ function createServer(options?: McpServerOptions): Server {
                 description:
                   "Explicit plan.json path (default: repository plan.json, then profile runner fallback)",
               },
+              repoRoot: {
+                type: "string",
+                minLength: 1,
+                maxLength: 4096,
+                description: "Explicit candidate repository root (default: server startup cwd)",
+              },
               onlyItem: {
                 type: "string",
+                minLength: 1,
                 description: "Run gates for specific item only",
               },
               onlyGate: {
                 type: "string",
+                minLength: 1,
                 description: "Run specific gate only",
               },
               outDir: {
@@ -492,6 +511,24 @@ function createServer(options?: McpServerOptions): Server {
               },
             },
           },
+        },
+        {
+          name: "gates_start",
+          description:
+            "Start durable gate execution; reuse the same idempotency key after a lost acknowledgement",
+          inputSchema: { ...GateOperationStartJsonSchema, type: "object" },
+        },
+        {
+          name: "gates_status",
+          description:
+            "Observe one explicit gate operation without restarting commands or granting merge authority",
+          inputSchema: { ...GateOperationStatusJsonSchema, type: "object" },
+        },
+        {
+          name: "gates_cancel",
+          description:
+            "Request cancellation after active gates settle; stops future command admission",
+          inputSchema: { ...GateOperationObserveJsonSchema, type: "object" },
         },
         {
           name: "merge_apply",
@@ -819,6 +856,13 @@ function createServer(options?: McpServerOptions): Server {
                 description:
                   "Explicit plan.json path (default: repository plan.json, then profile runner fallback)",
               },
+              repoRoot: {
+                type: "string",
+                minLength: 1,
+                maxLength: 4096,
+                description:
+                  "Explicit candidate repository root (default: server current directory)",
+              },
               evidenceFile: {
                 type: "string",
                 minLength: 1,
@@ -829,6 +873,11 @@ function createServer(options?: McpServerOptions): Server {
                 type: "string",
                 pattern: "^sha256:[a-f0-9]{64}$",
                 description: "Expected SHA-256 returned with the gate evidence manifest",
+              },
+              verifyArtifacts: {
+                type: "boolean",
+                description:
+                  "Read back referenced artifact bytes; requires explicit evidenceFile and evidenceSha256",
               },
             },
           },
@@ -1149,6 +1198,10 @@ function createServer(options?: McpServerOptions): Server {
       // Gate tools
       case "gates_run":
         return await handleGatesRun(args as GatesRunArgs);
+      case "gates_start":
+      case "gates_status":
+      case "gates_cancel":
+        return await handleGateOperation(name, args);
 
       // Weave tools
       case "merge_apply":
@@ -1790,6 +1843,7 @@ async function handleGatesRun(
     const summary = (
       await new GateExecutionService().run({
         plan: artifact.plan,
+        repoRoot: validatedArgs.repoRoot,
         artifactDir: outDir,
         timeoutMs: validatedArgs.timeoutMs,
         onlyItem: validatedArgs.onlyItem,
@@ -1824,6 +1878,29 @@ async function handleGatesRun(
       throw error;
     }
     throwMcpToolError(ErrorCode.InternalError, "gates.run", error, "run gates");
+  }
+}
+
+async function handleGateOperation(name: string, args: unknown) {
+  try {
+    const service = new GateOperationService();
+    const result =
+      name === "gates_start"
+        ? await service.start(GateOperationStartArgs.parse(args))
+        : name === "gates_cancel"
+          ? service.cancel(GateOperationObserveArgs.parse(args))
+          : service.status(GateOperationStatusArgs.parse(args));
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
+      throwMcpAXError(
+        ErrorCode.InternalError,
+        mcpToolError(error.code, error instanceof Error ? error.message : "Gate operation failed", {
+          tool: name,
+        })
+      );
+    }
+    throwMcpToolError(ErrorCode.InternalError, name, error, "observe gate operation");
   }
 }
 
@@ -2434,22 +2511,27 @@ async function handleDiscover(args: {
  */
 async function handleStatus(args: {
   planFile?: string;
+  repoRoot?: string;
   evidenceFile?: string;
   evidenceSha256?: string;
+  verifyArtifacts?: boolean;
 }): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
+    const repoRoot =
+      args.repoRoot === undefined ? process.cwd() : resolveGateRepositoryRoot(args.repoRoot);
     const artifact = new PlanArtifactService().resolve({
       planFile: args.planFile,
-      workingDir: process.cwd(),
+      workingDir: repoRoot,
       profileDir: getMCPEnvironment().LEX_PR_PROFILE_DIR,
     });
     const status = new IntegrationStatusQueryService().run(
       artifact.plan,
       args.evidenceFile && args.evidenceSha256
         ? {
-            evidenceFile: args.evidenceFile,
+            evidenceFile: path.resolve(repoRoot, args.evidenceFile),
             evidenceSha256: args.evidenceSha256,
-            repoRoot: process.cwd(),
+            repoRoot,
+            verifyArtifacts: args.verifyArtifacts,
           }
         : undefined
     );

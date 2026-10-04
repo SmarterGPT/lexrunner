@@ -25,6 +25,18 @@ export class GateCandidateIdentityError extends Error {
   }
 }
 
+/** Resolve the physical Git root without hashing a candidate or changing process cwd. */
+export function resolveGateRepositoryRoot(cwd: string): string {
+  try {
+    const git = createGitRunner(cwd);
+    const root = realpathSync(git.text(cwd, ["rev-parse", "--show-toplevel"]).trim());
+    git.assertUnchanged();
+    return root;
+  } catch {
+    throw new GateCandidateIdentityError("Gate repository root is unavailable");
+  }
+}
+
 /** Capture the exact Git candidate tested by a gate without mutating the index or worktree. */
 export function captureGateCandidateIdentity(
   cwd: string,
