@@ -162,6 +162,20 @@ describe("packed consumer install-script boundary", () => {
 describe("owned packed npm process shutdown", () => {
   afterEach(() => vi.useRealTimers());
   const start = (overrides = {}) => {
+    // Track only this command's timers, not Vitest/HTTP/client timers sharing the clock.
+    const activeTimers = new Set<ReturnType<typeof setTimeout>>();
+    const scheduleTimeout = vi.fn((callback: () => void, delay: number) => {
+      const timer = setTimeout(() => {
+        activeTimers.delete(timer);
+        callback();
+      }, delay);
+      activeTimers.add(timer);
+      return timer;
+    });
+    const cancelTimeout = vi.fn((timer: ReturnType<typeof setTimeout> | undefined) => {
+      if (timer !== undefined) activeTimers.delete(timer);
+      clearTimeout(timer);
+    });
     const child = new EventEmitter() as EventEmitter & {
       pid: number;
       stdout: EventEmitter;
@@ -179,17 +193,19 @@ describe("owned packed npm process shutdown", () => {
       consumerRoot: "fixture-consumer",
       lifecycleNodeOptions: '""',
       spawnProcess,
+      scheduleTimeout,
+      cancelTimeout,
       commandTimeoutMs: 1_000,
       releaseTimeoutMs: 100,
       maxOutputBytes: 5,
       ...overrides,
     });
-    return { child, promise, spawnProcess };
+    return { child, promise, spawnProcess, activeTimers, scheduleTimeout, cancelTimeout };
   };
 
   it("keeps failure pending until the owned close event after output overflow", async () => {
     vi.useFakeTimers();
-    const { child, promise } = start();
+    const { child, promise, activeTimers } = start();
     let settled = false;
     const failure = promise.then(
       () => undefined,
@@ -208,12 +224,12 @@ describe("owned packed npm process shutdown", () => {
       resourceRelease: "uncertain",
       retainedConsumerRoot: "fixture-consumer",
     });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(activeTimers.size).toBe(0);
   });
 
   it("bounds command duration while awaiting owned close before timeout rejection", async () => {
     vi.useFakeTimers();
-    const { child, promise } = start();
+    const { child, promise, activeTimers, scheduleTimeout, cancelTimeout } = start();
     let settled = false;
     const failure = promise.then(
       () => undefined,
@@ -225,14 +241,19 @@ describe("owned packed npm process shutdown", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(child.kill).toHaveBeenCalledOnce();
     expect(settled).toBe(false);
+    expect(activeTimers.size).toBe(1);
+    expect(scheduleTimeout.mock.calls.map(([, delay]) => delay)).toEqual([1_000, 100]);
     child.emit("close", null, "SIGTERM");
     expect((await failure).message).toContain("exceeded 1000ms");
-    expect(vi.getTimerCount()).toBe(0);
+    expect(activeTimers.size).toBe(0);
+    for (const scheduled of scheduleTimeout.mock.results) {
+      expect(cancelTimeout).toHaveBeenCalledWith(scheduled.value);
+    }
   });
 
   it("reports uncertain release rather than authorizing cleanup when owned close never arrives", async () => {
     vi.useFakeTimers();
-    const { child, promise } = start();
+    const { child, promise, activeTimers } = start();
     const failure = promise.then(
       () => undefined,
       (error) => error
@@ -243,23 +264,23 @@ describe("owned packed npm process shutdown", () => {
       ownedProcessClosed: false,
       resourceRelease: "uncertain",
     });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(activeTimers.size).toBe(0);
   });
 
   it("clears the command timer when the owned process completes normally", async () => {
     vi.useFakeTimers();
-    const { child, promise } = start();
+    const { child, promise, activeTimers } = start();
     child.stdout.emit("data", Buffer.from("ok"));
     child.emit("close", 0, null);
     expect(await promise).toEqual({ status: "passed", output: "ok" });
     expect(child.kill).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(activeTimers.size).toBe(0);
   });
 
   it("binds the actual owned spawn arguments and environment to the same observed lifecycle value", async () => {
     vi.useFakeTimers();
     const lifecycleNodeOptions = "--max-old-space-size=2048";
-    const { child, promise, spawnProcess } = start({
+    const { child, promise, spawnProcess, activeTimers } = start({
       lifecycleNodeOptions,
       env: {
         NODE_OPTIONS: "--import=unreviewed-direct.mjs",
@@ -278,6 +299,38 @@ describe("owned packed npm process shutdown", () => {
     );
     child.emit("close", 0, null);
     await expect(promise).resolves.toMatchObject({ status: "passed" });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(activeTimers.size).toBe(0);
+  });
+
+  it("clears both owned timers while an unrelated timer remains active", async () => {
+    vi.useFakeTimers();
+    const unrelated = vi.fn();
+    const unrelatedTimer = setTimeout(unrelated, 5_000);
+    const { child, promise, activeTimers, scheduleTimeout, cancelTimeout } = start();
+    const failure = promise.then(
+      () => undefined,
+      (error) => error
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(child.kill).toHaveBeenCalledOnce();
+      expect(activeTimers.size).toBe(1);
+      child.emit("close", null, "SIGTERM");
+      expect(await failure).toMatchObject({
+        ownedProcessClosed: true,
+        resourceRelease: "uncertain",
+      });
+      expect(activeTimers.size).toBe(0);
+      for (const scheduled of scheduleTimeout.mock.results) {
+        expect(cancelTimeout).toHaveBeenCalledWith(scheduled.value);
+      }
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      expect(unrelated).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(unrelated).toHaveBeenCalledOnce();
+      expect(child.kill).toHaveBeenCalledOnce();
+    } finally {
+      clearTimeout(unrelatedTimer);
+    }
   });
 });

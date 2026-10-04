@@ -22,6 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 - Evidence status accepts an explicit repository root from a non-Git MCP startup
   folder, while retaining candidate/hash validation and unverified merge authority.
+- CI package qualification activates the exact npm runtime required by its policy
+  observer. Packed-process timeout tests track owned timers independently of the
+  test runner's ambient timers.
 
 ## [2.4.0] - 2026-09-09
 

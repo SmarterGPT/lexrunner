@@ -161,6 +161,8 @@ export function runOwnedPackedInstallCommand({
   env = process.env,
   lifecycleNodeOptions,
   spawnProcess = spawn,
+  scheduleTimeout = setTimeout,
+  cancelTimeout = clearTimeout,
   commandTimeoutMs = 120_000,
   releaseTimeoutMs = 5_000,
   maxOutputBytes = 10 * 1024 * 1024,
@@ -187,8 +189,8 @@ export function runOwnedPackedInstallCommand({
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
-      clearTimeout(commandTimer);
-      clearTimeout(releaseTimer);
+      cancelTimeout(commandTimer);
+      cancelTimeout(releaseTimer);
       if (error) reject(error);
       else resolve(result);
     };
@@ -200,8 +202,8 @@ export function runOwnedPackedInstallCommand({
         retainedConsumerRoot: release === "uncertain" ? consumerRoot : undefined,
       });
     const awaitOwnedClose = () => {
-      clearTimeout(commandTimer);
-      releaseTimer = setTimeout(() => {
+      cancelTimeout(commandTimer);
+      releaseTimer = scheduleTimeout(() => {
         finish(
           failureResult(
             `${failure.message}; owned npm process did not close within ${releaseTimeoutMs}ms; resource release is uncertain.`,
@@ -258,7 +260,7 @@ export function runOwnedPackedInstallCommand({
         );
       } else finish(undefined, { status: "passed", output });
     });
-    commandTimer = setTimeout(
+    commandTimer = scheduleTimeout(
       () => stopOwnedProcess(new Error(`Packed consumer install exceeded ${commandTimeoutMs}ms`)),
       commandTimeoutMs
     );
