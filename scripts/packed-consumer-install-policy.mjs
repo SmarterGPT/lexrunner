@@ -4,6 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { assertNpmPolicyRuntimeUnchanged } from "./npm-policy-runtime.mjs";
 
@@ -140,12 +141,14 @@ export async function servePackedTarball(tarballPath) {
   };
 }
 
-export async function installPackedConsumer({ npmRuntime, consumerRoot }) {
+export async function installPackedConsumer({ npmRuntime, consumerRoot, env = process.env }) {
   assertNpmPolicyRuntimeUnchanged(npmRuntime);
   const result = await runOwnedPackedInstallCommand({
     nodeExecutable: npmRuntime.nodeExecutable,
     npmCliPath: npmRuntime.npmCliPath,
     consumerRoot,
+    env,
+    lifecycleNodeOptions: npmRuntime.lifecycleNodeOptions,
   });
   assertNpmPolicyRuntimeUnchanged(npmRuntime);
   return result;
@@ -155,18 +158,25 @@ export function runOwnedPackedInstallCommand({
   nodeExecutable,
   npmCliPath,
   consumerRoot,
+  env = process.env,
+  lifecycleNodeOptions,
   spawnProcess = spawn,
   commandTimeoutMs = 120_000,
   releaseTimeoutMs = 5_000,
   maxOutputBytes = 10 * 1024 * 1024,
 }) {
   return new Promise((resolve, reject) => {
-    const child = spawnProcess(nodeExecutable, [npmCliPath, ...packedConsumerInstallArguments()], {
-      cwd: consumerRoot,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      shell: false,
-    });
+    const child = spawnProcess(
+      nodeExecutable,
+      [npmCliPath, ...packedConsumerInstallArguments(lifecycleNodeOptions)],
+      {
+        cwd: consumerRoot,
+        env: ownedNpmLifecycleEnvironment(env, lifecycleNodeOptions),
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        shell: false,
+      }
+    );
     let output = "";
     let bytes = 0;
     let failure;
@@ -266,13 +276,36 @@ export function observePackedArtifactPostinstall(sourceManifest, installResult) 
   return { event: "postinstall", status: installResult.status, output: reviewedPostinstallOutput };
 }
 
-export function packedConsumerInstallArguments() {
+export function ownedNpmLifecycleEnvironment(env, lifecycleNodeOptions) {
+  assertLifecycleNodeOptions(lifecycleNodeOptions);
+  return {
+    ...Object.fromEntries(
+      Object.entries(env).filter(
+        ([name]) => !["npm_config_node_options", "node_options"].includes(name.toLowerCase())
+      )
+    ),
+    NODE_OPTIONS: lifecycleNodeOptions,
+    npm_config_node_options: lifecycleNodeOptions,
+  };
+}
+
+function assertLifecycleNodeOptions(lifecycleNodeOptions) {
+  if (typeof lifecycleNodeOptions !== "string" || !lifecycleNodeOptions.trim()) {
+    throw new Error("Packed lifecycle requires the explicit qualified nonblank node-options value");
+  }
+}
+
+export function packedConsumerInstallArguments(lifecycleNodeOptions) {
+  assertLifecycleNodeOptions(lifecycleNodeOptions);
   return [
     "install",
     "--global=false",
     "--strict-allow-scripts",
     "--ignore-scripts=false",
     "--dangerously-allow-all-scripts=false",
+    // npm converts effective node-options config into lifecycle NODE_OPTIONS.
+    // The qualified nonblank value survives npm's export to nested npm scripts.
+    `--node-options=${lifecycleNodeOptions}`,
     "--foreground-scripts",
     "--prefer-online",
     "--no-audit",
@@ -316,10 +349,16 @@ export async function smokeUnreviewedInstallScript({ npmRuntime, fixtureRoot, co
         "pack",
         "--json",
         "--ignore-scripts",
+        `--node-options=${npmRuntime.lifecycleNodeOptions}`,
         "--pack-destination",
         fixtureRoot,
       ],
-      { cwd: fixturePackageRoot, encoding: "utf8", timeout: 30_000 }
+      {
+        cwd: fixturePackageRoot,
+        env: ownedNpmLifecycleEnvironment(process.env, npmRuntime.lifecycleNodeOptions),
+        encoding: "utf8",
+        timeout: 30_000,
+      }
     )
   )[0];
   fs.writeFileSync(
@@ -332,10 +371,15 @@ export async function smokeUnreviewedInstallScript({ npmRuntime, fixtureRoot, co
     npmRuntime.nodeExecutable,
     [
       npmRuntime.npmCliPath,
-      ...packedConsumerInstallArguments(),
+      ...packedConsumerInstallArguments(npmRuntime.lifecycleNodeOptions),
       path.join(fixtureRoot, packed.filename),
     ],
-    { cwd: fixtureConsumerRoot, encoding: "utf8", timeout: 30_000 }
+    {
+      cwd: fixtureConsumerRoot,
+      env: ownedNpmLifecycleEnvironment(process.env, npmRuntime.lifecycleNodeOptions),
+      encoding: "utf8",
+      timeout: 30_000,
+    }
   );
   if (result.error) throw result.error;
   if (fs.existsSync(markerPath)) {
@@ -404,4 +448,182 @@ export async function smokeUnreviewedInstallScript({ npmRuntime, fixtureRoot, co
     fileDenialMatched: fileDenialVerdict === false,
     exactLoopbackDenial: "installed_with_postinstall_denied",
   };
+}
+
+export async function smokeLifecycleNodeOptionsIsolation({
+  npmRuntime,
+  fixtureRoot,
+  sourceManifest,
+}) {
+  reviewPackedArtifactLifecycle(sourceManifest);
+  const scenarios = [];
+  const artifacts = [];
+  // Spawn the observed runtime without cmd's leading-executable quote rules.
+  // Base64 path literals keep shell metacharacters out of this inspected body.
+  const nestedProgram = [
+    "const{spawnSync}=require('node:child_process')",
+    `const node=Buffer.from('${Buffer.from(npmRuntime.nodeExecutable).toString("base64")}','base64').toString()`,
+    `const npm=Buffer.from('${Buffer.from(npmRuntime.npmCliPath).toString("base64")}','base64').toString()`,
+    "const result=spawnSync(node,[npm,'run','inspected-postinstall'],{stdio:'inherit',shell:false})",
+    "if(result.error)throw result.error",
+    "process.exit(result.status??1)",
+  ].join(";");
+  const nestedPostinstall = `node -e "${nestedProgram}"`;
+  for (const shape of ["direct_node", "nested_npm"]) {
+    const shapeRoot = path.join(fixtureRoot, shape);
+    const fixturePackageRoot = path.join(shapeRoot, "package");
+    fs.mkdirSync(fixturePackageRoot, { recursive: true });
+    const scripts =
+      shape === "direct_node"
+        ? { postinstall: reviewedPostinstall, prepare: "husky" }
+        : { postinstall: nestedPostinstall, "inspected-postinstall": reviewedPostinstall };
+    const fixtureManifest = {
+      name: sourceManifest.name,
+      version: sourceManifest.version,
+      scripts,
+      allowScripts: sourceManifest.allowScripts,
+    };
+    fs.writeFileSync(
+      path.join(fixturePackageRoot, "package.json"),
+      `${JSON.stringify(fixtureManifest)}\n`
+    );
+    assertNpmPolicyRuntimeUnchanged(npmRuntime);
+    const packed = JSON.parse(
+      execFileSync(
+        npmRuntime.nodeExecutable,
+        [
+          npmRuntime.npmCliPath,
+          "pack",
+          "--json",
+          "--ignore-scripts",
+          `--node-options=${npmRuntime.lifecycleNodeOptions}`,
+          "--pack-destination",
+          shapeRoot,
+        ],
+        {
+          cwd: fixturePackageRoot,
+          env: ownedNpmLifecycleEnvironment(process.env, npmRuntime.lifecycleNodeOptions),
+          encoding: "utf8",
+          timeout: 30_000,
+        }
+      )
+    )[0];
+    const tarballPath = path.join(shapeRoot, packed.filename);
+    const server = await servePackedTarball(tarballPath);
+    try {
+      if (server.integrity !== packed.integrity)
+        throw new Error("Lifecycle fixture transport integrity mismatch");
+      const packedManifest = await readPackedArtifactManifest({
+        npmRuntime,
+        tarballPath,
+        expectedIntegrity: server.integrity,
+      });
+      if (
+        packedManifest.name !== fixtureManifest.name ||
+        packedManifest.version !== fixtureManifest.version ||
+        Object.keys(packedManifest.scripts).length !== Object.keys(scripts).length ||
+        Object.entries(scripts).some(
+          ([event, command]) => packedManifest.scripts[event] !== command
+        )
+      )
+        throw new Error("Lifecycle fixture packed scripts differ from their exact reviewed bodies");
+      artifacts.push({
+        shape,
+        url: server.url,
+        sha256: server.sha256,
+        integrity: server.integrity,
+      });
+      for (const layer of ["environment", "user_npmrc", "project_npmrc", "caller_node_options"]) {
+        const consumerRoot = path.join(shapeRoot, layer);
+        fs.mkdirSync(consumerRoot);
+        const markerPath = path.join(consumerRoot, "unapproved-preload-ran");
+        const preloadPath = path.join(consumerRoot, "unapproved-preload.mjs");
+        fs.writeFileSync(
+          preloadPath,
+          `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(markerPath)}, "executed");\n`
+        );
+        const overlay = `--import=${pathToFileURL(preloadPath).href}`;
+        const userConfigPath = path.join(consumerRoot, "isolated-user.npmrc");
+        fs.writeFileSync(userConfigPath, layer === "user_npmrc" ? `node-options=${overlay}\n` : "");
+        if (layer === "project_npmrc")
+          fs.writeFileSync(path.join(consumerRoot, ".npmrc"), `node-options=${overlay}\n`);
+        const env = Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([name]) =>
+              !["npm_config_node_options", "npm_config_userconfig"].includes(name.toLowerCase())
+          )
+        );
+        env.npm_config_userconfig = userConfigPath;
+        if (layer === "environment") env.npm_config_node_options = overlay;
+        if (layer === "caller_node_options") env.NODE_OPTIONS = overlay;
+        // Only the dedicated nested fixture uses this exact reviewed two-script
+        // contract. Production artifact approval still requires its direct body.
+        const consumerManifest =
+          shape === "direct_node"
+            ? createPackedConsumerManifest(packedManifest, server.url)
+            : {
+                name: "lexrunner-nested-lifecycle-fixture",
+                private: true,
+                type: "module",
+                dependencies: { [packedManifest.name]: server.url },
+                allowScripts: { ...sourceManifest.allowScripts, [server.url]: true },
+              };
+        fs.writeFileSync(
+          path.join(consumerRoot, "package.json"),
+          `${JSON.stringify(consumerManifest)}\n`
+        );
+        assertNpmPolicyRuntimeUnchanged(npmRuntime);
+        const effectiveOverlay =
+          layer === "caller_node_options"
+            ? env.NODE_OPTIONS
+            : execFileSync(
+                npmRuntime.nodeExecutable,
+                [npmRuntime.npmCliPath, "config", "get", "node-options", "--global=false"],
+                { cwd: consumerRoot, env, encoding: "utf8", timeout: 10_000 }
+              ).trim();
+        if (effectiveOverlay !== overlay)
+          throw new Error(
+            `Lifecycle fixture ${shape}/${layer} overlay was not effective before override`
+          );
+        if (fs.existsSync(markerPath))
+          throw new Error("Read-only lifecycle config inspection executed a preload");
+        const markerEnv = Object.fromEntries(
+          Object.entries(env).filter(([name]) => name.toUpperCase() !== "NODE_OPTIONS")
+        );
+        execFileSync(npmRuntime.nodeExecutable, ["--eval", "void 0"], {
+          cwd: consumerRoot,
+          env: { ...markerEnv, NODE_OPTIONS: overlay },
+          timeout: 10_000,
+        });
+        if (!fs.existsSync(markerPath))
+          throw new Error("Owned preload marker positive control failed");
+        fs.unlinkSync(markerPath);
+        const installResult = await installPackedConsumer({ npmRuntime, consumerRoot, env });
+        const postinstall = observePackedArtifactPostinstall(packedManifest, installResult);
+        if (
+          shape === "nested_npm" &&
+          !installResult.output.includes(
+            `> ${packedManifest.name}@${packedManifest.version} inspected-postinstall`
+          )
+        )
+          throw new Error("Nested lifecycle did not execute the inspected npm leaf script");
+        if (fs.existsSync(markerPath))
+          throw new Error(
+            `Unapproved ${shape}/${layer} lifecycle preload executed despite the qualified override`
+          );
+        scenarios.push({
+          shape,
+          layer,
+          effectiveOverlayObserved: true,
+          preloadMarkerPositiveControl: "passed",
+          unapprovedPreloadExecuted: false,
+          approvedPostinstall: postinstall.status,
+          ownedInstallClosed: true,
+        });
+      }
+    } finally {
+      await server.close();
+    }
+  }
+  return { lifecycleNodeOptions: "qualified_nonblank_cli_and_environment", artifacts, scenarios };
 }

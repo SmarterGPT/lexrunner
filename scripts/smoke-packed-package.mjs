@@ -15,6 +15,8 @@ import {
   observePackedArtifactPostinstall,
   readPackedArtifactManifest,
   smokeUnreviewedInstallScript,
+  smokeLifecycleNodeOptionsIsolation,
+  ownedNpmLifecycleEnvironment,
 } from "./packed-consumer-install-policy.mjs";
 import { observeNpmPolicyRuntime, assertNpmPolicyRuntimeUnchanged } from "./npm-policy-runtime.mjs";
 import { smokeGateExecution } from "./smoke-gate-execution.mjs";
@@ -54,8 +56,21 @@ try {
   const packed = JSON.parse(
     execFileSync(
       process.execPath,
-      [npmCliPath, "pack", "--json", "--ignore-scripts", "--pack-destination", temporaryRoot],
-      { cwd: projectRoot, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }
+      [
+        npmCliPath,
+        "pack",
+        "--json",
+        "--ignore-scripts",
+        `--node-options=${npmRuntime.lifecycleNodeOptions}`,
+        "--pack-destination",
+        temporaryRoot,
+      ],
+      {
+        cwd: projectRoot,
+        env: ownedNpmLifecycleEnvironment(process.env, npmRuntime.lifecycleNodeOptions),
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024,
+      }
     )
   )[0];
   const tarball = path.join(temporaryRoot, packed.filename);
@@ -80,6 +95,11 @@ try {
     fixtureRoot: path.join(temporaryRoot, "unreviewed-install-script"),
     consumerManifest,
   });
+  const lifecycleNodeOptions = await smokeLifecycleNodeOptionsIsolation({
+    npmRuntime,
+    fixtureRoot: path.join(temporaryRoot, "lifecycle-node-options"),
+    sourceManifest: { ...packedManifest, allowScripts: sourceManifest.allowScripts },
+  });
 
   fs.mkdirSync(consumerRoot);
   fs.writeFileSync(
@@ -99,8 +119,13 @@ try {
       "--global=false",
       "--ignore-scripts=false",
       "--dangerously-allow-all-scripts=false",
+      `--node-options=${npmRuntime.lifecycleNodeOptions}`,
     ],
-    { cwd: consumerRoot, encoding: "utf8" }
+    {
+      cwd: consumerRoot,
+      env: ownedNpmLifecycleEnvironment(process.env, npmRuntime.lifecycleNodeOptions),
+      encoding: "utf8",
+    }
   );
   if (!pendingScripts.includes("No packages with unreviewed install scripts.")) {
     throw new Error(`Packed consumer has unreviewed install scripts: ${pendingScripts}`);
@@ -263,6 +288,7 @@ try {
         strict: true,
         pendingInstallScripts: 0,
         unreviewedInstallScript,
+        lifecycleNodeOptions,
         nativeSqlite,
         consumerPolicy: consumerManifest.allowScripts,
         packedArtifactLifecycle: {

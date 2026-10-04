@@ -161,7 +161,8 @@ export function createLocalInstallPlan({ projectRoot, prefix, artifactsDir, npmR
     commands: [],
     plannedCommands: installationCommands(
       target,
-      path.join(artifactsDir, "packed-current-source.tgz")
+      path.join(artifactsDir, "packed-current-source.tgz"),
+      npmRuntime.lifecycleNodeOptions
     ),
     executionRequirements: [
       "clean matching source HEAD/tree/manifest/lock",
@@ -185,6 +186,7 @@ export function runLocalPackageInstall({
 }) {
   requireAbsoluteDirectory(prefix, "--prefix");
   const root = fs.realpathSync(projectRoot);
+  const sourceGitEnv = localSourceGitEnvironment(env);
   const outputRoot = artifactsDir ?? path.join(root, "artifacts", "local-install", randomUUID());
   requireAbsoluteDirectory(outputRoot, "--artifacts-dir");
   // Receipt storage must not become an installation target or modify source files.
@@ -197,10 +199,11 @@ export function runLocalPackageInstall({
     const ignored = spawnSync(
       "git",
       ["check-ignore", "--quiet", "--no-index", relativeOutputRoot],
-      { cwd: root, encoding: "utf8", timeout: 10_000, windowsHide: true }
+      { cwd: root, env: sourceGitEnv, encoding: "utf8", timeout: 10_000, windowsHide: true }
     );
     const tracked = spawnSync("git", ["ls-files", "--", relativeOutputRoot], {
       cwd: root,
+      env: sourceGitEnv,
       encoding: "utf8",
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
@@ -236,7 +239,7 @@ export function runLocalPackageInstall({
     save();
     const result = spawnSync(executable, args, {
       cwd,
-      env: commandEnv,
+      env: executable === "git" ? sourceGitEnv : commandEnv,
       encoding: "utf8",
       timeout: 10 * 60_000,
       maxBuffer: 10 * 1024 * 1024,
@@ -264,12 +267,44 @@ export function runLocalPackageInstall({
     return result.stdout;
   };
   const git = (args) => run("git-observe", "git", args, root).trim();
-  const observeSource = () => ({
-    head: git(["rev-parse", "HEAD"]),
-    tree: git(["rev-parse", "HEAD^{tree}"]),
-    branch: git(["branch", "--show-current"]),
-    dirty: git(["status", "--porcelain=v1", "--untracked-files=all"]),
-  });
+  const observeSource = () => {
+    const head = git(["rev-parse", "HEAD"]);
+    const repositoryRoot = fs.realpathSync(git(["rev-parse", "--show-toplevel"]));
+    if (path.relative(root, repositoryRoot) !== "")
+      throw new Error(
+        "Local installer projectRoot must be the physical owning Git repository root."
+      );
+    const trackedInputs = git([
+      "ls-tree",
+      "--name-only",
+      head,
+      "--",
+      "package.json",
+      "package-lock.json",
+    ])
+      .split(/\r?\n/)
+      .sort();
+    if (stableJSON(trackedInputs) !== stableJSON(["package-lock.json", "package.json"]))
+      throw new Error("Source manifest and lock must be tracked in HEAD.");
+    const headManifestSha256 = sha256(
+      run("git-observe", "git", ["show", `${head}:package.json`], root)
+    );
+    const headLockSha256 = sha256(
+      run("git-observe", "git", ["show", `${head}:package-lock.json`], root)
+    );
+    const inputs = validateLocalInstallInputs(root);
+    return {
+      repositoryRoot,
+      head,
+      tree: git(["rev-parse", "HEAD^{tree}"]),
+      branch: git(["branch", "--show-current"]),
+      dirty: git(["status", "--porcelain=v1", "--untracked-files=all"]),
+      headManifestSha256,
+      headLockSha256,
+      inputsMatchHead:
+        inputs.manifestSha256 === headManifestSha256 && inputs.lockSha256 === headLockSha256,
+    };
+  };
   let runtime;
   let source;
   const assertSource = () => {
@@ -279,6 +314,7 @@ export function runLocalPackageInstall({
       current.head !== source.head ||
       current.tree !== source.tree ||
       current.dirty ||
+      !current.inputsMatchHead ||
       inputs.manifestSha256 !== receipt.package.manifestSha256 ||
       inputs.lockSha256 !== receipt.package.lockSha256
     ) {
@@ -332,11 +368,17 @@ export function runLocalPackageInstall({
     assertSource();
     run("source-signature", "git", ["verify-commit", source.head], root);
     receipt.source.signatureVerified = true;
-    const npmEnv = { ...env, npm_execpath: runtime.npmCliPath };
+    const npmEnv = localNpmCommandEnvironment(runtime, sourceGitEnv);
     const npm = (name, args, cwd = root) => {
       assertSource();
       assertTarget();
-      const output = run(name, runtime.nodeExecutable, [runtime.npmCliPath, ...args], cwd, npmEnv);
+      const output = run(
+        name,
+        runtime.nodeExecutable,
+        [runtime.npmCliPath, ...qualifiedLocalNpmArguments(args, runtime.lifecycleNodeOptions)],
+        cwd,
+        npmEnv
+      );
       assertSource();
       assertTarget();
       return output;
@@ -389,7 +431,11 @@ export function runLocalPackageInstall({
       bytes: bytes.length,
       sha256: sha256(bytes),
     }));
-    receipt.plannedCommands = installationCommands(target, tarballPath);
+    receipt.plannedCommands = installationCommands(
+      target,
+      tarballPath,
+      runtime.lifecycleNodeOptions
+    );
     receipt.status = "installing";
     save();
     assertSource();
@@ -597,7 +643,7 @@ export function verifyInstalledPackedFiles(files, installedRoot) {
   }
 }
 
-function installationCommands(target, tarball) {
+function installationCommands(target, tarball, lifecycleNodeOptions = '""') {
   return [
     {
       name: "global-install-without-scripts",
@@ -648,7 +694,37 @@ function installationCommands(target, tarball) {
         "--allow-scripts-pending",
       ],
     },
+  ].map((command) => ({
+    ...command,
+    args: qualifiedLocalNpmArguments(command.args, lifecycleNodeOptions),
+  }));
+}
+
+/** Lifecycle execution cannot inherit code preloads from npm config layers. */
+export function qualifiedLocalNpmArguments(args, lifecycleNodeOptions = '""') {
+  // The qualified empty quoted token survives npm config export to nested npm.
+  return [
+    `--node-options=${lifecycleNodeOptions}`,
+    ...args.filter((argument) => !argument.startsWith("--node-options=")),
   ];
+}
+
+export function localNpmCommandEnvironment(runtime, env = process.env) {
+  const clean = localSourceGitEnvironment(env);
+  for (const key of Object.keys(clean)) {
+    if (/^npm_config_node_options$/i.test(key)) delete clean[key];
+  }
+  return {
+    ...clean,
+    npm_execpath: runtime.npmCliPath,
+    npm_config_node_options: runtime.lifecycleNodeOptions,
+  };
+}
+
+export function localSourceGitEnvironment(env = process.env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))
+  );
 }
 
 function rejectPolicyEnvironment(env) {
@@ -742,7 +818,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         const ignored = spawnSync(
           "git",
           ["check-ignore", "--quiet", "--no-index", path.relative(root, directory)],
-          { cwd: root, timeout: 10_000, windowsHide: true }
+          { cwd: root, env: localSourceGitEnvironment(), timeout: 10_000, windowsHide: true }
         );
         if (ignored.status !== 0) throw new Error("no ignored diagnostic destination");
         fs.mkdirSync(directory, { recursive: true });

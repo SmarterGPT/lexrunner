@@ -23,7 +23,7 @@ export function observeNpmPolicyRuntime({
   const pin = /^npm@(\d+\.\d+\.\d+)$/.exec(manifest.packageManager ?? "");
   if (!pin)
     throw new Error("Install-policy qualification requires an exact npm packageManager pin.");
-  assertNoNodePreload(env);
+  const lifecycleNodeOptions = assertNoNodePreload(env);
 
   const selectedNodeExecutable = selectAbsolutePath(nodeExecutable, "Node executable", root);
   const selected = npmCliPath ?? env.npm_execpath;
@@ -96,6 +96,7 @@ export function observeNpmPolicyRuntime({
     nodeVersion,
     requiredNodeMajor,
     nodeEngine: manifest.engines.node,
+    lifecycleNodeOptions,
     npmVersion,
     requiredNpmVersion: pin[1],
     policyCapabilities: Object.freeze(["approve-scripts", "allow-scripts", "strict-allow-scripts"]),
@@ -162,13 +163,15 @@ function assertNoNodePreload(env) {
       "Install-policy qualification refuses ambiguous duplicate NODE_OPTIONS environment keys."
     );
   }
+  const options = optionKeys.length ? String(env[optionKeys[0]]) : "";
   if (
-    /(?:^|\s|["'])(?:--(?:require|import|(?:experimental-)?loader)(?:=|\s|$)|-r\S*)/.test(
-      optionKeys.length ? env[optionKeys[0]] : ""
-    )
+    /(?:^|\s|["'])(?:--(?:require|import|(?:experimental-)?loader)(?:=|\s|$)|-r\S*)/.test(options)
   ) {
     throw new Error("Install-policy qualification refuses executable preloads in NODE_OPTIONS.");
   }
+  // npm trims whitespace before exporting config to nested npm processes.
+  // Node accepts an empty quoted token as no options; npm preserves that token.
+  return options.trim() ? options : '""';
 }
 
 function observeFile(selectedPath, label) {

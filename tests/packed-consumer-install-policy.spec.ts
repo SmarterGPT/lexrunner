@@ -11,6 +11,7 @@ import {
   servePackedTarball,
   reviewPackedArtifactLifecycle,
   runOwnedPackedInstallCommand,
+  ownedNpmLifecycleEnvironment,
 } from "../scripts/packed-consumer-install-policy.mjs";
 
 const sourceManifest = {
@@ -100,11 +101,12 @@ describe("packed consumer install-script boundary", () => {
   });
 
   it("requires strict enforcement and actively disables inherited suppression or bypass", () => {
-    const args = packedConsumerInstallArguments();
+    const args = packedConsumerInstallArguments('""');
     expect(args).toContain("--global=false");
     expect(args).toContain("--strict-allow-scripts");
     expect(args).toContain("--ignore-scripts=false");
     expect(args).toContain("--dangerously-allow-all-scripts=false");
+    expect(args).toContain('--node-options=""');
     expect(args).not.toContain("--no-package-lock");
     expect(args).not.toContain("--no-save");
   });
@@ -128,6 +130,34 @@ describe("packed consumer install-script boundary", () => {
       fs.rmSync(temporaryRoot, { recursive: true, force: true });
     }
   });
+
+  it("replaces every inherited npm node-options casing with the single qualified value", () => {
+    const nodeOptions = "--max-old-space-size=2048";
+    const env = ownedNpmLifecycleEnvironment(
+      {
+        npm_config_node_options: "--import=unapproved.mjs",
+        NPM_CONFIG_NODE_OPTIONS: "--require=unapproved.cjs",
+        NODE_OPTIONS: nodeOptions,
+        PATH: "owned fixture path",
+      },
+      nodeOptions
+    );
+    expect(env.NODE_OPTIONS).toBe(nodeOptions);
+    expect(env.PATH).toBe("owned fixture path");
+    expect(
+      Object.keys(env).filter((key) => key.toLowerCase() === "npm_config_node_options")
+    ).toEqual(["npm_config_node_options"]);
+    expect(env.npm_config_node_options).toBe(nodeOptions);
+    expect(packedConsumerInstallArguments(nodeOptions)).toContain(`--node-options=${nodeOptions}`);
+  });
+
+  it("requires the observed nonblank lifecycle value instead of allowing npm to skip an empty export", () => {
+    for (const value of [undefined, null, "", " ", "\t"]) {
+      expect(() => packedConsumerInstallArguments(value)).toThrow("explicit qualified nonblank");
+      expect(() => ownedNpmLifecycleEnvironment({}, value)).toThrow("explicit qualified nonblank");
+    }
+    expect(ownedNpmLifecycleEnvironment({}, '""').npm_config_node_options).toBe('""');
+  });
 });
 describe("owned packed npm process shutdown", () => {
   afterEach(() => vi.useRealTimers());
@@ -142,17 +172,19 @@ describe("owned packed npm process shutdown", () => {
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
     child.kill = vi.fn(() => true);
+    const spawnProcess = vi.fn(() => child);
     const promise = runOwnedPackedInstallCommand({
       nodeExecutable: "fixture-node",
       npmCliPath: "fixture-npm-cli.js",
       consumerRoot: "fixture-consumer",
-      spawnProcess: () => child,
+      lifecycleNodeOptions: '""',
+      spawnProcess,
       commandTimeoutMs: 1_000,
       releaseTimeoutMs: 100,
       maxOutputBytes: 5,
       ...overrides,
     });
-    return { child, promise };
+    return { child, promise, spawnProcess };
   };
 
   it("keeps failure pending until the owned close event after output overflow", async () => {
@@ -221,6 +253,31 @@ describe("owned packed npm process shutdown", () => {
     child.emit("close", 0, null);
     expect(await promise).toEqual({ status: "passed", output: "ok" });
     expect(child.kill).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("binds the actual owned spawn arguments and environment to the same observed lifecycle value", async () => {
+    vi.useFakeTimers();
+    const lifecycleNodeOptions = "--max-old-space-size=2048";
+    const { child, promise, spawnProcess } = start({
+      lifecycleNodeOptions,
+      env: {
+        NODE_OPTIONS: "--import=unreviewed-direct.mjs",
+        Node_Options: "--require=unreviewed-direct.cjs",
+        NPM_CONFIG_NODE_OPTIONS: "--import=unreviewed.mjs",
+        npm_config_node_options: "--require=unreviewed.cjs",
+      },
+    });
+    expect(spawnProcess).toHaveBeenCalledWith(
+      "fixture-node",
+      expect.arrayContaining(["fixture-npm-cli.js", `--node-options=${lifecycleNodeOptions}`]),
+      expect.objectContaining({
+        env: { NODE_OPTIONS: lifecycleNodeOptions, npm_config_node_options: lifecycleNodeOptions },
+        shell: false,
+      })
+    );
+    child.emit("close", 0, null);
+    await expect(promise).resolves.toMatchObject({ status: "passed" });
     expect(vi.getTimerCount()).toBe(0);
   });
 });

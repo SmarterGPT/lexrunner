@@ -49,8 +49,10 @@ function fixture({
     } else process.exit(2);
   `
   );
-  const env = { ...process.env, npm_execpath: npmCliPath };
-  delete env.NODE_OPTIONS;
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !/^(?:node_options|npm_execpath)$/i.test(key))
+  );
+  env.npm_execpath = npmCliPath;
   return { projectRoot, npmCliPath, env };
 }
 
@@ -101,6 +103,7 @@ describe("observed npm install-policy runtime", () => {
       policyCapabilities: ["approve-scripts", "allow-scripts", "strict-allow-scripts"],
       requiredNodeMajor: 24,
       nodeEngine: ">=24",
+      lifecycleNodeOptions: '""',
     });
     expect(observation.npmCliSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(observation.nodeExecutableSha256).toMatch(/^[a-f0-9]{64}$/);
@@ -195,6 +198,7 @@ describe("observed npm install-policy runtime", () => {
       env: { ...input.env, NODE_OPTIONS: "--max-old-space-size=512" },
     });
     expect(observation.npmVersion).toBe("11.16.0");
+    expect(observation.lifecycleNodeOptions).toBe("--max-old-space-size=512");
   });
 
   it("rejects executable preloads in lowercase/mixed-case Windows environment keys", () => {
@@ -226,6 +230,7 @@ describe("observed npm install-policy runtime", () => {
       env: { ...input.env, node_options: "--max-old-space-size=512" },
     });
     expect(observation.npmVersion).toBe("11.16.0");
+    expect(observation.lifecycleNodeOptions).toBe("--max-old-space-size=512");
   });
 
   it("requires an exact package-manager pin rather than accepting injected switches", () => {

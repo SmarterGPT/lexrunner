@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +13,8 @@ import {
   inspectLocalInstallTarball,
   inspectLocalInstallTarget,
   parseLocalInstallArguments,
+  qualifiedLocalNpmArguments,
+  localNpmCommandEnvironment,
   runLocalPackageInstall,
   validateLocalInstallInputs,
   verifyInstalledPackedFiles,
@@ -78,7 +80,10 @@ function fixture(version = "11.16.0") {
   );
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) => !/^(?:node_options|npm_config_allow_scripts|npm_config_node_options)$/i.test(name)
+      ([name]) =>
+        !/^(?:node_options|npm_config_allow_scripts|npm_config_node_options|npm_execpath)$/i.test(
+          name
+        )
     )
   );
   env.npm_execpath = npmCliPath;
@@ -148,6 +153,95 @@ describe("repository local-dogfood installation", () => {
       ])
     );
     expect(fs.existsSync(input.prefix)).toBe(false);
+    expect(
+      plan.plannedCommands.every((command: { args: string[] }) =>
+        command.args[0].startsWith("--node-options=")
+      )
+    ).toBe(true);
+  });
+
+  it("clears user npmrc lifecycle preloads in owned source-build commands", () => {
+    const input = fixture();
+    const markerPath = path.join(input.root, "user-config-preload-ran");
+    const preloadPath = path.join(input.root, "user-config-preload.cjs");
+    const userConfigPath = path.join(input.root, "isolated-user.npmrc");
+    fs.writeFileSync(
+      preloadPath,
+      `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'executed');`
+    );
+    fs.writeFileSync(userConfigPath, `node-options=--import=${pathToFileURL(preloadPath).href}\n`);
+    // This tests npm's existing config precedence, independently of install-policy
+    // capability/version qualification, which is covered in its own guard lane.
+    const npmCli =
+      process.env.npm_execpath ??
+      path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+    fs.writeFileSync(
+      path.join(input.projectRoot, "package.json"),
+      JSON.stringify({
+        name: "owned-node-options-control",
+        private: true,
+        scripts: {
+          "owned-build": "node owned-nested-npm.cjs",
+          "owned-leaf": "node -e \"console.log('owned build ran')\"",
+        },
+      })
+    );
+    fs.writeFileSync(
+      path.join(input.projectRoot, "owned-nested-npm.cjs"),
+      `const result=require('node:child_process').spawnSync(process.execPath, [${JSON.stringify(npmCli)}, 'run', 'owned-leaf'], {stdio:'inherit', env:process.env}); process.exit(result.status ?? 1);`
+    );
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !/^(?:node_options|npm_config_node_options|npm_config_userconfig)$/i.test(key)
+      )
+    );
+    env.npm_config_userconfig = userConfigPath;
+    const command = ["run", "owned-build"];
+    const baseline = spawnSync(process.execPath, [npmCli, ...command], {
+      cwd: input.projectRoot,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    expect(baseline.status, baseline.stderr).toBe(0);
+    expect(fs.existsSync(markerPath)).toBe(true);
+    fs.unlinkSync(markerPath);
+    const suppressed = spawnSync(
+      process.execPath,
+      [npmCli, ...qualifiedLocalNpmArguments(command, '""')],
+      {
+        cwd: input.projectRoot,
+        env: localNpmCommandEnvironment({ npmCliPath: npmCli, lifecycleNodeOptions: '""' }, env),
+        encoding: "utf8",
+        timeout: 15_000,
+      }
+    );
+    expect(suppressed.status, suppressed.stderr).toBe(0);
+    expect(suppressed.stdout).toContain("owned build ran");
+    expect(fs.existsSync(markerPath)).toBe(false);
+  });
+
+  it("binds qualified lifecycle options and strips inherited config/Git selector casings", () => {
+    const env = localNpmCommandEnvironment(
+      { npmCliPath: "observed-npm-cli", lifecycleNodeOptions: "--max-old-space-size=512" },
+      {
+        NODE_OPTIONS: "--max-old-space-size=512",
+        npm_config_node_options: "--import=unreviewed",
+        NPM_CONFIG_NODE_OPTIONS: "--require=unreviewed",
+        GIT_DIR: "foreign-repository",
+        git_work_tree: "foreign-worktree",
+        Path: "preserved-command-path",
+      }
+    );
+    expect(env).toEqual({
+      NODE_OPTIONS: "--max-old-space-size=512",
+      npm_config_node_options: "--max-old-space-size=512",
+      npm_execpath: "observed-npm-cli",
+      Path: "preserved-command-path",
+    });
+    expect(
+      qualifiedLocalNpmArguments(["--node-options=unreviewed", "run", "build"], env.NODE_OPTIONS)
+    ).toEqual(["--node-options=--max-old-space-size=512", "run", "build"]);
   });
 
   it("CLI plan retains provenance and source lock without build, pack, install or prefix creation", () => {

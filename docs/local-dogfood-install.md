@@ -41,6 +41,9 @@ node $npmCli run install:local -- --prefix $prefix
 
 Review the exact candidate and its command-gate evidence independently. Execution
 requires a clean signed source checkpoint and successful `git verify-commit HEAD`.
+The physical checkout must be its owning Git root, with `package.json` and
+`package-lock.json` tracked at that HEAD. A plan made from changed manifest or
+lockfile bytes records `inputsMatchHead: false` and cannot execute.
 The helper checks source consistency but does not manufacture a review verdict.
 After that review, execute against the same explicit prefix:
 
@@ -65,6 +68,15 @@ that locked production dependency closure with scripts suppressed, and rebuilds
 only the exact source-approved SQLite package under strict script policy.
 `@smartergpt/lex` remains explicitly denied. It then checks pending script decisions,
 native SQLite usability in a private fixture, and every installed packed file.
+
+Lifecycle commands explicitly bind npm's `node-options` setting to the observed
+nonexecuting Node options, or an effective empty value that survives nested npm.
+An inherited environment variable or npmrc cannot inject a JavaScript preload
+into an approved script. The observed Node runtime separately refuses executable
+`NODE_OPTIONS` preloads. Source Git observations remove inherited `GIT_*` selectors
+so another checkout cannot supply the candidate's HEAD or clean-state result.
+These checks cover the installation policy and source binding; they do not qualify
+protected loading or the complete executable dependency graph.
 
 The public packed-consumer smoke is a separate check: its fresh consumer owns an
 explicit strict policy. It approves only the inspected immutable LexRunner
