@@ -4,6 +4,7 @@ import {
   AgentTaskPacket_v1,
   AgentTaskReceipt_v2,
   ExecutionEnvelope_v1,
+  type HumanActionRequest_v1,
   isTerminalAttemptStatus,
   type AgentTaskReceipt_v2 as AgentTaskReceipt,
 } from "../schemas/agent-work.js";
@@ -37,6 +38,11 @@ import {
   AgentWorkAttemptVerificationService,
 } from "./agent-work-attempt-verification-service.js";
 import { AgentWorkWorkerSessionService } from "./agent-work-worker-session-service.js";
+import {
+  AgentWorkHumanActionService,
+  humanActionSummary,
+  readHumanActionState,
+} from "./agent-work-human-action-service.js";
 import {
   AgentWorkWorkerAdapterNegotiator,
   WorkerAdapterSelection_v1,
@@ -92,6 +98,7 @@ export const DEFAULT_HEADLESS_SUPERVISOR_CONFIG: HeadlessSupervisorConfig = {
 
 export type SupervisorAttemptAction =
   | "await_workspace"
+  | "await_human"
   | "await_launch"
   | "launch_worker"
   | "resume_workspace"
@@ -131,6 +138,8 @@ export interface SupervisorWorkerObservation {
   state: "running" | "awaiting_human" | "completed" | "failed" | "cancelled" | "lost";
   exitCode?: number;
   summary?: string;
+  /** Full request data, persisted before the host displays a question. */
+  humanActionRequest?: HumanActionRequest_v1;
 }
 
 export interface SupervisorWorkerLaunchResult {
@@ -199,11 +208,13 @@ export type ReconcileHeadlessRunResult =
       fencingToken: number;
       attempts: SupervisorAttemptResult[];
       counts: Record<SupervisorAttemptResult["outcome"], number>;
+      humanActions?: ReturnType<typeof humanActionSummary>;
+      humanActionCount?: number;
     }
   | {
       ok: false;
       runId: string;
-      reason: "controller_held" | "invalid_input";
+      reason: "controller_held" | "invalid_input" | "human_action_reconciliation_required";
     };
 
 /** Pure deterministic planner used by the live supervisor and fault-injection tests. */
@@ -402,6 +413,143 @@ export class AgentWorkHeadlessSupervisor {
     const ordinals = attemptOrdinals(attempts);
     const cancellation = new Set(input.cancelAttemptIds ?? []);
     const results: SupervisorAttemptResult[] = [];
+    const workerObservations = new Map<string, SupervisorWorkerObservation>();
+
+    // Observe live workers before launching any sibling. A durable hold survives
+    // a fresh controller and prevents completion/acceptance from hiding a question.
+    // This controls supervisor progress; the adapter must enforce worker suspension.
+    try {
+      let record = acquired.record;
+      let holds = humanActionSummary(record.state, input.now);
+      if (!holds.length) {
+        const humans = new AgentWorkHumanActionService(
+          this.coordination,
+          this.store,
+          this.workspaceObserver
+        );
+        for (const attempt of attempts) {
+          const session = await this.store.getWorkerSessionForAttempt(attempt.attemptId);
+          if (!session || !["running", "awaiting_human"].includes(session.status)) continue;
+          const observed = await this.workerControl.observe(session);
+          workerObservations.set(session.sessionId, observed);
+          if (observed.state !== "awaiting_human") continue;
+          record = (await this.coordination.getRunCoordination(input.runId))!;
+          const lease = await this.store.getWorkspaceLease(session.workspaceLeaseId);
+          if (!lease)
+            return {
+              ok: false,
+              runId: input.runId,
+              reason: "human_action_reconciliation_required",
+            };
+          const workspace = await this.workspaceObserver.observe(lease);
+          if (!workspace.headSha)
+            return {
+              ok: false,
+              runId: input.runId,
+              reason: "human_action_reconciliation_required",
+            };
+          const fallbackId = `human:${session.sessionId}:${session.revision}`;
+          const prior = readHumanActionState(record.state).entries.find(
+            (entry) => entry.request.request_id === fallbackId
+          );
+          const request = observed.humanActionRequest ??
+            prior?.request ?? {
+              schema_version: "1.0.0" as const,
+              request_id: fallbackId,
+              run_id: input.runId,
+              attempt_id: attempt.attemptId,
+              workspace_lease_id: lease.leaseId,
+              worker_session_id: session.sessionId,
+              action: "other" as const,
+              summary: observed.summary ?? "Worker requires a human decision.",
+              instructions: [
+                "Resolve this request through the host's human-response channel before continuing.",
+              ],
+              suggested_commands: [],
+              preconditions: {
+                run_revision: record.revision,
+                workspace_lease_revision: lease.revision,
+                expected_head_sha: workspace.headSha,
+              },
+              requested_at: input.now,
+            };
+          const existing = readHumanActionState(record.state).entries.find(
+            (entry) => entry.request.request_id === request.request_id
+          );
+          if (existing?.receipt?.outcome === "completed")
+            return {
+              ok: false,
+              runId: input.runId,
+              reason: "human_action_reconciliation_required",
+            };
+          if (
+            request.run_id !== input.runId ||
+            request.attempt_id !== attempt.attemptId ||
+            request.worker_session_id !== session.sessionId ||
+            request.workspace_lease_id !== lease.leaseId
+          )
+            return {
+              ok: false,
+              runId: input.runId,
+              reason: "human_action_reconciliation_required",
+            };
+          const stored = await humans.request({
+            controller,
+            expectedRunRevision: record.revision,
+            mutationId: `human-request:${request.request_id}`,
+            now: input.now,
+            request,
+          });
+          if (!stored.ok)
+            return {
+              ok: false,
+              runId: input.runId,
+              reason: "human_action_reconciliation_required",
+            };
+        }
+        record = (await this.coordination.getRunCoordination(input.runId))!;
+        holds = humanActionSummary(record.state, input.now);
+      }
+      if (holds.length) {
+        // Explicit cancellation remains available while held. No receipt,
+        // verification, acceptance or new launch is allowed to advance the run.
+        for (const attempt of attempts) {
+          if (cancellation.has(attempt.attemptId)) {
+            results.push(
+              await this.reconcileAttempt({
+                attemptId: attempt.attemptId,
+                runRevision: record.revision,
+                controller,
+                now: input.now,
+                config,
+                attemptOrdinal: ordinals.get(attempt.attemptId) ?? 1,
+                cancellationRequested: true,
+                diagnostics: input.diagnostics ?? false,
+              })
+            );
+          } else
+            results.push({
+              attemptId: attempt.attemptId,
+              action: "await_human",
+              outcome: "deferred",
+              status: attempt.status,
+              retryDeltaPresent: false,
+            });
+        }
+        return {
+          ok: true,
+          runId: input.runId,
+          fencingToken: acquired.lease.fencingToken,
+          attempts: results,
+          counts: countResults(results),
+          humanActions: holds.slice(0, 8),
+          humanActionCount: holds.length,
+        };
+      }
+      acquired.record = record;
+    } catch {
+      return { ok: false, runId: input.runId, reason: "human_action_reconciliation_required" };
+    }
 
     for (let offset = 0; offset < attempts.length; offset += config.maxConcurrency) {
       const slice = attempts.slice(offset, offset + config.maxConcurrency);
@@ -416,6 +564,7 @@ export class AgentWorkHeadlessSupervisor {
             attemptOrdinal: ordinals.get(attempt.attemptId) ?? 1,
             cancellationRequested: cancellation.has(attempt.attemptId),
             diagnostics: input.diagnostics ?? false,
+            workerObservations,
           })
         )
       );
@@ -440,8 +589,24 @@ export class AgentWorkHeadlessSupervisor {
     attemptOrdinal: number;
     cancellationRequested: boolean;
     diagnostics: boolean;
+    workerObservations?: Map<string, SupervisorWorkerObservation>;
   }): Promise<SupervisorAttemptResult> {
     try {
+      // Recheck after asynchronous preparation/other controller activity.
+      const current = await this.coordination.getRunCoordination(input.controller.runId);
+      if (
+        !current ||
+        (!input.cancellationRequested && humanActionSummary(current.state, input.now).length)
+      )
+        return {
+          attemptId: input.attemptId,
+          action: "await_human",
+          outcome: "deferred",
+          status: "held",
+          retryDeltaPresent: false,
+        };
+      if (current.revision !== input.runRevision)
+        return failureResult(input, "reconciliation_required", "stale_run_revision");
       let snapshot = await this.snapshot(input.attemptId, input.attemptOrdinal);
       if (!snapshot?.attempt)
         return failureResult(input, "reconciliation_required", "attempt_missing");
@@ -556,7 +721,9 @@ export class AgentWorkHeadlessSupervisor {
       }
 
       if (plan.action === "mark_worker_lost") {
-        const observed = await this.workerControl.observe(snapshot.session!);
+        const observed =
+          input.workerObservations?.get(snapshot.session!.sessionId) ??
+          (await this.workerControl.observe(snapshot.session!));
         if (observed.state === "running" || observed.state === "awaiting_human") {
           return await this.heartbeatWorker(snapshot, input, observed.state, plan);
         }
@@ -571,7 +738,9 @@ export class AgentWorkHeadlessSupervisor {
       }
 
       if (plan.action === "heartbeat_worker") {
-        const observed = await this.workerControl.observe(snapshot.session!);
+        const observed =
+          input.workerObservations?.get(snapshot.session!.sessionId) ??
+          (await this.workerControl.observe(snapshot.session!));
         if (observed.state === "running" || observed.state === "awaiting_human") {
           return await this.heartbeatWorker(snapshot, input, observed.state, plan);
         }
@@ -659,6 +828,19 @@ export class AgentWorkHeadlessSupervisor {
         "adapter_negotiation_denied"
       );
     }
+    const current = await this.coordination.getRunCoordination(input.controller.runId);
+    const lease = current?.lease;
+    if (
+      !current ||
+      current.revision !== input.runRevision ||
+      humanActionSummary(current.state, input.now).length ||
+      !lease ||
+      lease.fencingToken !== input.controller.fencingToken ||
+      lease.controllerId !== input.controller.controllerId ||
+      lease.leaseId !== input.controller.leaseId ||
+      Date.parse(lease.expiresAt) <= Date.parse(input.now)
+    )
+      return failureResult(input, "reconciliation_required", "dispatch_admission_changed");
     const launched = await this.workerControl.launch({
       operationId: operationId(plan.attemptId, "launch", snapshot.attempt!.revision),
       packet,
