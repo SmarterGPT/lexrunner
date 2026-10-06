@@ -264,6 +264,10 @@ describe.each(["memory", "sqlite"] as const)("durable human action (%s)", (kind)
     expect(
       await f.service.settle({ ...f.mutation, expectedRunRevision: 2, receipt: f.answer() })
     ).toMatchObject({ ok: false, reason: "request_superseded" });
+    expect(await f.service.request({ ...f.mutation, request: f.request })).toMatchObject({
+      ok: false,
+      reason: "request_superseded",
+    });
   });
 
   it("uses fenced CAS against racing controllers and rejects malformed time", async () => {

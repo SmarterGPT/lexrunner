@@ -99,6 +99,7 @@ export class AgentWorkHumanActionService {
     const state = readHumanActionState(record.state);
     const prior = state.entries.find((entry) => entry.request.request_id === request.request_id);
     if (prior) {
+      if (prior.supersededBy) return { ok: false, reason: "request_superseded" };
       if (
         computeCanonicalHash(prior.request) !== computeCanonicalHash(request) ||
         prior.replacesRequestId !== input.replacesRequestId

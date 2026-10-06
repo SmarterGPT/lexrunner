@@ -476,7 +476,7 @@ export class AgentWorkHeadlessSupervisor {
           const existing = readHumanActionState(record.state).entries.find(
             (entry) => entry.request.request_id === request.request_id
           );
-          if (existing?.receipt?.outcome === "completed")
+          if (existing?.supersededBy || existing?.receipt?.outcome === "completed")
             return {
               ok: false,
               runId: input.runId,
