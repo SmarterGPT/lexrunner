@@ -99,6 +99,7 @@ export const DEFAULT_HEADLESS_SUPERVISOR_CONFIG: HeadlessSupervisorConfig = {
 export type SupervisorAttemptAction =
   | "await_workspace"
   | "await_human"
+  | "await_cancellation"
   | "await_launch"
   | "launch_worker"
   | "resume_workspace"
@@ -210,6 +211,7 @@ export type ReconcileHeadlessRunResult =
       counts: Record<SupervisorAttemptResult["outcome"], number>;
       humanActions?: ReturnType<typeof humanActionSummary>;
       humanActionCount?: number;
+      cancellationOnly?: boolean;
     }
   | {
       ok: false;
@@ -415,6 +417,52 @@ export class AgentWorkHeadlessSupervisor {
     const results: SupervisorAttemptResult[] = [];
     const workerObservations = new Map<string, SupervisorWorkerObservation>();
 
+    // A requested stop must not depend on successfully interpreting the worker's
+    // question. This pass admits only cancellation; siblings wait for fresh
+    // reconciliation even if the cancellation succeeds.
+    if (cancellation.size) {
+      if ([...cancellation].some((id) => !attempts.some((attempt) => attempt.attemptId === id)))
+        return { ok: false, runId: input.runId, reason: "invalid_input" };
+      for (const attempt of attempts) {
+        results.push(
+          cancellation.has(attempt.attemptId)
+            ? await this.reconcileAttempt({
+                attemptId: attempt.attemptId,
+                runRevision: acquired.record.revision,
+                controller,
+                now: input.now,
+                config,
+                attemptOrdinal: ordinals.get(attempt.attemptId) ?? 1,
+                cancellationRequested: true,
+                diagnostics: input.diagnostics ?? false,
+              })
+            : {
+                attemptId: attempt.attemptId,
+                action: "await_cancellation",
+                outcome: "deferred",
+                status: attempt.status,
+                retryDeltaPresent: false,
+              }
+        );
+      }
+      let holds: ReturnType<typeof humanActionSummary> = [];
+      try {
+        holds = humanActionSummary(acquired.record.state, input.now);
+      } catch {
+        /* Invalid state cannot approve progress; explicit stops still run. */
+      }
+      return {
+        ok: true,
+        runId: input.runId,
+        fencingToken: acquired.lease.fencingToken,
+        attempts: results,
+        counts: countResults(results),
+        cancellationOnly: true,
+        humanActions: holds.slice(0, 8),
+        humanActionCount: holds.length,
+      };
+    }
+
     // Observe live workers before launching any sibling. A durable hold survives
     // a fresh controller and prevents completion/acceptance from hiding a question.
     // This controls supervisor progress; the adapter must enforce worker suspension.
@@ -511,30 +559,15 @@ export class AgentWorkHeadlessSupervisor {
         holds = humanActionSummary(record.state, input.now);
       }
       if (holds.length) {
-        // Explicit cancellation remains available while held. No receipt,
-        // verification, acceptance or new launch is allowed to advance the run.
+        // No receipt, verification, acceptance or new launch advances while held.
         for (const attempt of attempts) {
-          if (cancellation.has(attempt.attemptId)) {
-            results.push(
-              await this.reconcileAttempt({
-                attemptId: attempt.attemptId,
-                runRevision: record.revision,
-                controller,
-                now: input.now,
-                config,
-                attemptOrdinal: ordinals.get(attempt.attemptId) ?? 1,
-                cancellationRequested: true,
-                diagnostics: input.diagnostics ?? false,
-              })
-            );
-          } else
-            results.push({
-              attemptId: attempt.attemptId,
-              action: "await_human",
-              outcome: "deferred",
-              status: attempt.status,
-              retryDeltaPresent: false,
-            });
+          results.push({
+            attemptId: attempt.attemptId,
+            action: "await_human",
+            outcome: "deferred",
+            status: attempt.status,
+            retryDeltaPresent: false,
+          });
         }
         return {
           ok: true,

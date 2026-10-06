@@ -8,7 +8,7 @@ import type {
 } from "../../src/store/workspace-lifecycle-store.js";
 
 describe("human hold observation reconciliation", () => {
-  it("blocks an old worker question after its replacement was completed, before reconciling siblings", async () => {
+  it.each(["superseded", "completed"])("cancels with %s", async (disposition) => {
     const now = "2026-10-06T12:00:00.000Z";
     const question: HumanActionRequest_v1 = {
       schema_version: "1.0.0",
@@ -41,7 +41,28 @@ describe("human hold observation reconciliation", () => {
           agentWorkHumanActions: {
             version: 1,
             entries: [
-              { request: question, contextHash: "retained", receipt: null, supersededBy: "Q2" },
+              {
+                request: question,
+                contextHash: "retained",
+                receipt:
+                  disposition === "completed"
+                    ? {
+                        schema_version: "1.0.0",
+                        receipt_id: "answer-Q1",
+                        request_id: "Q1",
+                        run_id: "run",
+                        attempt_id: "worker-attempt",
+                        workspace_lease_id: "workspace",
+                        worker_session_id: "worker",
+                        observed_preconditions: question.preconditions,
+                        outcome: "completed",
+                        actor_id: "human-channel",
+                        summary: "Original answered",
+                        completed_at: now,
+                      }
+                    : null,
+                ...(disposition === "superseded" ? { supersededBy: "Q2" } : {}),
+              },
               {
                 request: replacement,
                 contextHash: "retained",
@@ -155,6 +176,36 @@ describe("human hold observation reconciliation", () => {
       expect(cancel).not.toHaveBeenCalled();
       expect(collectReceipt).not.toHaveBeenCalled();
       expect((await store.getAttempt("sibling-attempt"))!.revision).toBe(0);
+      const cancelled = await supervisor.reconcileRun({
+        runId: "run",
+        initialRunState: {},
+        controllerId: "controller",
+        controllerLeaseId: "controller-lease",
+        now,
+        cancelAttemptIds: ["sibling-attempt"],
+      });
+      expect(cancelled).toMatchObject({
+        ok: true,
+        cancellationOnly: true,
+        counts: { applied: 1, deferred: 1 },
+      });
+      if (!cancelled.ok) throw new Error("cancellation failed");
+      expect(cancelled.attempts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            attemptId: "worker-attempt",
+            action: "await_cancellation",
+            outcome: "deferred",
+          }),
+          expect.objectContaining({
+            attemptId: "sibling-attempt",
+            action: "cancel_attempt",
+            outcome: "applied",
+            status: "cancelled",
+          }),
+        ])
+      );
+      expect(observe).toHaveBeenCalledOnce();
     } finally {
       workerLookup.mockRestore();
       workspaceLookup.mockRestore();

@@ -69,6 +69,11 @@ resumed the worker. Providers should supply distinct full request IDs; the gener
 fallback can capture one observed interruption but cannot infer the content of a
 subsequent question.
 
+Explicit cancellation runs before worker-question reconciliation in a dedicated
+pass. Only the selected cancellations advance; every sibling remains deferred
+until a subsequent reconciliation. A stale or completed question cannot suppress
+the stop path, and cancellation cannot approve the original human decision.
+
 This is a **controller progress hold**, not proof that a live worker stopped.
 Already admitted work may be in flight when a question arrives. Production hosts
 must suspend/cancel it through a qualified adapter and enforce the hold at its

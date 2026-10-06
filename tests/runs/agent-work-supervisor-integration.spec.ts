@@ -161,7 +161,7 @@ describe("headless supervisor restart reconciliation", () => {
     });
   });
 
-  it("re-delivers an uncertain launch with one stable operation and then heartbeats after restart", async () => {
+  it.each(["resume", "cancel"])("recovers with %s after a human hold", async (recovery) => {
     const root = await mkdtemp(join(tmpdir(), "lexrunner-supervisor-"));
     roots.push(root);
     const repositoryRoot = join(root, "repository");
@@ -369,6 +369,23 @@ describe("headless supervisor restart reconciliation", () => {
       humanActionCount: 1,
       attempts: [{ action: "await_human", outcome: "deferred" }],
     });
+    if (recovery === "cancel") {
+      expect(
+        await makeSupervisor(store, control, observed).reconcileRun({
+          ...reconcileInput("2026-07-19T12:00:01.250Z"),
+          cancelAttemptIds: ["attempt-supervisor"],
+        })
+      ).toMatchObject({
+        ok: true,
+        cancellationOnly: true,
+        humanActionCount: 1,
+        attempts: [{ action: "cancel_worker", outcome: "applied", status: "cancelled" }],
+      });
+      expect((await store.getWorkerSessionForAttempt("attempt-supervisor"))!.status).toBe(
+        "cancelled"
+      );
+      return;
+    }
     const humans = new AgentWorkHumanActionService(store, store, {
       async observe() {
         return observed;
