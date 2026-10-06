@@ -16,6 +16,10 @@ import { AgentWorkAttemptVerificationService } from "../../src/runs/agent-work-a
 import type { AttemptVerificationRuntime } from "../../src/runs/agent-work-attempt-verification-runtime.js";
 import { AgentWorkWorkerSessionService } from "../../src/runs/agent-work-worker-session-service.js";
 import {
+  AgentWorkHumanActionService,
+  readHumanActionState,
+} from "../../src/runs/agent-work-human-action-service.js";
+import {
   AgentWorkWorkerAdapterNegotiator,
   HOST_ASSISTED_ADAPTER_MANIFEST,
   WorkerAdapterManifest_v1,
@@ -33,6 +37,85 @@ afterEach(async () => {
 });
 
 describe("headless supervisor restart reconciliation", () => {
+  it("blocks a prepared sibling after restart and permits explicit cancellation while held", async () => {
+    const store = new InMemoryWorkspaceLifecycleStore();
+    const setup = await store.acquireControllerLease({
+      runId: "run-supervisor",
+      controllerId: "supervisor-1",
+      leaseId: "supervisor-lease-1",
+      now: "2026-07-19T12:00:00.000Z",
+      ttlMs: 60000,
+      initialState: {
+        metadata: {
+          agentWorkHumanActions: {
+            version: 1,
+            entries: [
+              {
+                contextHash: `sha256:${"a".repeat(64)}`,
+                receipt: null,
+                request: {
+                  schema_version: "1.0.0",
+                  request_id: "retained-question",
+                  run_id: "run-supervisor",
+                  attempt_id: "previous-attempt",
+                  workspace_lease_id: "previous-workspace",
+                  worker_session_id: "previous-worker",
+                  action: "other",
+                  summary: "Resolve the retained human decision.",
+                  instructions: ["Use the host human channel."],
+                  suggested_commands: [],
+                  requested_at: "2026-07-19T11:59:00.000Z",
+                  preconditions: {
+                    run_revision: 0,
+                    workspace_lease_revision: 0,
+                    expected_head_sha: "a".repeat(40),
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    if (!setup.acquired) throw new Error("expected controller setup");
+    await store.createAttempt({
+      runId: "run-supervisor",
+      expectedRunRevision: 0,
+      controller: credential(setup.lease),
+      mutationId: "create-held-sibling",
+      now: "2026-07-19T12:00:00.000Z",
+      attemptId: "attempt-supervisor",
+      workItemId: "work-supervisor",
+      workItemRevision: 1,
+      packetId: "packet-supervisor",
+      packetHash: `sha256:${"a".repeat(64)}`,
+      baseSha: "a".repeat(40),
+    });
+    const control = new IdempotentLaunchControl();
+    const observed = observation("/unused/worktree", "/unused/project");
+    expect(
+      await makeSupervisor(store, control, observed).reconcileRun(
+        reconcileInput("2026-07-19T12:00:00.100Z")
+      )
+    ).toMatchObject({
+      ok: true,
+      humanActionCount: 1,
+      attempts: [{ action: "await_human", outcome: "deferred", status: "prepared" }],
+    });
+    expect(control.launchEffects).toBe(0);
+    expect(
+      await makeSupervisor(store, control, observed).reconcileRun({
+        ...reconcileInput("2026-07-19T12:00:00.200Z"),
+        cancelAttemptIds: ["attempt-supervisor"],
+      })
+    ).toMatchObject({
+      ok: true,
+      humanActionCount: 1,
+      attempts: [{ action: "cancel_attempt", outcome: "applied", status: "cancelled" }],
+    });
+    expect(control.launchEffects).toBe(0);
+  });
+
   it("cancels durable work before a worker is attached", async () => {
     const store = new InMemoryWorkspaceLifecycleStore();
     const setup = await store.acquireControllerLease({
@@ -78,7 +161,7 @@ describe("headless supervisor restart reconciliation", () => {
     });
   });
 
-  it("re-delivers an uncertain launch with one stable operation and then heartbeats after restart", async () => {
+  it.each(["resume", "cancel"])("recovers with %s after a human hold", async (recovery) => {
     const root = await mkdtemp(join(tmpdir(), "lexrunner-supervisor-"));
     roots.push(root);
     const repositoryRoot = join(root, "repository");
@@ -263,6 +346,74 @@ describe("headless supervisor restart reconciliation", () => {
       heartbeatAt: "2026-07-19T12:00:01.000Z",
     });
 
+    control.state = "awaiting_human";
+    const held = await makeSupervisor(store, control, observed).reconcileRun(
+      reconcileInput("2026-07-19T12:00:01.100Z")
+    );
+    expect(held).toMatchObject({
+      ok: true,
+      humanActionCount: 1,
+      attempts: [{ action: "await_human", outcome: "deferred" }],
+    });
+    const pending = (await store.getRunCoordination("run-supervisor"))!;
+    const request = readHumanActionState(pending.state).entries[0].request;
+    // The provider can report completion later, but that cannot swallow a durable
+    // question. A replacement supervisor must still stop before receipt/acceptance.
+    control.state = "completed";
+    expect(
+      await makeSupervisor(store, control, observed).reconcileRun(
+        reconcileInput("2026-07-19T12:00:01.200Z")
+      )
+    ).toMatchObject({
+      ok: true,
+      humanActionCount: 1,
+      attempts: [{ action: "await_human", outcome: "deferred" }],
+    });
+    if (recovery === "cancel") {
+      expect(
+        await makeSupervisor(store, control, observed).reconcileRun({
+          ...reconcileInput("2026-07-19T12:00:01.250Z"),
+          cancelAttemptIds: ["attempt-supervisor"],
+        })
+      ).toMatchObject({
+        ok: true,
+        cancellationOnly: true,
+        humanActionCount: 1,
+        attempts: [{ action: "cancel_worker", outcome: "applied", status: "cancelled" }],
+      });
+      expect((await store.getWorkerSessionForAttempt("attempt-supervisor"))!.status).toBe(
+        "cancelled"
+      );
+      return;
+    }
+    const humans = new AgentWorkHumanActionService(store, store, {
+      async observe() {
+        return observed;
+      },
+    });
+    expect(
+      await humans.settle({
+        controller,
+        expectedRunRevision: pending.revision,
+        mutationId: "human-answer",
+        now: "2026-07-19T12:00:01.300Z",
+        receipt: {
+          schema_version: "1.0.0",
+          receipt_id: "human-answer",
+          request_id: request.request_id,
+          run_id: request.run_id,
+          attempt_id: request.attempt_id,
+          workspace_lease_id: request.workspace_lease_id,
+          worker_session_id: request.worker_session_id,
+          observed_preconditions: request.preconditions,
+          outcome: "completed",
+          actor_id: "controlled-human-channel",
+          summary: "Proceed with the compared approach.",
+          completed_at: "2026-07-19T12:00:01.300Z",
+        },
+      })
+    ).toMatchObject({ ok: true });
+
     control.state = "completed";
     const completed = await makeSupervisor(store, control, observed).reconcileRun(
       reconcileInput("2026-07-19T12:00:02.000Z")
@@ -314,7 +465,7 @@ class IdempotentLaunchControl implements HeadlessSupervisorWorkerControl {
   };
   launchEffects = 0;
   operationIds: string[] = [];
-  state: "running" | "completed" = "running";
+  state: "running" | "awaiting_human" | "completed" = "running";
   private failResponseOnce = true;
   private readonly launched = new Map<string, SupervisorWorkerLaunchResult>();
 
