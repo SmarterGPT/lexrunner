@@ -12,6 +12,8 @@ import {
 import { TerminalTurnNotification } from "../../src/store/worker-turn-evidence.js";
 import { InMemoryWorkerObservationStore } from "../../src/store/inmemory/worker-observation-store.js";
 import { createAttachedWorker, taskPacket } from "../store/worker-dispatch-fixture.js";
+import { humanAnswerFixture } from "../store/worker-human-answer-fixture.js";
+import { randomUUID } from "node:crypto";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 const options = {
@@ -32,6 +34,7 @@ let sent: Array<{ id?: number; method: string; params: unknown }>;
 let mode: string;
 let providerThreadId: string;
 let connection: OwnedCodexConnection | undefined;
+const answerFixtures: Awaited<ReturnType<typeof humanAnswerFixture>>[] = [];
 function reply(value: unknown) {
   child.stdout.write(JSON.stringify(value) + "\n");
 }
@@ -47,6 +50,10 @@ beforeEach(() => {
       write(chunk, _encoding, callback) {
         const message = JSON.parse(chunk.toString());
         sent.push(message);
+        if (!message.method && mode === "answer-write-error") {
+          callback(new Error("controlled pipe failure"));
+          return;
+        }
         queueMicrotask(() => {
           if (message.method === "initialize")
             reply(
@@ -96,6 +103,7 @@ beforeEach(() => {
 afterEach(async () => {
   await connection?.close();
   connection = undefined;
+  await Promise.all(answerFixtures.splice(0).map((fixture) => fixture.cleanup()));
   vi.restoreAllMocks();
 });
 const requestOptions = () => ({
@@ -136,6 +144,194 @@ describe("owned Codex connection", () => {
     workerSessionId: "worker",
     workspaceLeaseRevision: 1,
     expectedHeadSha: "a".repeat(40),
+  });
+
+  async function admittedAnswer(id: number | string = 0) {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(humanInput(id));
+    const f = await humanAnswerFixture("memory", new Date().toISOString());
+    answerFixtures.push(f);
+    f.session.workerId = "owned-thread";
+    f.session.workerRuntime = "codex-native";
+    const persisted = await connection.persistNextHumanInputCapture(f.service, {
+      ...(await f.mutation("question")),
+      attemptId: "attempt",
+      workspaceLeaseId: "workspace",
+      workerSessionId: "worker",
+      workspaceLeaseRevision: 2,
+      expectedHeadSha: "a".repeat(40),
+    });
+    if (!persisted?.ok) throw new Error("capture failed");
+    const requestId = persisted.requestId,
+      challenge = await f.challenge(requestId);
+    expect(
+      await f.service.admitWorkerAnswer({
+        ...(await f.mutation("answer")),
+        answer: f.signed(challenge),
+      })
+    ).toMatchObject({ ok: true });
+    const input = { ...(await f.mutation("send")), requestId, claimId: randomUUID() };
+    const port = {
+      getWorkerAnswer: f.service.getWorkerAnswer.bind(f.service),
+      claimWorkerAnswerDelivery: f.service.claimWorkerAnswerDelivery.bind(f.service),
+      recordWorkerAnswerWrite: f.service.recordWorkerAnswerWrite.bind(f.service),
+    };
+    return { f, input, port };
+  }
+
+  it.each([0, "0"])(
+    "writes a persisted host-admitted answer once with exact typed native request ID %j",
+    async (id) => {
+      const { f, input, port } = await admittedAnswer(id);
+      expect(await connection!.deliverHumanAnswer(port, input, requestOptions())).toEqual({
+        status: "written",
+        disposition: "written",
+      });
+      expect(sent.filter((value) => !value.method)).toEqual([
+        { id, result: { answers: { choice: { answers: ["A"] } } } },
+      ]);
+      expect(connection!.snapshot().humanAnswerWriteAttempts).toBe(1);
+      expect(await connection!.deliverHumanAnswer(port, input, requestOptions())).toMatchObject({
+        status: "blocked",
+      });
+      expect(await f.service.claimWorkerAnswerDelivery(input)).toMatchObject({
+        ok: true,
+        newlyClaimed: false,
+      });
+    }
+  );
+  it("never sends after a lost durable claim ACK, even on exact retry", async () => {
+    const { f, input, port } = await admittedAnswer();
+    let lose = true;
+    const uncertain = {
+      ...port,
+      async claimWorkerAnswerDelivery(value: typeof input) {
+        const result = await port.claimWorkerAnswerDelivery(value);
+        if (lose) {
+          lose = false;
+          throw new Error("lost claim acknowledgement");
+        }
+        return result;
+      },
+    };
+    await expect(
+      connection!.deliverHumanAnswer(uncertain, input, requestOptions())
+    ).rejects.toThrow("lost claim acknowledgement");
+    expect(await connection!.deliverHumanAnswer(uncertain, input, requestOptions())).toMatchObject({
+      status: "reconciliation_required",
+      reason: "answer_send_already_claimed",
+    });
+    expect(sent.filter((value) => !value.method)).toHaveLength(0);
+    expect(
+      (await f.store.listRunCoordinationEvents("run")).filter(
+        (value) => value.type === "worker_answer_send_claimed"
+      )
+    ).toHaveLength(1);
+  });
+  it("retains one write when its journal acknowledgement is lost", async () => {
+    const { input, port } = await admittedAnswer();
+    const uncertain = {
+      ...port,
+      async recordWorkerAnswerWrite(value: Parameters<typeof port.recordWorkerAnswerWrite>[0]) {
+        await port.recordWorkerAnswerWrite(value);
+        throw new Error("lost write acknowledgement");
+      },
+    };
+    await expect(
+      connection!.deliverHumanAnswer(uncertain, input, requestOptions())
+    ).rejects.toThrow("lost write acknowledgement");
+    expect(await connection!.deliverHumanAnswer(port, input, requestOptions())).toMatchObject({
+      status: "blocked",
+    });
+    expect(sent.filter((value) => !value.method)).toHaveLength(1);
+  });
+  it("records a failed pipe write as uncertain without replay", async () => {
+    const { input, port } = await admittedAnswer();
+    mode = "answer-write-error";
+    expect(await connection!.deliverHumanAnswer(port, input, requestOptions())).toMatchObject({
+      status: "reconciliation_required",
+      disposition: "uncertain",
+    });
+    expect(await connection!.deliverHumanAnswer(port, input, requestOptions())).toMatchObject({
+      status: "blocked",
+    });
+    expect(sent.filter((value) => !value.method)).toHaveLength(1);
+  });
+  it.each(["cleanup", "interrupt"])(
+    "refuses %s racing the persisted claim and retains the send slot",
+    async (boundary) => {
+      const { f, input, port } = await admittedAnswer();
+      const raced = {
+        ...port,
+        async claimWorkerAnswerDelivery(value: typeof input) {
+          const result = await port.claimWorkerAnswerDelivery(value);
+          if (boundary === "cleanup")
+            reply({
+              method: "serverRequest/resolved",
+              params: { threadId: "owned-thread", requestId: 0 },
+            });
+          else
+            await connection!.interrupt(
+              { threadId: "owned-thread", turnId: "turn-1" },
+              requestOptions()
+            );
+          return result;
+        },
+      };
+      expect(await connection!.deliverHumanAnswer(raced, input, requestOptions())).toMatchObject({
+        status: "reconciliation_required",
+        disposition: "not_sent",
+      });
+      expect(sent.filter((value) => !value.method)).toHaveLength(0);
+      expect(await f.service.claimWorkerAnswerDelivery(input)).toMatchObject({
+        ok: true,
+        newlyClaimed: false,
+      });
+    }
+  );
+  it("rejects a mismatched durable answer hash before writing", async () => {
+    const { input, port } = await admittedAnswer();
+    const corrupted = {
+      ...port,
+      async claimWorkerAnswerDelivery(value: typeof input) {
+        const result = await port.claimWorkerAnswerDelivery(value);
+        return result.ok
+          ? { ...result, delivery: { ...result.delivery, answerHash: `sha256:${"b".repeat(64)}` } }
+          : result;
+      },
+    };
+    expect(await connection!.deliverHumanAnswer(corrupted, input, requestOptions())).toMatchObject({
+      status: "reconciliation_required",
+      reason: "answer_delivery_claim_mismatch",
+    });
+    expect(sent.filter((value) => !value.method)).toHaveLength(0);
+  });
+  it("snapshots the caller's input and window, and serializes concurrent delivery", async () => {
+    const { input, port } = await admittedAnswer();
+    const window = requestOptions();
+    let release!: () => void;
+    const delay = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const paused = {
+      ...port,
+      async claimWorkerAnswerDelivery(value: typeof input) {
+        await delay;
+        return port.claimWorkerAnswerDelivery(value);
+      },
+    };
+    const delivery = connection!.deliverHumanAnswer(paused, input, window);
+    await Promise.resolve();
+    const retry = connection!.deliverHumanAnswer(port, input, requestOptions());
+    input.claimId = randomUUID();
+    input.controller.controllerId = "changed";
+    window.deadlineAt = "invalid";
+    window.signal = AbortSignal.abort();
+    release();
+    expect(await retry).toMatchObject({ status: "blocked", reason: "answer_delivery_in_progress" });
+    expect(await delivery).toMatchObject({ status: "written" });
+    expect(sent.filter((value) => !value.method)).toHaveLength(1);
   });
 
   it("retains an exact question until the portable hold commit confirms, without answering", async () => {
