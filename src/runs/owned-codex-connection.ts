@@ -14,6 +14,19 @@ import {
   type WorkerTurnCaptureResult,
 } from "../store/worker-turn-evidence.js";
 import { z } from "zod";
+import {
+  CodexHumanInputCapture,
+  CodexHumanInputRequest,
+  CodexServerRequestResolved,
+} from "../schemas/codex-human-input.js";
+import {
+  hashWorkerHumanInput,
+  type WorkerHumanInputCapture,
+} from "../schemas/worker-human-input.js";
+import {
+  type AgentWorkHumanActionService,
+  type HumanActionMutationInput,
+} from "./agent-work-human-action-service.js";
 import type { AttachedCodexTransport, CodexTurnStartParams } from "./codex-worker-dispatch.js";
 
 const text = z.string().min(1).max(16384);
@@ -94,6 +107,10 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     notificationJson: string;
   }> = [];
   private readonly capturedReceipts: typeof this.capturedTurns = [];
+  private readonly capturedHumanInputs: WorkerHumanInputCapture[] = [];
+  private readonly humanRequests = new Map<string, { hash: string; cleared: boolean }>();
+  private humanCaptureBytes = 0;
+  private humanCaptureBusy = false;
   private receiptCaptureBytes = 0;
   private receiptCaptureBusy = false;
   private readonly exited: Promise<void>;
@@ -237,7 +254,68 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       pendingTurnCaptureBytes: this.captureBytes,
       pendingReceiptCaptures: this.capturedReceipts.length,
       pendingReceiptCaptureBytes: this.receiptCaptureBytes,
+      pendingHumanInputCaptures: this.capturedHumanInputs.length,
+      pendingHumanInputCaptureBytes: this.humanCaptureBytes,
+      unclearedHumanRequests: [...this.humanRequests.values()].filter((value) => !value.cleared)
+        .length,
     };
+  }
+
+  /** Atomically retain the portable hold and exact question before any host displays it. */
+  async persistNextHumanInputCapture(
+    service: Pick<AgentWorkHumanActionService, "request">,
+    input: HumanActionMutationInput & {
+      attemptId: string;
+      workspaceLeaseId: string;
+      workerSessionId: string;
+      workspaceLeaseRevision: number;
+      expectedHeadSha: string;
+    }
+  ) {
+    input = structuredClone(input);
+    if (this.humanCaptureBusy) throw new Error("capture_in_progress");
+    const next = this.capturedHumanInputs[0];
+    if (!next) return null;
+    // Revalidate the adapter projection before crossing the portable service port.
+    const capture = CodexHumanInputCapture.parse(next);
+    this.humanCaptureBusy = true;
+    try {
+      const requestId = `worker-input:${capture.observationId}`;
+      const result = await service.request({
+        controller: input.controller,
+        expectedRunRevision: input.expectedRunRevision,
+        mutationId: input.mutationId,
+        now: input.now,
+        workerInput: capture,
+        request: {
+          schema_version: "1.0.0",
+          request_id: requestId,
+          run_id: input.controller.runId,
+          attempt_id: input.attemptId,
+          workspace_lease_id: input.workspaceLeaseId,
+          worker_session_id: input.workerSessionId,
+          action: "other",
+          summary: "Worker requires a human decision.",
+          instructions: [
+            "Review the exact persisted worker question through a qualified host human channel.",
+          ],
+          suggested_commands: [],
+          preconditions: {
+            run_revision: input.expectedRunRevision,
+            workspace_lease_revision: input.workspaceLeaseRevision,
+            expected_head_sha: input.expectedHeadSha,
+          },
+          requested_at: capture.observedAt,
+        },
+      });
+      if (result.ok) {
+        this.capturedHumanInputs.shift();
+        this.humanCaptureBytes -= Buffer.byteLength(JSON.stringify(next), "utf8");
+      }
+      return { ...result, requestId };
+    } finally {
+      this.humanCaptureBusy = false;
+    }
   }
 
   /** Retain the source event before removing it from the volatile queue. No lifecycle effects. */
@@ -532,6 +610,11 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
         }
         this.notifications[message.method] = (this.notifications[message.method] ?? 0) + 1;
         if (message.id !== undefined) {
+          if (message.method === "item/tool/requestUserInput") {
+            this.captureHumanInput(message, line);
+            if (this.failure) return;
+            continue;
+          }
           this.fail("server_request_unsupported");
           return;
         }
@@ -601,10 +684,21 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
           });
           this.captureBytes += bytes;
           this.terminalTurnStatus = event.data.params.turn.status;
+          for (const request of this.humanRequests.values()) request.cleared = true;
           this.terminalWaiter?.resolve({
             turnId: event.data.params.turn.id,
             status: this.terminalTurnStatus,
           });
+        }
+        if (message.method === "serverRequest/resolved") {
+          const event = CodexServerRequestResolved.safeParse(message);
+          if (!event.success || event.data.params.threadId !== this.settings?.threadId) {
+            this.fail("invalid_server_request_resolution");
+            return;
+          }
+          const request = this.humanRequests.get(JSON.stringify(event.data.params.requestId));
+          if (request) request.cleared = true;
+          // Cleanup is never an answer, terminal event, queue removal or hold release.
         }
         if (message.method === "item/completed") {
           const params = message.params as
@@ -648,6 +742,67 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       if (this.failure) return;
     }
     if (Buffer.byteLength(this.buffer, "utf8") > MAX_FRAME) this.fail("frame_limit");
+  }
+  private captureHumanInput(message: unknown, line: string) {
+    const event = CodexHumanInputRequest.safeParse(message);
+    if (!event.success || Buffer.byteLength(line, "utf8") > 16 * 1024) {
+      this.fail("unsupported_human_input");
+      return;
+    }
+    const request = event.data;
+    if (
+      !this.turnAttempted ||
+      !this.ownedTurnId ||
+      this.terminalTurnStatus ||
+      request.params.threadId !== this.settings?.threadId ||
+      request.params.turnId !== this.ownedTurnId
+    ) {
+      this.fail("human_input_turn_mismatch");
+      return;
+    }
+    const key = JSON.stringify(request.id);
+    const hash = hashWorkerHumanInput(line);
+    const prior = this.humanRequests.get(key);
+    if (prior) {
+      if (prior.hash !== hash || prior.cleared) this.fail("human_input_request_conflict");
+      return;
+    }
+    if ([...this.humanRequests.values()].some((value) => !value.cleared)) {
+      this.fail("human_input_already_pending");
+      return;
+    }
+    const parsedCapture = CodexHumanInputCapture.safeParse({
+      version: 1,
+      connectionId: this.captureId,
+      observationId: `${this.captureId}:${++this.captureSequence}`,
+      observedAt: new Date().toISOString(),
+      workerRuntime: "codex-native",
+      workerId: request.params.threadId,
+      turnId: request.params.turnId,
+      providerRequestId: request.id,
+      questions: request.params.questions.map((q) => ({
+        id: q.id,
+        header: q.header,
+        question: q.question,
+        allowOther: q.isOther ?? false,
+        options: q.options ?? null,
+      })),
+      requestJson: line,
+      requestHash: hash,
+    });
+    if (!parsedCapture.success) {
+      this.fail("unsupported_human_input");
+      return;
+    }
+    const capture = parsedCapture.data;
+    const bytes = Buffer.byteLength(JSON.stringify(capture), "utf8");
+    if (this.humanRequests.size >= 128 || this.humanCaptureBytes + bytes > 2 * MAX_FRAME) {
+      this.fail("human_input_capture_limit");
+      return;
+    }
+    this.humanRequests.set(key, { hash, cleared: false });
+    this.capturedHumanInputs.push(capture);
+    this.humanCaptureBytes += bytes;
   }
   private finalizeOutput() {
     if (this.outputFinalized) return;

@@ -100,7 +100,299 @@ const requestOptions = () => ({
 const params = { threadId: "owned-thread", input: [{ type: "text" as const, text: "task" }] };
 
 describe("owned Codex connection", () => {
+  const humanInput = (id: number | string = 42) => ({
+    id,
+    method: "item/tool/requestUserInput",
+    emittedAtMs: 1791335791251,
+    params: {
+      threadId: "owned-thread",
+      turnId: "turn-1",
+      itemId: "question-item",
+      autoResolutionMs: null,
+      questions: [
+        {
+          id: "choice",
+          header: "Approach",
+          question: "Which candidate?",
+          isSecret: false,
+          isOther: true,
+          options: [{ label: "A", description: "Use the retained evidence." }],
+        },
+      ],
+    },
+  });
+  const persistInput = () => ({
+    controller: { runId: "run", controllerId: "controller", leaseId: "lease", fencingToken: 1 },
+    expectedRunRevision: 0,
+    mutationId: "capture",
+    now: new Date().toISOString(),
+    attemptId: "attempt",
+    workspaceLeaseId: "workspace",
+    workerSessionId: "worker",
+    workspaceLeaseRevision: 1,
+    expectedHeadSha: "a".repeat(40),
+  });
+
+  it("retains an exact question until the portable hold commit confirms, without answering", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    const question = humanInput();
+    const wire = JSON.stringify(question);
+    reply(question);
+    expect(connection.snapshot()).toMatchObject({
+      failure: null,
+      pendingHumanInputCaptures: 1,
+      unclearedHumanRequests: 1,
+    });
+    let committed: unknown;
+    const request = vi
+      .fn()
+      .mockImplementationOnce(async (input) => {
+        committed = structuredClone(input);
+        throw new Error("storage response lost");
+      })
+      .mockResolvedValueOnce({ ok: false, reason: "stale_revision" })
+      .mockResolvedValueOnce({ ok: true, revision: 1, replay: true });
+    const input = persistInput();
+    await expect(connection.persistNextHumanInputCapture({ request }, input)).rejects.toThrow(
+      "storage response lost"
+    );
+    expect(connection.snapshot().pendingHumanInputCaptures).toBe(1);
+    expect(await connection.persistNextHumanInputCapture({ request }, input)).toMatchObject({
+      ok: false,
+    });
+    expect(connection.snapshot().pendingHumanInputCaptures).toBe(1);
+    expect(await connection.persistNextHumanInputCapture({ request }, input)).toMatchObject({
+      ok: true,
+      replay: true,
+    });
+    expect(request.mock.calls[2][0]).toEqual(committed);
+    expect(committed).toMatchObject({
+      request: {
+        action: "other",
+        run_id: "run",
+        attempt_id: "attempt",
+        worker_session_id: "worker",
+      },
+      workerInput: {
+        version: 1,
+        workerRuntime: "codex-native",
+        workerId: "owned-thread",
+        turnId: "turn-1",
+        providerRequestId: 42,
+        requestJson: wire,
+        questions: [{ id: "choice", allowOther: true, options: [{ label: "A" }] }],
+      },
+    });
+    expect(connection.snapshot().pendingHumanInputCaptureBytes).toBe(0);
+    expect(await connection.persistNextHumanInputCapture({ request }, input)).toBeNull();
+    expect(sent.every((message) => typeof message.method === "string")).toBe(true);
+    expect(sent.filter((message) => message.method === "turn/start")).toHaveLength(1);
+  });
+
+  it("keeps captured questions through cleanup, terminal observation and child exit", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(humanInput("42"));
+    reply({
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: 42 },
+    });
+    expect(connection.snapshot().unclearedHumanRequests).toBe(1);
+    reply({
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: "42" },
+    });
+    expect(connection.snapshot().unclearedHumanRequests).toBe(0);
+    reply(terminal());
+    await connection.close();
+    const request = vi.fn().mockResolvedValue({ ok: true, revision: 1, replay: false });
+    expect(
+      await connection.persistNextHumanInputCapture({ request }, persistInput())
+    ).toMatchObject({ ok: true });
+    expect(request.mock.calls[0][0].workerInput.providerRequestId).toBe("42");
+  });
+
+  it("deduplicates exact pending questions but rejects conflicting or reused request IDs", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(humanInput());
+    reply(humanInput());
+    expect(connection.snapshot()).toMatchObject({ failure: null, pendingHumanInputCaptures: 1 });
+    const changed = humanInput();
+    changed.params.questions[0].question = "Different scope?";
+    reply(changed);
+    expect(connection.snapshot()).toMatchObject({
+      failure: "human_input_request_conflict",
+      pendingHumanInputCaptures: 1,
+    });
+  });
+
+  it("rejects request ID reuse after cleanup without losing the original question", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(humanInput());
+    reply({
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: 42 },
+    });
+    reply(humanInput());
+    expect(connection.snapshot()).toMatchObject({
+      failure: "human_input_request_conflict",
+      pendingHumanInputCaptures: 1,
+    });
+  });
+
+  it("refuses questions for an unobserved turn", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    reply(humanInput());
+    expect(connection.snapshot()).toMatchObject({
+      failure: "human_input_turn_mismatch",
+      pendingHumanInputCaptures: 0,
+    });
+  });
+
+  it("refuses concurrent questions", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(humanInput());
+    reply(humanInput(43));
+    expect(connection.snapshot()).toMatchObject({
+      failure: "human_input_already_pending",
+      pendingHumanInputCaptures: 1,
+    });
+  });
+
+  it.each([
+    "secret",
+    "auto",
+    "duplicate-question",
+    "unknown",
+    "other-thread",
+    "other-turn",
+    "terminal",
+  ])("rejects unsupported or misbound %s questions before queueing", async (kind) => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    const question = humanInput();
+    if (kind === "secret") Object.assign(question.params.questions[0], { isSecret: true });
+    if (kind === "auto") Object.assign(question.params, { autoResolutionMs: 0 });
+    if (kind === "duplicate-question") question.params.questions.push(question.params.questions[0]);
+    if (kind === "unknown") Object.assign(question.params, { authority: "approved" });
+    if (kind === "other-thread") question.params.threadId = "other";
+    if (kind === "other-turn") question.params.turnId = "other";
+    if (kind === "terminal") reply(terminal());
+    reply(question);
+    expect(connection.snapshot().failure).not.toBeNull();
+    expect(connection.snapshot().pendingHumanInputCaptures).toBe(0);
+  });
+
+  it("accepts a question after native started observation while dispatch ACK is pending", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    mode = "lost";
+    const dispatched = connection.request("turn/start", params, requestOptions());
+    reply({ method: "turn/started", params: { threadId: "owned-thread", turn: { id: "turn-1" } } });
+    reply(humanInput());
+    expect(connection.snapshot()).toMatchObject({ failure: null, pendingHumanInputCaptures: 1 });
+    const start = sent.find((message) => message.method === "turn/start")!;
+    reply({ id: start.id, result: { turn: { id: "turn-1" } } });
+    await dispatched;
+  });
+
+  it("serializes capture persistence and snapshots the caller's binding before the asynchronous service", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(humanInput());
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const request = vi.fn(async (input) => {
+      await ready;
+      expect(input.request.run_id).toBe("run");
+      expect(input.request.attempt_id).toBe("attempt");
+      return { ok: true as const, revision: 1, replay: false };
+    });
+    const input = persistInput();
+    const persistence = connection.persistNextHumanInputCapture({ request }, input);
+    input.controller.runId = "other";
+    input.attemptId = "other";
+    await expect(
+      connection.persistNextHumanInputCapture({ request }, persistInput())
+    ).rejects.toThrow("capture_in_progress");
+    release();
+    await persistence;
+  });
+
   const stopParams = { threadId: "owned-thread", turnId: "turn-1" };
+  it("bounds retained request identities without evicting an unanswered durable capture", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    for (let id = 0; id < 128; id++) {
+      reply(humanInput(id));
+      reply({
+        method: "serverRequest/resolved",
+        params: { threadId: "owned-thread", requestId: id },
+      });
+    }
+    expect(connection.snapshot()).toMatchObject({ failure: null, pendingHumanInputCaptures: 128 });
+    reply(humanInput(128));
+    expect(connection.snapshot()).toMatchObject({
+      failure: "human_input_capture_limit",
+      pendingHumanInputCaptures: 128,
+    });
+  });
+
+  it("accepts bounded free-text questions and refuses oversized source bytes", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    const freeText = humanInput();
+    Object.assign(freeText.params.questions[0], { options: null });
+    reply(freeText);
+    const request = vi.fn().mockResolvedValue({ ok: true, revision: 1, replay: false });
+    await connection.persistNextHumanInputCapture({ request }, persistInput());
+    expect(request.mock.calls[0][0].workerInput.questions[0].options).toBeNull();
+    reply({
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: 42 },
+    });
+    const oversized = humanInput(43);
+    oversized.params.questions = Array.from({ length: 4 }, (_, index) => ({
+      ...oversized.params.questions[0],
+      id: `q${index}`,
+      question: "鳥".repeat(2048),
+    }));
+    reply(oversized);
+    expect(connection.snapshot()).toMatchObject({
+      failure: "unsupported_human_input",
+      pendingHumanInputCaptures: 0,
+    });
+  });
+
+  it("bounds the aggregate capture queue without discarding previously captured questions", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    for (let id = 0; id < 128 && !connection.snapshot().failure; id++) {
+      const question = humanInput(id);
+      question.params.questions = [0, 1].map((index) => ({
+        ...question.params.questions[0],
+        id: `q${index}`,
+        question: "a".repeat(4096),
+      }));
+      reply(question);
+      if (!connection.snapshot().failure)
+        reply({
+          method: "serverRequest/resolved",
+          params: { threadId: "owned-thread", requestId: id },
+        });
+    }
+    expect(connection.snapshot().failure).toBe("human_input_capture_limit");
+    expect(connection.snapshot().pendingHumanInputCaptureBytes).toBeLessThanOrEqual(
+      2 * 1024 * 1024
+    );
+    expect(connection.snapshot().pendingHumanInputCaptures).toBeGreaterThan(0);
+  });
+
   const terminal = (status = "interrupted", turnId = "turn-1") => ({
     method: "turn/completed",
     emittedAtMs: 1791335791251,
