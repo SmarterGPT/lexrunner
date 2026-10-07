@@ -323,7 +323,57 @@ describe("owned Codex connection", () => {
       terminalTurnStatus: "completed",
       pendingTurnCaptures: 1,
     });
+    await expect(connection.awaitTerminal("turn-1", requestOptions())).rejects.toThrow(
+      "terminal_status_conflict"
+    );
   });
+
+  it("rejects a new live wait after close while retaining earlier raw evidence", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(terminal());
+    await connection.close();
+    await expect(connection.awaitTerminal("turn-1", requestOptions())).rejects.toThrow(
+      "connection_closed"
+    );
+    expect(connection.snapshot()).toMatchObject({
+      terminalTurnStatus: "interrupted",
+      pendingTurnCaptures: 1,
+    });
+  });
+
+  it.each(["turn/start", "turn/interrupt"])(
+    "rejects a %s ACK followed by a conflicting report in the same read",
+    async (method) => {
+      connection = await OwnedCodexConnection.open(options);
+      let pending: Promise<unknown>;
+      if (method === "turn/start") {
+        mode = "lost";
+        pending = connection.request("turn/start", params, requestOptions());
+      } else {
+        await connection.request("turn/start", params, requestOptions());
+        mode = "lost-interrupt";
+        pending = connection.interrupt(stopParams, requestOptions());
+      }
+      const rejection = expect(pending).rejects.toThrow("terminal_status_conflict");
+      const rpc = sent.find((x) => x.method === method)!;
+      child.stdout.write(
+        [
+          terminal("completed"),
+          { id: rpc.id, result: method === "turn/start" ? { turn: { id: "turn-1" } } : {} },
+          terminal("interrupted"),
+        ]
+          .map((event) => JSON.stringify(event))
+          .join("\n") + "\n"
+      );
+      await rejection;
+      expect(connection.snapshot()).toMatchObject({
+        failure: "terminal_status_conflict",
+        terminalTurnStatus: "completed",
+        pendingTurnCaptures: 1,
+      });
+    }
+  );
 
   it("keeps the originally supplied wait signal when the caller mutates its options", async () => {
     connection = await OwnedCodexConnection.open(options);

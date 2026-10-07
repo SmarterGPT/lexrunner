@@ -308,6 +308,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     if (this.turnAttempted) throw new Error("dispatch_already_attempted");
     this.turnAttempted = true;
     const response = await this.rpc(method, parsed, Math.min(remaining, 30_000), options.signal);
+    this.requireOpen();
     const ack = z.object({ turn: TurnIdentity }).safeParse(response);
     if (!ack.success) {
       this.fail("invalid_turn_acknowledgement");
@@ -340,6 +341,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       options.signal,
       true
     );
+    this.requireOpen();
     if (!z.object({}).strict().safeParse(response).success) {
       this.fail("invalid_interrupt_acknowledgement");
       throw new Error("invalid_interrupt_acknowledgement");
@@ -359,8 +361,8 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     const remaining = Date.parse(deadlineAt) - Date.now();
     if (!Number.isFinite(remaining) || remaining <= 0 || signal.aborted)
       throw new Error("terminal_window_expired");
-    if (this.terminalTurnStatus) return { turnId, status: this.terminalTurnStatus };
     this.requireOpen();
+    if (this.terminalTurnStatus) return { turnId, status: this.terminalTurnStatus };
     if (this.terminalWaiter) throw new Error("terminal_wait_already_pending");
     return new Promise((resolve, reject) => {
       const finish = (value: OwnedCodexTerminalObservation | null) => {
