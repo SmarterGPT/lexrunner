@@ -1,7 +1,11 @@
 # Terminal worker event capture
 
 The owned Codex connection now queues `turn/completed` notifications for its own
-thread after a dispatch attempt. Only terminal `completed`, `failed` and
+thread and single observed turn after a dispatch attempt. The owned turn is bound
+by dispatch acknowledgement, start notification or an early terminal event;
+conflicting turn IDs/statuses terminate the connection without enqueuing the
+conflicting report. Repeated consistent terminal reports remain bounded queue
+entries. Only terminal `completed`, `failed` and
 `interrupted` statuses are accepted. This is a minimal event projection checked
 against locally generated Codex 0.145.0 schemas, not verification of the full turn
 body or the provider's conclusions.

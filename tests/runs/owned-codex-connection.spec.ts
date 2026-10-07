@@ -63,7 +63,12 @@ beforeEach(() => {
               },
             });
           if (message.method === "turn/start" && mode !== "lost")
-            reply({ id: message.id, result: { turn: { id: "turn-1" } } });
+            reply({
+              id: message.id,
+              result: mode === "bad-start" ? {} : { turn: { id: "turn-1" } },
+            });
+          if (message.method === "turn/interrupt" && mode !== "lost-interrupt")
+            reply({ id: message.id, result: mode === "bad-interrupt" ? { stopped: true } : {} });
         });
         callback();
       },
@@ -91,6 +96,293 @@ const requestOptions = () => ({
 const params = { threadId: "owned-thread", input: [{ type: "text" as const, text: "task" }] };
 
 describe("owned Codex connection", () => {
+  const stopParams = { threadId: "owned-thread", turnId: "turn-1" };
+  const terminal = (status = "interrupted", turnId = "turn-1") => ({
+    method: "turn/completed",
+    params: { threadId: "owned-thread", turn: { id: turnId, status } },
+  });
+
+  it("rejects unobserved, wrong-thread, wrong-turn, and overridden stops without sending", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await expect(connection.interrupt(stopParams, requestOptions())).rejects.toThrow(
+      "turn_not_observed"
+    );
+    await connection.request("turn/start", params, requestOptions());
+    await expect(
+      connection.interrupt({ ...stopParams, threadId: "other" }, requestOptions())
+    ).rejects.toThrow("thread_mismatch");
+    await expect(
+      connection.interrupt({ ...stopParams, turnId: "other" }, requestOptions())
+    ).rejects.toThrow("turn_mismatch");
+    await expect(
+      connection.interrupt({ ...stopParams, scope: "all" } as typeof stopParams, requestOptions())
+    ).rejects.toThrow();
+    await expect(
+      connection.interrupt(stopParams, { ...requestOptions(), signal: AbortSignal.abort() })
+    ).rejects.toThrow("interrupt_window_expired");
+    await expect(
+      connection.interrupt(stopParams, { ...requestOptions(), deadlineAt: "invalid" })
+    ).rejects.toThrow("interrupt_window_expired");
+    expect(connection.snapshot().interruptAttempted).toBe(false);
+    expect(sent.filter((x) => x.method === "turn/interrupt")).toHaveLength(0);
+  });
+
+  it("distinguishes interrupt ACK and cleared questions from a terminal observation", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    expect(await connection.interrupt(stopParams, requestOptions())).toEqual({
+      acknowledged: true,
+      terminalStatus: null,
+    });
+    reply({
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: 10 },
+    });
+    const result = await connection.awaitTerminal("turn-1", {
+      ...requestOptions(),
+      deadlineAt: new Date(Date.now() + 15).toISOString(),
+    });
+    expect(result).toBeNull();
+    expect(connection.snapshot()).toMatchObject({
+      interruptAcknowledged: true,
+      terminalTurnStatus: null,
+      pendingTurnCaptures: 0,
+    });
+    await expect(connection.interrupt(stopParams, requestOptions())).rejects.toThrow(
+      "interrupt_already_attempted"
+    );
+    expect(sent.filter((x) => x.method === "turn/interrupt")).toHaveLength(1);
+    await expect(connection.request("turn/start", params, requestOptions())).rejects.toThrow(
+      "dispatch_already_attempted"
+    );
+  });
+
+  it("waits on matching events and retains interruption evidence until storage confirms", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    await connection.interrupt(stopParams, requestOptions());
+    const wait = connection.awaitTerminal("turn-1", requestOptions());
+    await expect(connection.awaitTerminal("turn-1", requestOptions())).rejects.toThrow(
+      "terminal_wait_already_pending"
+    );
+    reply(terminal());
+    expect(await wait).toEqual({ turnId: "turn-1", status: "interrupted" });
+    await connection.close();
+    const recordWorkerTurnEvidence = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("storage response lost"))
+      .mockResolvedValue({ recorded: true });
+    const port = { recordWorkerTurnEvidence, getWorkerTurnEvidence: async () => null };
+    const binding = { sessionId: "session", claimId: "claim", requestHash: "hash" };
+    await expect(connection.persistNextTurnCapture(port, binding, "now")).rejects.toThrow(
+      "storage response lost"
+    );
+    expect(connection.snapshot().pendingTurnCaptures).toBe(1);
+    await connection.persistNextTurnCapture(port, binding, "later");
+    expect(recordWorkerTurnEvidence.mock.calls[0][0]).toEqual(
+      recordWorkerTurnEvidence.mock.calls[1][0]
+    );
+    expect(recordWorkerTurnEvidence.mock.calls[0][0].notificationJson).toBe(
+      JSON.stringify(terminal())
+    );
+    expect(connection.snapshot().pendingTurnCaptures).toBe(0);
+  });
+
+  it("stops an observed turn before a delayed dispatch ACK without replaying dispatch", async () => {
+    mode = "lost";
+    connection = await OwnedCodexConnection.open(options);
+    const dispatch = connection.request("turn/start", params, requestOptions());
+    reply({ method: "turn/started", params: { threadId: "owned-thread", turn: { id: "turn-1" } } });
+    expect(await connection.interrupt(stopParams, requestOptions())).toMatchObject({
+      acknowledged: true,
+    });
+    reply(terminal());
+    const start = sent.find((x) => x.method === "turn/start")!;
+    reply({ id: start.id, result: { turn: { id: "turn-1" } } });
+    await dispatch;
+    expect(await connection.awaitTerminal("turn-1", requestOptions())).toEqual({
+      turnId: "turn-1",
+      status: "interrupted",
+    });
+    expect(sent.filter((x) => x.method === "turn/start")).toHaveLength(1);
+    expect(sent.filter((x) => x.method === "turn/interrupt")).toHaveLength(1);
+  });
+
+  it("keeps completion racing with a stop distinct from interruption", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    const stop = connection.interrupt(stopParams, requestOptions());
+    reply(terminal("completed"));
+    expect(await stop).toEqual({ acknowledged: true, terminalStatus: "completed" });
+    expect(await connection.awaitTerminal("turn-1", requestOptions())).toEqual({
+      turnId: "turn-1",
+      status: "completed",
+    });
+    expect(await connection.interrupt(stopParams, requestOptions())).toEqual({
+      acknowledged: false,
+      terminalStatus: "completed",
+    });
+    expect(sent.filter((x) => x.method === "turn/interrupt")).toHaveLength(1);
+  });
+
+  it("does not send an interrupt for a turn already observed as terminal", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(terminal("failed"));
+    expect(await connection.interrupt(stopParams, requestOptions())).toEqual({
+      acknowledged: false,
+      terminalStatus: "failed",
+    });
+    expect(sent.filter((x) => x.method === "turn/interrupt")).toHaveLength(0);
+  });
+
+  it("treats lost stop ACK as uncertain, rejects concurrent/replayed stop, and preserves observed evidence", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    mode = "lost-interrupt";
+    const abort = new AbortController();
+    const stop = connection.interrupt(stopParams, { ...requestOptions(), signal: abort.signal });
+    const rejection = expect(stop).rejects.toThrow("request_aborted");
+    await expect(connection.interrupt(stopParams, requestOptions())).rejects.toThrow(
+      "interrupt_already_attempted"
+    );
+    reply(terminal());
+    abort.abort();
+    await rejection;
+    await connection.close();
+    expect(connection.snapshot()).toMatchObject({
+      interruptAttempted: true,
+      interruptAcknowledged: false,
+      terminalTurnStatus: "interrupted",
+      pendingTurnCaptures: 1,
+    });
+    await expect(connection.interrupt(stopParams, requestOptions())).rejects.toThrow();
+    expect(sent.filter((x) => x.method === "turn/interrupt")).toHaveLength(1);
+  });
+
+  it("rejects malformed stop acknowledgements", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    mode = "bad-interrupt";
+    await expect(connection.interrupt(stopParams, requestOptions())).rejects.toThrow(
+      "invalid_interrupt_acknowledgement"
+    );
+    expect(connection.snapshot().interruptAcknowledged).toBe(false);
+  });
+
+  it.each(["turn/started", "turn/completed"])(
+    "rejects %s from another turn and leaves stop unproven",
+    async (method) => {
+      connection = await OwnedCodexConnection.open(options);
+      await connection.request("turn/start", params, requestOptions());
+      const wait = connection.awaitTerminal("turn-1", requestOptions());
+      const rejection = expect(wait).rejects.toThrow("turn_mismatch");
+      reply({ ...terminal("interrupted", "other"), method });
+      await rejection;
+      expect(connection.snapshot()).toMatchObject({
+        failure: "turn_mismatch",
+        pendingTurnCaptures: 0,
+        terminalTurnStatus: null,
+      });
+    }
+  );
+
+  it("rejects a dispatch ACK conflicting with an earlier observed turn", async () => {
+    mode = "lost";
+    connection = await OwnedCodexConnection.open(options);
+    const dispatch = connection.request("turn/start", params, requestOptions());
+    const rejection = expect(dispatch).rejects.toThrow("turn_mismatch");
+    reply({ method: "turn/started", params: { threadId: "owned-thread", turn: { id: "turn-1" } } });
+    reply({
+      id: sent.find((x) => x.method === "turn/start")!.id,
+      result: { turn: { id: "other" } },
+    });
+    await rejection;
+  });
+
+  it("rejects a malformed dispatch ACK without inventing a stoppable turn", async () => {
+    mode = "bad-start";
+    connection = await OwnedCodexConnection.open(options);
+    await expect(connection.request("turn/start", params, requestOptions())).rejects.toThrow(
+      "invalid_turn_acknowledgement"
+    );
+    expect(connection.snapshot()).toMatchObject({
+      failure: "invalid_turn_acknowledgement",
+      ownedTurnId: null,
+      interruptAttempted: false,
+    });
+  });
+
+  it("retains the earlier terminal evidence when the provider contradicts its status", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    reply(terminal("completed"));
+    reply(terminal("interrupted"));
+    expect(connection.snapshot()).toMatchObject({
+      failure: "terminal_status_conflict",
+      terminalTurnStatus: "completed",
+      pendingTurnCaptures: 1,
+    });
+  });
+
+  it("keeps the originally supplied wait signal when the caller mutates its options", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    const abort = new AbortController();
+    const waitOptions = { ...requestOptions(), signal: abort.signal };
+    const wait = connection.awaitTerminal("turn-1", waitOptions);
+    const rejection = expect(wait).rejects.toThrow("terminal_wait_aborted");
+    waitOptions.signal = new AbortController().signal;
+    abort.abort();
+    await rejection;
+    const next = connection.awaitTerminal("turn-1", requestOptions());
+    reply(terminal());
+    expect(await next).toMatchObject({ status: "interrupted" });
+  });
+
+  it("bounds a long terminal wait at thirty seconds without stopping or dispatching again", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    vi.useFakeTimers();
+    try {
+      const wait = connection.awaitTerminal("turn-1", {
+        ...requestOptions(),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await wait).toBeNull();
+      expect(sent.filter((x) => x.method === "turn/interrupt")).toHaveLength(0);
+      expect(sent.filter((x) => x.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("allows waiting again after timeout/abort without any new dispatch or interrupt", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    const abort = new AbortController();
+    const wait = connection.awaitTerminal("turn-1", { ...requestOptions(), signal: abort.signal });
+    const rejection = expect(wait).rejects.toThrow("terminal_wait_aborted");
+    abort.abort();
+    await rejection;
+    const again = connection.awaitTerminal("turn-1", requestOptions());
+    reply(terminal());
+    expect(await again).toMatchObject({ status: "interrupted" });
+    expect(sent.filter((x) => x.method === "turn/start")).toHaveLength(1);
+    expect(sent.filter((x) => x.method === "turn/interrupt")).toHaveLength(0);
+  });
+
+  it("rejects a terminal wait on connection close without claiming a stop", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    const wait = connection.awaitTerminal("turn-1", requestOptions());
+    const rejection = expect(wait).rejects.toThrow("connection_closed");
+    await connection.close();
+    await rejection;
+    expect(connection.snapshot().terminalTurnStatus).toBeNull();
+  });
+
   it("requests the supported receipt schema and retries only final-message persistence after response loss", async () => {
     connection = await OwnedCodexConnection.open(options);
     await connection.request(
@@ -264,7 +556,7 @@ describe("owned Codex connection", () => {
     connection = await OwnedCodexConnection.open(options);
     reply({
       method: "turn/completed",
-      params: { threadId: "other", turn: { id: "turn", status: "completed" } },
+      params: { threadId: "other", turn: { id: "turn-1", status: "completed" } },
     });
     expect(connection.snapshot().failure).toBe("unexpected_execution");
     expect(connection.snapshot().pendingTurnCaptures).toBe(0);
@@ -284,7 +576,7 @@ describe("owned Codex connection", () => {
     await connection.request("turn/start", params, requestOptions());
     reply({
       method: "turn/completed",
-      params: { threadId: "owned-thread", turn: { id: "turn", status: "failed" } },
+      params: { threadId: "owned-thread", turn: { id: "turn-1", status: "failed" } },
     });
     let finish!: (value: { recorded: false; reason: "evidence_limit" }) => void;
     const port = {
@@ -318,7 +610,7 @@ describe("owned Codex connection", () => {
         method: "turn/completed",
         params: {
           threadId: "owned-thread",
-          turn: { id: String(i), status: "completed", items: [{ text: "x".repeat(900000) }] },
+          turn: { id: "turn-1", status: "completed", items: [{ text: "x".repeat(900000) }] },
         },
       });
     expect(connection.snapshot().failure).toBe("turn_capture_limit");
@@ -330,7 +622,7 @@ describe("owned Codex connection", () => {
     for (let i = 0; i < 129; i++)
       reply({
         method: "turn/completed",
-        params: { threadId: "owned-thread", turn: { id: String(i), status: "completed" } },
+        params: { threadId: "owned-thread", turn: { id: "turn-1", status: "completed" } },
       });
     expect(connection.snapshot().failure).toBe("turn_capture_limit");
     expect(connection.snapshot().pendingTurnCaptures).toBe(128);
@@ -352,7 +644,7 @@ describe("owned Codex connection", () => {
       await connection.request("turn/start", params, requestOptions());
       reply({
         method: "turn/completed",
-        params: { threadId: "owned-thread", turn: { id: "valid-turn", status: "completed" } },
+        params: { threadId: "owned-thread", turn: { id: "turn-1", status: "completed" } },
       });
       child.stdout.write(tail);
       if (boundary === "end") {

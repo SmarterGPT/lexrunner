@@ -28,6 +28,7 @@ const connection = await OwnedCodexConnection.open({
   adapterVersion: "1",
 });
 let wrongThreadRejected = false;
+let unobservedStopRejected = false;
 try {
   await connection.request(
     "turn/start",
@@ -37,12 +38,22 @@ try {
 } catch (error) {
   wrongThreadRejected = error instanceof Error && error.message === "thread_mismatch";
 }
+try {
+  await connection.interrupt(
+    { threadId: connection.session.threadId, turnId: "unobserved-turn" },
+    { signal: new AbortController().signal, deadlineAt: new Date(Date.now() + 1000).toISOString() }
+  );
+} catch (error) {
+  unobservedStopRejected = error instanceof Error && error.message === "turn_not_observed";
+}
 const closed = await connection.close();
 const snapshot = connection.snapshot();
 const sentinelUnchanged = (await readFile(join(cwd, "sentinel.txt"), "utf8")) === "unchanged\n";
 const passed =
   wrongThreadRejected &&
+  unobservedStopRejected &&
   !snapshot.turnAttempted &&
+  !snapshot.interruptAttempted &&
   closed.processExited &&
   sentinelUnchanged &&
   !snapshot.failure;
@@ -66,6 +77,7 @@ const report = {
   snapshot,
   closed,
   wrongThreadRejected,
+  unobservedStopRejected,
   sentinelUnchanged,
   limits:
     "Idle development connection only; echoed sandbox settings are not enforcement proof. No model task, authentication copying, store attachment or qualified native workspace preparation. Child exit does not prove descendant or remote execution cleanup.",
