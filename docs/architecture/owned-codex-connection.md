@@ -17,6 +17,18 @@ Per-turn settings overrides are rejected. Abort, timeout or connection loss neve
 triggers replay. The dispatcher still owns durable claims and authority decisions.
 Possession of this transport alone is not permission to dispatch work.
 
+An explicit connection option, `collaborationMode: "plan"`, opts into the
+experimental native API and selects Plan mode for its single turn. An explicit
+model is required and must match bootstrap observation. The adapter supplies
+that verified model and null reasoning/developer instruction overrides, retaining
+Codex's built-in Plan instructions. Callers cannot override mode or instructions
+through turn parameters, change mode after opening, or retry in another mode on
+failure. An absent option retains the ordinary wire behavior. The snapshot labels
+this as a requested mode, not native enforcement evidence. Plan mode rejects
+receipt-schema turns: the existing worker dispatch claim does not bind these
+collaboration settings. Canonical mode binding is a separate prerequisite before
+that dispatcher can use this experimental planning surface.
+
 The source stop API, `interrupt({ threadId, turnId }, window)`, accepts only the
 owned thread and its observed turn ID, learned from `turn/start` acknowledgement,
 `turn/started`, or an early terminal notification. Conflicting IDs fail closed.
@@ -88,3 +100,16 @@ its failed and repaired wire/receipt artifacts remain inspectable. It tests the
 native harness protocol without account credentials. It does not establish real
 model execution, human-answer delivery, durable coordinator confirmation or
 containment of task actions.
+
+A scripted local Responses tool call additionally exercised the installed
+0.145.0 human-question path. Default mode returned
+`request_user_input is unavailable in Default mode`; explicit Plan mode emitted
+`item/tool/requestUserInput` with numeric request ID zero, null automatic
+resolution, and native Other/secret flags. The source captured the question and
+the portable service persisted it to isolated SQLite through a simulated
+workspace binding. A scripted lost storage acknowledgement retained the capture;
+exact retry confirmed one commit. SQLite reopen and subsequent native interruption
+left the portable hold intact. Native terminal notification preceded
+`serverRequest/resolved`; neither was answer delivery. This qualifies that
+version's bounded protocol/persistence path, not human authentication, real
+workspace preparation, OS reboot, inference or containment. No answer was sent.

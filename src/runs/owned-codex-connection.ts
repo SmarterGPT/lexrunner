@@ -39,8 +39,14 @@ const Options = z
     adapterId: text,
     adapterVersion: text,
     model: text.optional(),
+    // Native questions require Plan mode in the qualified Codex version.
+    // Select once at connection creation; caller turn settings remain forbidden.
+    collaborationMode: z.literal("plan").optional(),
   })
-  .strict();
+  .strict()
+  .refine((value) => !value.collaborationMode || value.model !== undefined, {
+    message: "Plan mode requires an explicit model",
+  });
 export type OwnedCodexConnectionOptions = z.infer<typeof Options>;
 const TurnParams = z
   .object({
@@ -193,6 +199,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     try {
       await connection.rpc("initialize", {
         clientInfo: { name: "lexrunner_owned_connection", version: "1.0.0" },
+        ...(options.collaborationMode ? { capabilities: { experimentalApi: true } } : {}),
       });
       connection.write({ method: "initialized", params: {} });
       const response = Started.parse(
@@ -241,6 +248,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       pid: this.child.pid ?? null,
       processExited: this.processExited,
       failure: this.failure ?? null,
+      requestedCollaborationMode: this.options.collaborationMode ?? null,
       turnAttempted: this.turnAttempted,
       ownedTurnId: this.ownedTurnId ?? null,
       terminalTurnStatus: this.terminalTurnStatus ?? null,
@@ -376,16 +384,40 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     this.requireOpen();
     if (method !== "turn/start") throw new Error("method_not_permitted");
     const parsed = TurnParams.parse(params);
+    // Receipt dispatch hashes do not bind collaboration settings yet. Keep
+    // experimental planning outside that path instead of changing its wire claim.
+    if (this.options.collaborationMode && parsed.outputSchema !== undefined)
+      throw new Error("plan_receipt_dispatch_not_supported");
     if (!this.settings || parsed.threadId !== this.settings.threadId)
       throw new Error("thread_mismatch");
-    if (Buffer.byteLength(JSON.stringify(parsed), "utf8") > 256 * 1024)
+    const wireParams = {
+      ...parsed,
+      ...(this.options.collaborationMode
+        ? {
+            collaborationMode: {
+              mode: "plan",
+              settings: {
+                model: this.settings.model,
+                developer_instructions: null,
+                reasoning_effort: null,
+              },
+            },
+          }
+        : {}),
+    };
+    if (Buffer.byteLength(JSON.stringify(wireParams), "utf8") > 256 * 1024)
       throw new Error("request_limit");
     const remaining = Date.parse(options.deadlineAt) - Date.now();
     if (!Number.isFinite(remaining) || remaining <= 0 || options.signal.aborted)
       throw new Error("dispatch_window_expired");
     if (this.turnAttempted) throw new Error("dispatch_already_attempted");
     this.turnAttempted = true;
-    const response = await this.rpc(method, parsed, Math.min(remaining, 30_000), options.signal);
+    const response = await this.rpc(
+      method,
+      wireParams,
+      Math.min(remaining, 30_000),
+      options.signal
+    );
     this.requireOpen();
     const ack = z.object({ turn: TurnIdentity }).safeParse(response);
     if (!ack.success) {
