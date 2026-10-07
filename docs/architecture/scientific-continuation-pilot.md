@@ -35,6 +35,11 @@ outside this pilot.
    protocol adapter is Codex. See [worker question persistence](worker-human-input.md)
    for commit-before-display, replay and delivery limitations. Captured questions
    cannot receive completed receipts until qualified admission/delivery exists.
+   The next subdependency implements [signed host answer admission and single-send
+   persistence](worker-human-answers.md), with an owned Codex response adapter.
+   Its signature verifies a configured host's assertion; a real human channel,
+   protected signing root, consumption reconciliation and action containment still
+   need host qualification. Local writes never release a human hold.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result

@@ -11,7 +11,8 @@ The first adapter is the owned Codex source transport. It accepts only bounded
 `item/tool/requestUserInput` requests for the already observed owned turn. It
 preserves question IDs, text, options and Other behavior, rejects duplicate IDs,
 explicitly secret-marked questions, automatic resolution and unknown fields,
-and sends no answer. Omitted or null options become portable free text. The
+and accepts answers only through the separate protected-host delivery composition.
+Omitted or null options become portable free text. The
 projection is narrower than the experimental native schema; unsupported requests
 fail closed rather than being silently rewritten. Secret authentication remains
 a separate host flow. Text in a question is untrusted display content.
@@ -44,19 +45,21 @@ durable holds. Captures can be persisted after owned-child closure.
 Native `serverRequest/resolved`, terminal observation and child exit do not remove
 the portable hold. The [official Codex protocol](https://learn.chatgpt.com/docs/app-server#toolrequestuserinput)
 emits the same resolution notification for an answer and for pending-request
-cleanup. This source slice has no answer-send method. A completed receipt for a
-captured worker question is rejected until authenticated human admission and
-fenced delivery are implemented; persisted completed worker-question receipts
+cleanup. [Host-attested answers](worker-human-answers.md) now persist signed
+admission and one send claim before an owned transport write. A completed receipt for a
+captured worker question is rejected until the real human channel, worker
+consumption and dependent-action admission are qualified; persisted completed worker-question receipts
 are invalid state. A generic replacement cannot bypass this guard. Declined,
 expired and failed receipts remain held as before. Explicit task cancellation
 remains a distinct supervisor action.
 
-UI and authentication are host boundaries. Codex UI, a separate inbox or another
+UI and human authentication are host boundaries. Codex UI, a separate inbox or another
 app may later consume the portable question without changing its core lifecycle.
 An agent-facing CLI/MCP argument, actor ID, local OS username, digest match or
-prompt cleanup is not a qualified human-answer channel. A future host must bind
-its authenticated answer to the exact persisted question, durably claim one send,
-reconcile uncertain outcomes across takeover, and separately qualify dependent
+prompt cleanup is not a qualified human-answer channel. A future host must qualify
+its authentication implementation and protect the signing root. The source core
+binds the host attestation to the exact question and durably claims one send;
+production hosts must reconcile uncertain consumption and separately qualify dependent
 action refusal. Interruption clears native request IDs; an old prompt cannot be
 answered after restart by replaying its response or assignment.
 

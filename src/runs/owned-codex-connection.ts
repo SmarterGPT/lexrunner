@@ -27,6 +27,11 @@ import {
   type AgentWorkHumanActionService,
   type HumanActionMutationInput,
 } from "./agent-work-human-action-service.js";
+import {
+  SignedWorkerHumanAnswer,
+  WorkerHumanAnswerDelivery,
+  workerHumanAnswersMatch,
+} from "../schemas/worker-human-answer.js";
 import type { AttachedCodexTransport, CodexTurnStartParams } from "./codex-worker-dispatch.js";
 
 const text = z.string().min(1).max(16384);
@@ -114,9 +119,13 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
   }> = [];
   private readonly capturedReceipts: typeof this.capturedTurns = [];
   private readonly capturedHumanInputs: WorkerHumanInputCapture[] = [];
-  private readonly humanRequests = new Map<string, { hash: string; cleared: boolean }>();
+  private readonly humanRequests = new Map<
+    string,
+    { hash: string; cleared: boolean; answerAttempted?: boolean }
+  >();
   private humanCaptureBytes = 0;
   private humanCaptureBusy = false;
+  private humanAnswerBusy = false;
   private receiptCaptureBytes = 0;
   private receiptCaptureBusy = false;
   private readonly exited: Promise<void>;
@@ -266,6 +275,9 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       pendingHumanInputCaptureBytes: this.humanCaptureBytes,
       unclearedHumanRequests: [...this.humanRequests.values()].filter((value) => !value.cleared)
         .length,
+      humanAnswerWriteAttempts: [...this.humanRequests.values()].filter(
+        (value) => value.answerAttempted
+      ).length,
     };
   }
 
@@ -324,6 +336,143 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     } finally {
       this.humanCaptureBusy = false;
     }
+  }
+
+  /** Protected host composition: persisted admission and claim precede a single answer write. */
+  async deliverHumanAnswer(
+    service: Pick<
+      AgentWorkHumanActionService,
+      "getWorkerAnswer" | "claimWorkerAnswerDelivery" | "recordWorkerAnswerWrite"
+    >,
+    input: HumanActionMutationInput & { requestId: string; claimId: string },
+    options: RequestWindow
+  ) {
+    input = structuredClone(input);
+    options = { signal: options.signal, deadlineAt: options.deadlineAt };
+    if (this.humanAnswerBusy)
+      return { status: "blocked" as const, reason: "answer_delivery_in_progress" };
+    this.humanAnswerBusy = true;
+    try {
+      const stored = await service.getWorkerAnswer(input.controller.runId, input.requestId);
+      if (!stored)
+        return { status: "blocked" as const, reason: "authenticated_worker_answer_missing" };
+      const capture = CodexHumanInputCapture.parse(stored.capture);
+      const answer = SignedWorkerHumanAnswer.parse(stored.answer);
+      const key = JSON.stringify(capture.providerRequestId);
+      const pending = this.humanRequests.get(key);
+      const applicable = () =>
+        !this.failure &&
+        !this.processExited &&
+        !this.closing &&
+        !this.terminalTurnStatus &&
+        !this.interruptAttempted &&
+        !options.signal.aborted &&
+        capture.connectionId === this.captureId &&
+        capture.workerId === this.settings?.threadId &&
+        capture.turnId === this.ownedTurnId &&
+        pending?.hash === capture.requestHash &&
+        !pending.cleared &&
+        !pending.answerAttempted;
+      if (
+        answer.payload.challenge.runId !== input.controller.runId ||
+        answer.payload.challenge.requestId !== input.requestId ||
+        !workerHumanAnswersMatch(capture, answer.payload) ||
+        !applicable()
+      )
+        return { status: "blocked" as const, reason: "native_question_not_pending" };
+      const remaining = Date.parse(options.deadlineAt) - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0)
+        return { status: "blocked" as const, reason: "answer_delivery_window_expired" };
+      const claim = await service.claimWorkerAnswerDelivery(input);
+      if (!claim.ok) return { status: "blocked" as const, reason: claim.reason };
+      if (!claim.newlyClaimed)
+        return {
+          status: "reconciliation_required" as const,
+          reason: "answer_send_already_claimed",
+        };
+      const delivery = WorkerHumanAnswerDelivery.parse(claim.delivery);
+      if (
+        claim.replay ||
+        delivery.disposition !== "claimed" ||
+        delivery.controllerId !== input.controller.controllerId ||
+        delivery.controllerLeaseId !== input.controller.leaseId ||
+        delivery.fencingToken !== input.controller.fencingToken ||
+        delivery.claimId !== input.claimId ||
+        delivery.answerHash !== computeCanonicalHash(answer)
+      )
+        return {
+          status: "reconciliation_required" as const,
+          reason: "answer_delivery_claim_mismatch",
+        };
+      let disposition: "written" | "not_sent" | "uncertain" = "not_sent";
+      const timeout =
+        Math.min(
+          Date.parse(options.deadlineAt),
+          Date.parse(claim.delivery.deadlineAt),
+          Date.now() + 30_000
+        ) - Date.now();
+      if (applicable() && timeout > 0) {
+        pending!.answerAttempted = true;
+        disposition = "uncertain";
+        // The body comes only from persisted, host-admitted data. No raw response API.
+        const response = {
+          id: capture.providerRequestId,
+          result: {
+            answers: Object.fromEntries(
+              answer.payload.answers.map((value) => [value.questionId, { answers: [value.value] }])
+            ),
+          },
+        };
+        try {
+          await this.writeHumanAnswer(JSON.stringify(response) + "\n", timeout, options.signal);
+          disposition = "written";
+        } catch {
+          /* A failed write/timeout can have reached the child. Never replay. */
+        }
+      }
+      const recorded = await service.recordWorkerAnswerWrite({
+        ...input,
+        expectedRunRevision: claim.revision,
+        mutationId: `${input.mutationId}:write`,
+        now: new Date().toISOString(),
+        disposition,
+      });
+      if (!recorded.ok)
+        return { status: "reconciliation_required" as const, reason: recorded.reason };
+      return {
+        status:
+          disposition === "written" ? ("written" as const) : ("reconciliation_required" as const),
+        disposition,
+      };
+    } finally {
+      this.humanAnswerBusy = false;
+    }
+  }
+
+  private writeHumanAnswer(line: string, timeoutMs: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal.removeEventListener("abort", aborted);
+        this.child.off("close", closed);
+        error ? reject(error) : resolve();
+      };
+      const aborted = () => finish(new Error("answer_write_aborted"));
+      const closed = () => finish(new Error("answer_connection_closed"));
+      const timer = setTimeout(() => finish(new Error("answer_write_timeout")), timeoutMs);
+      signal.addEventListener("abort", aborted, { once: true });
+      this.child.once("close", closed);
+      try {
+        this.requireOpen();
+        if (signal.aborted) throw new Error("answer_write_aborted");
+        this.child.stdin.write(line, (error) => finish(error));
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error("answer_write_failed"));
+      }
+    });
   }
 
   /** Retain the source event before removing it from the volatile queue. No lifecycle effects. */

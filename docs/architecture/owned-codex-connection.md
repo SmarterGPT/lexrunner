@@ -53,7 +53,8 @@ Terminal observations enter the existing evidence queue before a waiter resolves
 Bounded native human questions enter a separate capture queue and translate to
 the portable [worker question hold](worker-human-input.md). Persistence commits
 the exact question and hold atomically before host display. This adapter sends
-no answer; request cleanup, terminal events and child exit do not release that
+an answer only through the protected-host [delivery composition](worker-human-answers.md).
+Request cleanup, terminal events and child exit do not release that
 hold. Unsupported approval/secret/automatic-resolution requests still fail closed.
 They must still be persisted explicitly; an in-memory observation is not a durable
 receipt, authenticated human response, workspace verification or native action
