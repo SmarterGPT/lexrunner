@@ -63,6 +63,50 @@ production hosts must reconcile uncertain consumption and separately qualify dep
 action refusal. Interruption clears native request IDs; an old prompt cannot be
 answered after restart by replaying its response or assignment.
 
+## Native form host source composition
+
+The source-only NativeMcpHumanPresentationHost connects persisted portable
+questions to a negotiated MCP form channel. The portable service remains independent
+of MCP and UI code. The SDK bridge selects standard form or the declared OpenAI form
+extension, binds the current transport object, and bounds each channel/admission wait
+by the display deadline and cancellation signal. A process-local monotonic budget spans
+both stages, so progress or a wall-clock rollback cannot extend the original wait.
+A changed connection or closed display makes its reply unusable. A nonconforming
+port that ignores cancellation cannot trigger a later admission after its wait ends.
+
+Only a newly committed display claim can invoke the channel. Lost claim acknowledgement
+or replay requires reconciliation without redisplay. Safe generated fields preserve
+authored question IDs as values. Closed options have no authored default; Other and
+free text retain entered bytes, with original questions/options in display descriptions.
+Ambiguous labels and unsupported replies fail closed. Bare approval, missing fields,
+unknown fields and option mismatches cannot constitute an answer. A schema-valid
+cached answer cannot be distinguished from fresh human input by schema alone.
+
+The injected protected admission port must qualify human input and own identity,
+trust and signer selection. It can decline to attest. The adapter verifies that the
+returned attestation preserves the exact display challenge, entered answers and
+observation time before the portable service verifies trust, current request context,
+workspace and worker binding. This introduces no passkey ceremony or signer installation;
+native UI, passkey/OIDC and other hosts remain deployment choices. Connection identity
+and capability negotiation alone do not establish human identity or trustworthy input.
+
+Skip, cancellation, expiry, malformed response and channel failure close only the
+display. A lost admission acknowledgement retains uncertain durable state for inspection,
+without a contradictory failure receipt or another prompt. Compact failure boundaries
+identify persistence, projection, binding, transport, validation or host admission;
+results do not echo answer bodies or raw exception details. No delivery, consumption
+reconciliation or completed hold receipt is performed by this adapter.
+
+Memory/SQLite tests cover direct and rejected input, explicit same-question recovery,
+lost acknowledgements, connection replacement, caller mutation, concurrent calls,
+cancelled signer and late reply. Actual in-memory SDK protocol messages qualify the
+standard form route; controlled capabilities qualify OpenAI extension selection. These
+are synthetic clients/signers, not a fresh desktop UX or protected host qualification.
+Codex visible expiration/cleanup remains host-owned. No public worker-facing tool,
+automatic retry, agent answer argument, production signer, endpoint or controller is
+enabled. Live worker suspension, dependent-action containment and consumption remain
+separate requirements before any hold can be released.
+
 Focused tests qualify capture, typed ID fencing, lost-storage-ACK replay,
 memory/SQLite retention, controller lease takeover, corrupted hold rejection and
 real child pipes with a controlled Node fixture. A separate installed-Codex
