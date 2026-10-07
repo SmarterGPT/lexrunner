@@ -364,7 +364,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     this.requireOpen();
     if (this.terminalTurnStatus) return { turnId, status: this.terminalTurnStatus };
     if (this.terminalWaiter) throw new Error("terminal_wait_already_pending");
-    return new Promise((resolve, reject) => {
+    const observed = await new Promise<OwnedCodexTerminalObservation | null>((resolve, reject) => {
       const finish = (value: OwnedCodexTerminalObservation | null) => {
         this.terminalWaiter?.cleanup();
         this.terminalWaiter = undefined;
@@ -386,6 +386,8 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       };
       signal.addEventListener("abort", aborted, { once: true });
     });
+    this.requireOpen();
+    return observed;
   }
 
   private bindTurn(turnId: string): boolean {

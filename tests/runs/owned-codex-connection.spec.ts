@@ -342,6 +342,24 @@ describe("owned Codex connection", () => {
     });
   });
 
+  it("rejects a pending live wait when the same read contradicts the terminal event", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    await connection.request("turn/start", params, requestOptions());
+    const wait = connection.awaitTerminal("turn-1", requestOptions());
+    const rejection = expect(wait).rejects.toThrow("terminal_status_conflict");
+    child.stdout.write(
+      [terminal("completed"), terminal("interrupted")]
+        .map((event) => JSON.stringify(event))
+        .join("\n") + "\n"
+    );
+    await rejection;
+    expect(connection.snapshot()).toMatchObject({
+      failure: "terminal_status_conflict",
+      terminalTurnStatus: "completed",
+      pendingTurnCaptures: 1,
+    });
+  });
+
   it.each(["turn/start", "turn/interrupt"])(
     "rejects a %s ACK followed by a conflicting report in the same read",
     async (method) => {
