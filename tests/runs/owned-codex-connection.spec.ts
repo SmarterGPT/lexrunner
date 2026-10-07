@@ -214,6 +214,41 @@ describe("owned Codex connection", () => {
     expect(sent.filter((v) => !v.method)).toHaveLength(1);
   });
 
+  it("retains one cleanup observation when terminal status precedes resolved and its duplicate", async () => {
+    const { f, input, port } = await admittedAnswer(0);
+    await connection!.deliverHumanAnswer(port, input, requestOptions());
+    reply({
+      method: "turn/completed",
+      params: { threadId: "owned-thread", turn: { id: "turn-1", status: "completed", items: [] } },
+    });
+    f.session.status = "completed";
+    const cleanup = {
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: 0 },
+    };
+    reply(cleanup);
+    reply(cleanup);
+    expect(connection!.snapshot()).toMatchObject({
+      terminalTurnStatus: "completed",
+      pendingAnswerObservations: 1,
+    });
+    expect(
+      await connection!.persistNextAnswerObservation(
+        f.service,
+        await f.mutation("after-terminal", new Date().toISOString())
+      )
+    ).toMatchObject({ ok: true });
+    expect(
+      (await f.service.inspectWorkerAnswerDelivery("run", input.requestId))!.observations
+    ).toHaveLength(1);
+    expect(await f.service.inspectWorkerAnswerDelivery("run", input.requestId)).toMatchObject({
+      holdPending: true,
+      consumptionQualified: false,
+      resendAllowed: false,
+    });
+    expect(sent.filter((v) => !v.method)).toHaveLength(1);
+  });
+
   it("does not create answer observations for a question cleared before any answer attempt", async () => {
     const { f } = await admittedAnswer(0);
     reply({ method: "serverRequest/resolved", params: { threadId: "owned-thread", requestId: 0 } });

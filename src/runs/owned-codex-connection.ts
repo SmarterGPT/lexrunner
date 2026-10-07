@@ -126,6 +126,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       hash: string;
       cleared: boolean;
       answerAttempted?: boolean;
+      resolutionObserved?: boolean;
       deliveryBinding?: Pick<
         WorkerHumanAnswerObservation,
         "runId" | "requestId" | "claimId" | "captureHash" | "answerHash"
@@ -925,9 +926,11 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
             return;
           }
           const request = this.humanRequests.get(JSON.stringify(event.data.params.requestId));
-          if (request && !request.cleared) {
+          if (request) {
             request.cleared = true;
-            if (request.deliveryBinding) {
+            // Terminal status may clear eligibility before the cleanup event arrives.
+            // Deduplicate retained cleanup separately from answer eligibility.
+            if (request.deliveryBinding && !request.resolutionObserved) {
               const observation = WorkerHumanAnswerObservation.parse({
                 version: 1,
                 domain: "lexrunner.worker-answer-observation/v1",
@@ -947,6 +950,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
               }
               this.capturedAnswerObservations.push(observation);
               this.answerObservationBytes += bytes;
+              request.resolutionObserved = true;
             }
           }
           // Cleanup evidence is never an answer, consumption qualification or hold release.
