@@ -17,6 +17,10 @@ import {
   workerHumanAnswerBindingHash,
   workerHumanAnswersMatch,
 } from "../schemas/worker-human-answer.js";
+import {
+  WorkerHumanPresentation,
+  WorkerHumanPresentationHistory,
+} from "../schemas/worker-human-presentation.js";
 import { TrustedHumanAnswerVerifier } from "./trusted-human-answer-verifier.js";
 import type {
   CoordinationStore,
@@ -41,9 +45,21 @@ const entrySchema = z
     answerChallenge: WorkerHumanAnswerChallenge.optional(),
     workerAnswer: SignedWorkerHumanAnswer.optional(),
     answerDelivery: WorkerHumanAnswerDelivery.optional(),
+    presentations: WorkerHumanPresentationHistory.optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
+    if (entry.presentations) {
+      const current = entry.presentations[entry.presentations.length - 1];
+      if (
+        !entry.answerChallenge ||
+        computeCanonicalHash(current.challenge) !== computeCanonicalHash(entry.answerChallenge) ||
+        Boolean(entry.workerAnswer) !== (current.disposition === "answered") ||
+        (entry.workerAnswer &&
+          Date.parse(current.closedAt!) < Date.parse(entry.workerAnswer.payload.answeredAt))
+      )
+        ctx.addIssue({ code: "custom", message: "Invalid presentation answer binding" });
+    }
     if (
       entry.workerInput &&
       (entry.request.action !== "other" ||
@@ -139,6 +155,171 @@ export class AgentWorkHumanActionService {
     private readonly humanAnswerVerifier?: TrustedHumanAnswerVerifier
   ) {}
 
+  /**
+   * Protected host composition only. Commit before display; replay must never display.
+   * Recovery names the previous presentation following explicit human return intent.
+   * These caller fields record intent, not independent proof of human identity.
+   */
+  async claimWorkerQuestionPresentation(
+    input: HumanActionMutationInput & {
+      requestId: string;
+      presentationId: string;
+      challengeId: string;
+      expiresAt: string;
+      previousPresentationId?: string;
+    }
+  ) {
+    input = structuredClone(input);
+    const loaded = await this.loadWorkerQuestion(input, input.requestId);
+    if (!loaded.ok) return loaded;
+    const { record, state, entry } = loaded;
+    const history = entry.presentations ?? [];
+    const replay = history.find((value) => value.presentationId === input.presentationId);
+    if (replay) {
+      if (
+        replay.challenge.challengeId !== input.challengeId ||
+        replay.challenge.expiresAt !== input.expiresAt ||
+        replay.previousPresentationId !== input.previousPresentationId
+      )
+        return { ok: false as const, reason: "presentation_conflict" };
+      return {
+        ok: true as const,
+        revision: record.revision,
+        replay: true,
+        newlyClaimed: false,
+        presentation: replay,
+        capture: entry.workerInput!,
+      };
+    }
+    if (entry.workerAnswer) return { ok: false as const, reason: "answer_already_admitted" };
+    if (history.length === 16) return { ok: false as const, reason: "presentation_capacity" };
+    const previous = history[history.length - 1];
+    if (previous) {
+      if (input.previousPresentationId !== previous.presentationId)
+        return { ok: false as const, reason: "explicit_presentation_recovery_required" };
+      if (
+        previous.disposition === "active" &&
+        Date.parse(input.now) < Date.parse(previous.challenge.expiresAt)
+      )
+        return { ok: false as const, reason: "presentation_already_active" };
+      if (Date.parse(input.now) < Date.parse(previous.closedAt ?? previous.challenge.issuedAt))
+        return { ok: false as const, reason: "invalid_time" };
+    } else if (input.previousPresentationId || entry.answerChallenge) {
+      return { ok: false as const, reason: "presentation_history_missing" };
+    }
+    const stale = await this.workerQuestionFreshness(input, loaded);
+    if (stale) return { ok: false as const, reason: stale };
+    const challenge = WorkerHumanAnswerChallenge.parse({
+      version: 1,
+      domain: "lexrunner.worker-human-answer/v1",
+      runId: entry.request.run_id,
+      requestId: entry.request.request_id,
+      challengeId: input.challengeId,
+      generation: (entry.answerChallenge?.generation ?? 0) + 1,
+      bindingHash: workerHumanAnswerBindingHash(
+        entry.request,
+        entry.contextHash,
+        entry.workerInput!
+      ),
+      issuedAt: input.now,
+      expiresAt: input.expiresAt,
+    });
+    if (
+      entry.request.expires_at &&
+      Date.parse(challenge.expiresAt) > Date.parse(entry.request.expires_at)
+    )
+      return { ok: false as const, reason: "challenge_exceeds_request_expiry" };
+    if (history.some((value) => value.challenge.challengeId === challenge.challengeId))
+      return { ok: false as const, reason: "challenge_conflict" };
+    const presentation = WorkerHumanPresentation.parse({
+      presentationId: input.presentationId,
+      ...(input.previousPresentationId
+        ? { previousPresentationId: input.previousPresentationId }
+        : {}),
+      challenge,
+      disposition: "active",
+    });
+    // Lost expiry observations are recovered atomically with the new claim: no unheld interval.
+    if (previous?.disposition === "active") {
+      previous.disposition = "expired";
+      previous.closedAt = input.now;
+    }
+    entry.answerChallenge = challenge;
+    entry.presentations = [...history, presentation];
+    const result = await this.commit(
+      input,
+      record.state,
+      state,
+      "worker_question_presentation_claimed",
+      input.requestId
+    );
+    return result.ok
+      ? { ...result, newlyClaimed: !result.replay, presentation, capture: entry.workerInput! }
+      : result;
+  }
+
+  /** Close only the display. Skip/cancel/expiry/failure cannot settle the question. */
+  async closeWorkerQuestionPresentation(
+    input: HumanActionMutationInput & {
+      requestId: string;
+      presentationId: string;
+      disposition: "declined" | "cancelled" | "expired" | "failed";
+    }
+  ): Promise<HumanActionMutationResult> {
+    input = structuredClone(input);
+    const loaded = await this.loadWorkerQuestion(input, input.requestId);
+    if (!loaded.ok) return loaded;
+    const { record, state, entry } = loaded;
+    const presentation = entry.presentations?.[entry.presentations.length - 1];
+    if (!presentation || presentation.presentationId !== input.presentationId)
+      return { ok: false, reason: "presentation_binding_mismatch" };
+    if (presentation.disposition !== "active")
+      return presentation.disposition === input.disposition
+        ? { ok: true, revision: record.revision, replay: true }
+        : { ok: false, reason: "presentation_outcome_conflict" };
+    if (record.revision !== input.expectedRunRevision)
+      return { ok: false, reason: "stale_run_revision" };
+    // Parse before mutation; an early timeout or invalid outcome is rejected.
+    z.enum(["declined", "cancelled", "expired", "failed"]).parse(input.disposition);
+    const closed = WorkerHumanPresentation.parse({
+      ...presentation,
+      disposition: input.disposition,
+      closedAt: input.now,
+    });
+    entry.presentations![entry.presentations!.length - 1] = closed;
+    return this.commit(
+      input,
+      record.state,
+      state,
+      "worker_question_presentation_closed",
+      input.requestId
+    );
+  }
+
+  /** Bounded read. A deadline expires a presentation, never the durable hold. */
+  async getWorkerQuestionPresentation(runId: string, requestId: string, now: string) {
+    z.string().datetime({ offset: true }).parse(now);
+    const record = await this.coordination.getRunCoordination(runId);
+    if (!record) return null;
+    const entry = readHumanActionState(record.state).entries.find(
+      (value) => value.request.request_id === requestId
+    );
+    if (!entry?.workerInput || entry.supersededBy || entry.receipt) return null;
+    const current = entry.presentations?.[entry.presentations.length - 1];
+    return {
+      requestId,
+      holdPending: true,
+      answerAdmitted: Boolean(entry.workerAnswer),
+      presentationCount: entry.presentations?.length ?? 0,
+      presentationId: current?.presentationId ?? null,
+      disposition:
+        current?.disposition === "active" &&
+        Date.parse(now) >= Date.parse(current.challenge.expiresAt)
+          ? "expired"
+          : (current?.disposition ?? "not_presented"),
+    };
+  }
+
   /** Host issues this only after persisting the exact question, before presenting it. */
   async issueWorkerAnswerChallenge(
     input: HumanActionMutationInput & { requestId: string; challengeId: string; expiresAt: string }
@@ -148,6 +329,8 @@ export class AgentWorkHumanActionService {
     if (!loaded.ok) return loaded;
     const { record, state, entry } = loaded;
     if (entry.workerAnswer) return { ok: false as const, reason: "answer_already_admitted" };
+    if (entry.presentations)
+      return { ok: false as const, reason: "presentation_managed_challenge" };
     if (entry.answerChallenge?.challengeId === input.challengeId) {
       if (entry.answerChallenge.expiresAt !== input.expiresAt)
         return { ok: false as const, reason: "challenge_conflict" };
@@ -226,6 +409,13 @@ export class AgentWorkHumanActionService {
       Date.parse(input.now) >= Date.parse(entry.answerChallenge.expiresAt)
     )
       return { ok: false, reason: "worker_answer_expired_or_invalid_time" };
+    const presentation = entry.presentations?.[entry.presentations.length - 1];
+    if (presentation && presentation.disposition !== "active")
+      return { ok: false, reason: "presentation_not_active" };
+    if (presentation) {
+      presentation.disposition = "answered";
+      presentation.closedAt = input.now;
+    }
     entry.workerAnswer = answer;
     return this.commit(
       input,
