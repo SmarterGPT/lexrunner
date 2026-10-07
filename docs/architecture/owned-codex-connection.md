@@ -38,6 +38,11 @@ which the terminal and final-message projections accept explicitly as diagnostic
 data while preserving the original bytes.
 
 Terminal observations enter the existing evidence queue before a waiter resolves.
+Bounded native human questions enter a separate capture queue and translate to
+the portable [worker question hold](worker-human-input.md). Persistence commits
+the exact question and hold atomically before host display. This adapter sends
+no answer; request cleanup, terminal events and child exit do not release that
+hold. Unsupported approval/secret/automatic-resolution requests still fail closed.
 They must still be persisted explicitly; an in-memory observation is not a durable
 receipt, authenticated human response, workspace verification or native action
 containment. No supervisor cancellation adapter or human hold is released by this
@@ -50,7 +55,7 @@ cleanup or cancellation of accepted remote work. Bootstrap cleanup uncertainty i
 an explicit error.
 
 Protocol output is bounded to 1 MiB per frame and 8 MiB per stream over the entire
-connection. Unexpected responses, server requests, premature execution and changed
+connection. Unexpected responses, unsupported server requests, premature execution and changed
 thread or turn identity terminate the connection. Notifications retain only bounded method
 counts, and stderr retains only byte counts. Terminal turn notifications additionally
 enter an explicit bounded evidence queue; see [terminal event capture](worker-turn-evidence.md).

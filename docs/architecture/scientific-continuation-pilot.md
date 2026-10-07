@@ -30,6 +30,11 @@ outside this pilot.
    cleared question and observed terminal event remain distinct. Controlled pipe
    tests and an idle native probe qualify only their stated boundaries; authenticated
    human admission and live worker/action-boundary qualification remain outstanding.
+   The next source subdependency now captures worker questions into the same
+   durable hold. Its core contract is app- and frontend-independent; the first
+   protocol adapter is Codex. See [worker question persistence](worker-human-input.md)
+   for commit-before-display, replay and delivery limitations. Captured questions
+   cannot receive completed receipts until qualified admission/delivery exists.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result

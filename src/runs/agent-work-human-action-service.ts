@@ -6,6 +6,7 @@ import {
   validateHumanActionReceiptBinding,
 } from "../schemas/agent-work.js";
 import { computeCanonicalHash } from "../schemas/task-contract.js";
+import { WorkerHumanInputCapture } from "../schemas/worker-human-input.js";
 import type {
   CoordinationStore,
   ControllerLeaseCredential,
@@ -25,8 +26,19 @@ const entrySchema = z
     receipt: HumanActionReceipt_v1.nullable(),
     supersededBy: z.string().optional(),
     replacesRequestId: z.string().optional(),
+    workerInput: WorkerHumanInputCapture.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((entry, ctx) => {
+    if (
+      entry.workerInput &&
+      (entry.request.action !== "other" ||
+        entry.request.request_id !== `worker-input:${entry.workerInput.observationId}` ||
+        entry.request.requested_at !== entry.workerInput.observedAt ||
+        entry.receipt?.outcome === "completed")
+    )
+      ctx.addIssue({ code: "custom", message: "Invalid worker question hold" });
+  });
 const stateSchema = z
   .object({ version: z.literal(1), entries: z.array(entrySchema).max(128) })
   .strict();
@@ -84,11 +96,27 @@ export class AgentWorkHumanActionService {
   ) {}
 
   async request(
-    input: HumanActionMutationInput & { request: HumanActionRequest_v1; replacesRequestId?: string }
+    input: HumanActionMutationInput & {
+      request: HumanActionRequest_v1;
+      replacesRequestId?: string;
+      workerInput?: WorkerHumanInputCapture;
+    }
   ): Promise<HumanActionMutationResult> {
+    input = structuredClone(input);
     if (!z.string().datetime({ offset: true }).safeParse(input.now).success)
       return { ok: false, reason: "invalid_time" };
     const request = HumanActionRequest_v1.parse(input.request);
+    const workerInput =
+      input.workerInput === undefined
+        ? undefined
+        : WorkerHumanInputCapture.parse(input.workerInput);
+    if (
+      workerInput &&
+      (request.action !== "other" ||
+        request.requested_at !== workerInput.observedAt ||
+        request.request_id !== `worker-input:${workerInput.observationId}`)
+    )
+      return { ok: false, reason: "invalid_worker_input_binding" };
     if (
       Buffer.byteLength(JSON.stringify(request), "utf8") > 16 * 1024 ||
       request.summary.length > 2048
@@ -102,7 +130,9 @@ export class AgentWorkHumanActionService {
       if (prior.supersededBy) return { ok: false, reason: "request_superseded" };
       if (
         computeCanonicalHash(prior.request) !== computeCanonicalHash(request) ||
-        prior.replacesRequestId !== input.replacesRequestId
+        prior.replacesRequestId !== input.replacesRequestId ||
+        computeCanonicalHash(prior.workerInput ?? null) !==
+          computeCanonicalHash(workerInput ?? null)
       )
         return { ok: false, reason: "request_conflict" };
       return { ok: true, revision: record.revision, replay: true };
@@ -120,6 +150,23 @@ export class AgentWorkHumanActionService {
       return { ok: false, reason: "invalid_request_binding" };
     if (!(await this.matchesWorkspace(request, request.preconditions.expected_head_sha)))
       return { ok: false, reason: "stale_workspace_binding" };
+    if (workerInput) {
+      const session = await this.workspace.getWorkerSession(request.worker_session_id);
+      if (
+        session?.workerRuntime !== workerInput.workerRuntime ||
+        session.workerId !== workerInput.workerId
+      )
+        return { ok: false, reason: "worker_input_session_mismatch" };
+      if (
+        state.entries.some(
+          (entry) =>
+            entry.workerInput &&
+            entry.workerInput.connectionId === workerInput.connectionId &&
+            entry.workerInput.providerRequestId === workerInput.providerRequestId
+        )
+      )
+        return { ok: false, reason: "worker_request_already_bound" };
+    }
     if (state.entries.length === 128) return { ok: false, reason: "human_action_capacity" };
     if (input.replacesRequestId) {
       const replaced = state.entries.find(
@@ -127,6 +174,8 @@ export class AgentWorkHumanActionService {
       );
       if (!replaced || replaced.supersededBy || replaced.receipt?.outcome === "completed")
         return { ok: false, reason: "replacement_not_pending" };
+      if (replaced.workerInput && !workerInput)
+        return { ok: false, reason: "worker_input_replacement_required" };
       replaced.supersededBy = request.request_id;
     }
     state.entries.push({
@@ -134,6 +183,7 @@ export class AgentWorkHumanActionService {
       contextHash: contextHash(record.state),
       receipt: null,
       ...(input.replacesRequestId ? { replacesRequestId: input.replacesRequestId } : {}),
+      ...(workerInput ? { workerInput } : {}),
     });
     return this.commit(input, record.state, state, "human_action_requested", request.request_id);
   }
@@ -141,6 +191,7 @@ export class AgentWorkHumanActionService {
   async settle(
     input: HumanActionMutationInput & { receipt: HumanActionReceipt_v1 }
   ): Promise<HumanActionMutationResult> {
+    input = structuredClone(input);
     if (!z.string().datetime({ offset: true }).safeParse(input.now).success)
       return { ok: false, reason: "invalid_time" };
     const receipt = HumanActionReceipt_v1.parse(input.receipt);
@@ -167,6 +218,9 @@ export class AgentWorkHumanActionService {
     )
       return { ok: false, reason: "invalid_receipt_binding" };
     if (receipt.outcome === "completed") {
+      // No source caller can turn a captured worker question into an answered
+      // hold before authenticated admission and fenced worker delivery exist.
+      if (entry.workerInput) return { ok: false, reason: "worker_answer_delivery_not_qualified" };
       if (
         request.expires_at &&
         (Date.parse(input.now) >= Date.parse(request.expires_at) ||

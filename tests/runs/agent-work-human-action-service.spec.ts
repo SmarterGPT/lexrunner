@@ -11,6 +11,10 @@ import { InMemoryCoordinationStore } from "../../src/store/inmemory/coordination
 import { SqliteCoordinationStore } from "../../src/store/sqlite/coordination-store.js";
 import type { CoordinationStore } from "../../src/store/coordination-store.js";
 import type { HumanActionReceipt_v1, HumanActionRequest_v1 } from "../../src/schemas/agent-work.js";
+import {
+  WorkerHumanInputCapture,
+  hashWorkerHumanInput,
+} from "../../src/schemas/worker-human-input.js";
 
 const roots: string[] = [];
 const stores: CoordinationStore[] = [];
@@ -59,6 +63,13 @@ async function fixture(kind: "memory" | "sqlite") {
     worktreePath: "/repo",
     branch: "science",
   };
+  const session = {
+    runId: "run",
+    attemptId: "attempt",
+    workspaceLeaseId: "workspace",
+    workerRuntime: "other-app",
+    workerId: "other-app-thread",
+  };
   const workspace = {
     async getAttempt() {
       return { runId: "run", attemptId: "attempt", workspaceLeaseId: "workspace" };
@@ -67,7 +78,7 @@ async function fixture(kind: "memory" | "sqlite") {
       return lease;
     },
     async getWorkerSession() {
-      return { runId: "run", attemptId: "attempt", workspaceLeaseId: "workspace" };
+      return session;
     },
   } as unknown as ConstructorParameters<typeof AgentWorkHumanActionService>[1];
   const observed = {
@@ -127,6 +138,7 @@ async function fixture(kind: "memory" | "sqlite") {
     observer,
     observed,
     lease,
+    session,
     service,
     request,
     mutation,
@@ -134,6 +146,156 @@ async function fixture(kind: "memory" | "sqlite") {
     answer,
   };
 }
+
+function capturedQuestion() {
+  const requestJson = '{ "provider_request": 42, "question": "Which candidate?" }';
+  return WorkerHumanInputCapture.parse({
+    version: 1,
+    connectionId: "50e1543e-fd0a-4db9-b8ca-3c28e5cdc6a3",
+    observationId: "50e1543e-fd0a-4db9-b8ca-3c28e5cdc6a3:1",
+    observedAt: time,
+    workerRuntime: "other-app",
+    workerId: "other-app-thread",
+    turnId: "turn",
+    providerRequestId: 42,
+    questions: [
+      {
+        id: "choice",
+        header: "Approach",
+        question: "Which candidate?",
+        allowOther: false,
+        options: [{ label: "A", description: "Use retained evidence." }],
+      },
+    ],
+    requestJson,
+    requestHash: hashWorkerHumanInput(requestJson),
+  });
+}
+
+describe.each(["memory", "sqlite"] as const)("portable worker questions (%s)", (kind) => {
+  it("atomically stores the hold and exact adapter evidence; never settles it from an identity string", async () => {
+    const f = await fixture(kind);
+    const capture = capturedQuestion();
+    f.request.request_id = `worker-input:${capture.observationId}`;
+    const input = { ...f.mutation, request: f.request, workerInput: capture };
+    expect(await f.service.request(input)).toMatchObject({ ok: true, revision: 1, replay: false });
+    expect(await f.service.request(input)).toMatchObject({ ok: true, replay: true });
+    const held = (await f.store.getRunCoordination("run"))!;
+    expect(readHumanActionState(held.state).entries[0].workerInput).toEqual(capture);
+    const corrupted = structuredClone(held.state) as any;
+    corrupted.metadata.agentWorkHumanActions.entries[0].receipt = {
+      ...f.answer(),
+      request_id: f.request.request_id,
+    };
+    expect(() => humanActionSummary(corrupted, time)).toThrow("Invalid worker question hold");
+    expect((await f.store.listRunCoordinationEvents("run"))[0].resultingState).toEqual(held.state);
+    const receipt = { ...f.answer(), request_id: f.request.request_id, actor_id: "Guff" };
+    expect(await f.service.settle({ ...f.mutation, expectedRunRevision: 1, receipt })).toEqual({
+      ok: false,
+      reason: "worker_answer_delivery_not_qualified",
+    });
+    expect(humanActionSummary((await f.store.getRunCoordination("run"))!.state, time)).toHaveLength(
+      1
+    );
+    expect(await f.service.request({ ...input, workerInput: undefined })).toMatchObject({
+      ok: false,
+      reason: "request_conflict",
+    });
+    expect(
+      await f.service.request({ ...input, workerInput: { ...capture, turnId: "changed" } })
+    ).toMatchObject({ ok: false, reason: "request_conflict" });
+  });
+
+  it("rejects cross-worker/runtime and altered wire captures before creating a hold", async () => {
+    const f = await fixture(kind);
+    const capture = capturedQuestion();
+    f.request.request_id = `worker-input:${capture.observationId}`;
+    for (const workerInput of [
+      { ...capture, workerId: "other" },
+      { ...capture, workerRuntime: "codex-native" },
+    ])
+      expect(
+        await f.service.request({ ...f.mutation, request: f.request, workerInput })
+      ).toMatchObject({ ok: false, reason: "worker_input_session_mismatch" });
+    await expect(
+      f.service.request({
+        ...f.mutation,
+        request: f.request,
+        workerInput: { ...capture, requestJson: "{}" },
+      })
+    ).rejects.toThrow();
+    expect(await f.store.listRunCoordinationEvents("run")).toHaveLength(0);
+    expect(humanActionSummary((await f.store.getRunCoordination("run"))!.state, time)).toEqual([]);
+  });
+
+  it("refuses to replace a worker question with a generically completable hold", async () => {
+    const f = await fixture(kind);
+    const capture = capturedQuestion();
+    f.request.request_id = `worker-input:${capture.observationId}`;
+    await f.service.request({ ...f.mutation, request: f.request, workerInput: capture });
+    expect(
+      await f.service.request({
+        ...f.mutation,
+        expectedRunRevision: 1,
+        mutationId: "replace",
+        replacesRequestId: f.request.request_id,
+        request: {
+          ...f.request,
+          request_id: "generic",
+          preconditions: { ...f.request.preconditions, run_revision: 1 },
+        },
+      })
+    ).toMatchObject({ ok: false, reason: "worker_input_replacement_required" });
+    expect(humanActionSummary((await f.store.getRunCoordination("run"))!.state, time)).toHaveLength(
+      1
+    );
+  });
+
+  it("prevents rebinding the same native RPC to another portable request", async () => {
+    const f = await fixture(kind);
+    const capture = capturedQuestion();
+    f.request.request_id = `worker-input:${capture.observationId}`;
+    await f.service.request({ ...f.mutation, request: f.request, workerInput: capture });
+    const second = { ...capture, observationId: capture.observationId.replace(":1", ":2") };
+    expect(
+      await f.service.request({
+        ...f.mutation,
+        expectedRunRevision: 1,
+        mutationId: "another",
+        workerInput: second,
+        request: {
+          ...f.request,
+          request_id: `worker-input:${second.observationId}`,
+          preconditions: { ...f.request.preconditions, run_revision: 1 },
+        },
+      })
+    ).toMatchObject({ ok: false, reason: "worker_request_already_bound" });
+  });
+});
+
+it("preserves a worker question and its unanswered hold across SQLite restart and lease takeover", async () => {
+  const f = await fixture("sqlite");
+  const capture = capturedQuestion();
+  f.request.request_id = `worker-input:${capture.observationId}`;
+  await f.service.request({ ...f.mutation, request: f.request, workerInput: capture });
+  await f.store.close();
+  const restarted = new SqliteCoordinationStore(f.path);
+  stores.push(restarted);
+  const taken = await restarted.acquireControllerLease({
+    runId: "run",
+    controllerId: "new",
+    leaseId: "new",
+    now: "2026-10-06T12:01:00.000Z",
+    ttlMs: 60000,
+    initialState: {},
+  });
+  expect(taken.acquired).toBe(true);
+  const state = (await restarted.getRunCoordination("run"))!.state;
+  expect(readHumanActionState(state).entries[0].workerInput).toEqual(capture);
+  expect(humanActionSummary(state, "2026-10-07T12:00:00.000Z")).toMatchObject([
+    { disposition: "pending" },
+  ]);
+});
 
 describe.each(["memory", "sqlite"] as const)("durable human action (%s)", (kind) => {
   it("commits the hold and event before presentation; answers once without losing unrelated state", async () => {
