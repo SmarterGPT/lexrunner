@@ -124,6 +124,16 @@ remain incomplete; an opted-in durable operation observation cannot claim comple
 that read-back is incomplete. The read option does not change descriptor identity, restart work,
 request cancellation or create coordination state.
 
+Durable MCP `gates.status` and `gates_status` default to a compact presentation after the
+same full service read-back. Its `artifactVerification` uses
+`lexrunner-retained-gate-evidence-summary/v1`: status, authority, scope, reason codes,
+reference count and every non-complete reference (`issues`). Limits are included when a limit
+reason is reported. Operation identity, candidate, gate results, errors and freshness fields
+remain unchanged. Request `responseDetail: "diagnostic"` for the original full report with all
+references and limits; `"compact"` explicitly selects the default. Unknown detail values are
+rejected before I/O. CLI and application-service output retain the full report. Neither detail
+setting enables verification when `verifyArtifacts` is omitted or false.
+
 The source MCP aliases `weave_status` and `gates_status` use the same option. Start/cancel
 schemas and CLI subcommands do not accept it, even when the MCP value is false.
 

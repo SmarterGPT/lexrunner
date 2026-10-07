@@ -95,11 +95,14 @@ const tools = {
           operation === "start"
             ? core.GateOperationStartJsonSchema
             : operation === "status"
-              ? core.GateOperationStatusJsonSchema
+              ? core.McpGateOperationStatusJsonSchema
               : core.GateOperationObserveJsonSchema,
         call: async (args) => {
           try {
-            const result = await new core.GateOperationService()[operation](args);
+            const result =
+              operation === "status"
+                ? core.observeMcpGateOperationStatus(args)
+                : await new core.GateOperationService()[operation](args);
             return { content: [{ type: "text", text: JSON.stringify(result) }] };
           } catch (error) {
             throw sharedServiceError(error, "gates." + operation, "GATE_OPERATION_FAILED");

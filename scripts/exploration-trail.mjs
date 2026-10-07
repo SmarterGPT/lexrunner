@@ -126,6 +126,41 @@ export function resumeCompact(input, sourceLocation, expectedDigest) {
   }
   return packet;
 }
+/** Decision context only; every finding, conclusion and validity limit stays verbatim. */
+export function resumeDecision(input, sourceLocation, expectedDigest) {
+  const full = resume(input, expectedDigest);
+  const location = text.parse(sourceLocation);
+  const {
+    profile: _profile,
+    premise: _premise,
+    experiment: _experiment,
+    previousTrail: _previousTrail,
+    evidence,
+    ...record
+  } = full.record;
+  const packet = {
+    profile: "exploration-decision-resumption-pilot/v1",
+    source: { location, digest: full.sourceDigest },
+    evidenceStatus: "supplied",
+    questionDisposition: "open",
+    detailsOmitted: true,
+    record: {
+      ...record,
+      evidence: evidence.map((probe, index) => ({
+        sourcePointer: `/record/evidence/${index}`,
+        exitCode: probe.exitCode,
+        ...(probe.termination === undefined ? {} : { termination: probe.termination }),
+        ...(probe.outputTruncated === undefined ? {} : { outputTruncated: probe.outputTruncated }),
+      })),
+    },
+  };
+  if (Buffer.byteLength(JSON.stringify(packet), "utf8") + 1 > 16 * 1024)
+    throw new Error(
+      "Decision view exceeds 16 KiB; select context explicitly. Nothing was truncated."
+    );
+  return packet;
+}
+
 export async function readBounded(path) {
   const file = await open(path, "r");
   try {
@@ -146,17 +181,16 @@ async function main() {
   const [operation, input, ...options] = process.argv.slice(2);
   const usage = () => {
     throw new Error(
-      "Usage: node scripts/exploration-trail.mjs seal input.json new-trail.json | resume trail.json [--compact] [--expect-digest sha256:...]"
+      "Usage: node scripts/exploration-trail.mjs seal input.json new-trail.json | resume trail.json [--decision | --compact] [--expect-digest sha256:...]"
     );
   };
   if (!input || !["seal", "resume"].includes(operation)) usage();
-  let compact = false,
-    expectedDigest;
+  let view, expectedDigest;
   if (operation === "seal") {
     if (options.length !== 1 || !options[0]) usage();
   } else
     for (let i = 0; i < options.length; i++) {
-      if (options[i] === "--compact" && !compact) compact = true;
+      if (["--compact", "--decision"].includes(options[i]) && view === undefined) view = options[i];
       else if (options[i] === "--expect-digest" && expectedDigest === undefined) {
         expectedDigest = options[++i];
         if (!/^sha256:[a-f0-9]{64}$/.test(expectedDigest ?? "")) usage();
@@ -168,7 +202,10 @@ async function main() {
     const output = options[0];
     await writeFile(output, JSON.stringify(result), { flag: "wx" });
     console.log(JSON.stringify({ written: output, digest: result.digest }));
-  } else if (compact) console.log(JSON.stringify(resumeCompact(data, input, expectedDigest)));
+  } else if (view === "--decision")
+    console.log(JSON.stringify(resumeDecision(data, input, expectedDigest)));
+  else if (view === "--compact")
+    console.log(JSON.stringify(resumeCompact(data, input, expectedDigest)));
   else console.log(JSON.stringify(resume(data, expectedDigest), null, 2));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

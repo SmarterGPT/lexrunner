@@ -20,7 +20,14 @@ import {
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 const digest = `sha256:${"a".repeat(64)}`;
-type Report = { status: "complete" | "incomplete"; authority: "unverified" };
+type Report = {
+  status: "complete" | "incomplete";
+  authority: "unverified";
+  contract?: string;
+  references?: Array<{ outcome: string }>;
+  issues?: Array<{ outcome: string }>;
+  referenceCount?: number;
+};
 type Observation = {
   operation?: GateOperationHandle;
   state?: string;
@@ -343,9 +350,27 @@ console.log('fixture artifact produced');
             status: expectedStatus,
             authority: "unverified",
           });
-          if (operationReport)
-            expect(checkedOperation.artifactVerification).toEqual(operationReport);
-          operationReport = checkedOperation.artifactVerification;
+          const diagnosticOperation = await call(client, operationTool, {
+            ...fixture.handle,
+            verifyArtifacts: true,
+            responseDetail: "diagnostic",
+          });
+          expect(diagnosticOperation).toEqual({
+            ...checkedOperation,
+            artifactVerification: diagnosticOperation.artifactVerification,
+          });
+          const diagnosticReport = diagnosticOperation.artifactVerification!;
+          expect(diagnosticReport.contract).toBe("lexrunner-retained-gate-evidence/v1");
+          expect(checkedOperation.artifactVerification).toMatchObject({
+            contract: "lexrunner-retained-gate-evidence-summary/v1",
+            referenceCount: diagnosticReport.references!.length,
+            issues: diagnosticReport.references!.filter(
+              (reference) => reference.outcome !== "complete"
+            ),
+          });
+          expect(checkedOperation.artifactVerification).not.toHaveProperty("references");
+          if (operationReport) expect(diagnosticReport).toEqual(operationReport);
+          operationReport = diagnosticReport;
           if (tampered) {
             expect(checkedOperation).toMatchObject({
               state: "unknown",
@@ -419,9 +444,20 @@ console.log('fixture artifact produced');
           expect(schema.properties).toMatchObject({ verifyArtifacts: { type: "boolean" } });
           expect(schema.required ?? []).not.toContain("verifyArtifacts");
         }
+        expect(
+          inventory.tools.find((tool) => tool.name === gateStatus)!.inputSchema.properties
+        ).toMatchObject({
+          responseDetail: { enum: ["compact", "diagnostic"], default: "compact" },
+        });
+        for (const responseDetail of [null, 1, "unknown"]) {
+          await expect(call(client, gateStatus, { ...handle, responseDetail })).rejects.toThrow(
+            "responseDetail"
+          );
+        }
         for (const name of [gateStart, gateCancel]) {
           const schema = inventory.tools.find((tool) => tool.name === name)!.inputSchema;
           expect(schema.properties).not.toHaveProperty("verifyArtifacts");
+          expect(schema.properties).not.toHaveProperty("responseDetail");
           expect(schema.additionalProperties).toBe(false);
         }
         for (const verifyArtifacts of [null, 0, 1, "true", "false", "", [], {}]) {
