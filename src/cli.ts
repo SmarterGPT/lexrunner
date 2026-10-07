@@ -1299,6 +1299,10 @@ export {
   GateOperationObserveJsonSchema,
   GateOperationStatusJsonSchema,
 } from "./application/gate-operation-service.js";
+export {
+  McpGateOperationStatusJsonSchema,
+  observeMcpGateOperationStatus,
+} from "./mcp/gate-status-presentation.js";
 export type {
   GateOperationHandle,
   GateOperationStatusInput,

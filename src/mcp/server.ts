@@ -28,11 +28,13 @@ import {
   GateOperationService,
   GateOperationStartArgs,
   GateOperationObserveArgs,
-  GateOperationStatusArgs,
   GateOperationStartJsonSchema,
   GateOperationObserveJsonSchema,
-  GateOperationStatusJsonSchema,
 } from "../application/gate-operation-service.js";
+import {
+  McpGateOperationStatusJsonSchema,
+  observeMcpGateOperationStatus,
+} from "./gate-status-presentation.js";
 import { resolveGateRepositoryRoot } from "../application/gate-candidate-identity.js";
 import {
   DiscoveryQueryService,
@@ -522,7 +524,7 @@ function createServer(options?: McpServerOptions): Server {
           name: "gates_status",
           description:
             "Observe one explicit gate operation without restarting commands or granting merge authority",
-          inputSchema: { ...GateOperationStatusJsonSchema, type: "object" },
+          inputSchema: { ...McpGateOperationStatusJsonSchema, type: "object" },
         },
         {
           name: "gates_cancel",
@@ -1889,7 +1891,7 @@ async function handleGateOperation(name: string, args: unknown) {
         ? await service.start(GateOperationStartArgs.parse(args))
         : name === "gates_cancel"
           ? service.cancel(GateOperationObserveArgs.parse(args))
-          : service.status(GateOperationStatusArgs.parse(args));
+          : observeMcpGateOperationStatus(args, service);
     return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
