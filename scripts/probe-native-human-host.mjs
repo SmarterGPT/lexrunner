@@ -40,7 +40,7 @@ const markerSchema = z
 const toolSchema = { type: "object", properties: {}, additionalProperties: false };
 const output = (value) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
 
-export async function createNativeHumanHostProbe(root, timeoutMs = 30000) {
+export async function createNativeHumanHostProbe(root, timeoutMs = 120000) {
   const sourceFiles = [
     "./probe-native-human-host.mjs",
     "../src/runs/native-mcp-human-host.ts",
@@ -69,8 +69,8 @@ export async function createNativeHumanHostProbe(root, timeoutMs = 30000) {
   root = resolve(root);
   if (!/^native-host-[A-Za-z0-9-]+$/u.test(basename(root)))
     throw new Error("Expected a dedicated native-host-* diagnostic directory");
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 150 || timeoutMs > 30000)
-    throw new Error("Probe timeout must be 150..30000ms");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 150 || timeoutMs > 120000)
+    throw new Error("Probe timeout must be 150..120000ms");
   await mkdir(root, { recursive: true });
   if ((await lstat(root)).isSymbolicLink())
     throw new Error("Probe directory must not be a symbolic link");
@@ -150,9 +150,21 @@ export async function createNativeHumanHostProbe(root, timeoutMs = 30000) {
   );
   const channel = mcpHumanFormChannel(server);
   const originalRequest = channel.request.bind(channel);
-  channel.request = async (...args) => {
-    record("dispatch", { mode: args[0].mode });
-    return originalRequest(...args);
+  channel.request = async (form, window) => {
+    // Diagnostic-only coaching: retain the immutable question and answer schema.
+    // The production projector remains unchanged; this overlay is journaled.
+    const instructions = `Select B, then submit. You have up to ${timeoutMs / 1000} seconds. Use Skip to dismiss this display and keep the question pending. After expiry, stop here and request recovery; leave the old form alone.`;
+    const projected = structuredClone(form);
+    projected.message = `${instructions}\n\n${form.message}`;
+    projected.requestedSchema.properties.q0.title = `Select B, then submit (up to ${timeoutMs / 1000} seconds)`;
+    projected.requestedSchema.properties.q0.description = `${instructions}\n\n${form.requestedSchema.properties.q0.description}`;
+    record("dispatch", {
+      mode: projected.mode,
+      projection: "diagnostic-directions-v1",
+      formDigest: digest(projected),
+      timeoutMs: window.timeoutMs,
+    });
+    return originalRequest(projected, window);
   };
   const host = new NativeMcpHumanPresentationHost(service, store, channel, {
     admitInput: async (input) => {
@@ -245,7 +257,7 @@ export async function createNativeHumanHostProbe(root, timeoutMs = 30000) {
       controllerId: `probe:${bootId}`,
       leaseId: `probe-lease:${bootId}`,
       now: new Date().toISOString(),
-      ttlMs: 60000,
+      ttlMs: Math.max(60000, timeoutMs + 30000),
       initialState: {
         diagnostic: "UI-only synthetic fixture",
         metadata: { probeId: marker.probeId },
@@ -397,7 +409,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     );
   const probe = await createNativeHumanHostProbe(
     process.argv[2],
-    process.argv[3] === undefined ? 30000 : Number(process.argv[3])
+    process.argv[3] === undefined ? 120000 : Number(process.argv[3])
   );
   probe.server.onclose = () => {
     void probe.close();

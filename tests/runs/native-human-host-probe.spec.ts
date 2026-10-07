@@ -2,7 +2,7 @@ import { mkdtemp, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -12,12 +12,13 @@ import { createNativeHumanHostProbe } from "../../scripts/probe-native-human-hos
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
+  vi.useRealTimers();
 });
 const parse = (result: any) => JSON.parse(result.content[0].text);
 async function fixture(
   root?: string,
   reply: unknown = { action: "accept", content: { q0: "B" } },
-  timeoutMs = 30000,
+  timeoutMs: number | undefined = undefined,
   supported = true
 ) {
   root ??= await mkdtemp(join(tmpdir(), "native-host-test-"));
@@ -173,6 +174,57 @@ describe("non-authorizing native human host qualification probe", () => {
       answerAdmitted: false,
     });
     expect(second.shown()).toBe(1);
+  });
+
+  it("puts directions and the two-minute window in the field without selecting an answer", async () => {
+    const f = await fixture();
+    let rendered: any;
+    f.client.setRequestHandler(ElicitRequestSchema, async (request) => {
+      rendered = request.params;
+      return { action: "decline", content: null };
+    });
+    const first = await f.call("present_sample");
+    expect(first.timeoutMs).toBe(120000);
+    expect(rendered.requestedSchema.properties.q0).toMatchObject({
+      title: "Select B, then submit (up to 120 seconds)",
+      enum: ["A", "B"],
+    });
+    expect(rendered.requestedSchema.properties.q0).not.toHaveProperty("default");
+    expect(rendered.requestedSchema.properties.q0.description).toContain("Use Skip to dismiss");
+    expect(rendered.requestedSchema.properties.q0.description).toContain(
+      "stop here and request recovery"
+    );
+    expect(rendered.message).toContain("up to 120 seconds");
+    expect(first.observations.find((v: any) => v.kind === "dispatch")).toMatchObject({
+      projection: "diagnostic-directions-v1",
+      formDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    await f.close();
+    const reopened = await fixture(f.root, { action: "decline", content: null }, 30000);
+    const recovered = await reopened.call("recover_sample");
+    expect(recovered.requestId).toBe(first.requestId);
+    expect(recovered).toMatchObject({ questionCount: 1, holdPending: true, answerAdmitted: false });
+  });
+
+  it("keeps the controller lease beyond a two-minute display window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = Date.now();
+    const first = await fixture(undefined, { action: "decline", content: null });
+    await first.call("present_sample");
+    vi.setSystemTime(start + 121000);
+    const second = await fixture(first.root);
+    expect((await second.call("recover_sample")).result.reason).toBe(
+      "another_probe_controller_active"
+    );
+    expect(second.shown()).toBe(0);
+    await first.close();
+    expect((await second.call("recover_sample")).presentation.presentationCount).toBe(2);
+  });
+
+  it.each([149, 120001, Number.NaN])("refuses an invalid display window %s", async (timeout) => {
+    const root = await mkdtemp(join(tmpdir(), "native-host-window-"));
+    await expect(createNativeHumanHostProbe(root, timeout)).rejects.toThrow("150..120000ms");
+    expect(await readdir(root)).toEqual([]);
   });
 
   it("preserves an unmarked nonempty directory instead of creating a probe over it", async () => {

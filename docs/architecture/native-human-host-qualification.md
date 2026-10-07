@@ -8,7 +8,13 @@ authenticated answer, a worker response, a completed receipt or action permissio
 The workspace and worker observations are explicit fixtures. No worker exists.
 
 The next desktop observation should establish whether the actual host renders the
-source adapter's exact form and returns its response. It does not establish that
+diagnostic form and returns its response. The probe adds visible test directions
+to the production adapter's projected form; its title says "Select B, then submit"
+and includes the time limit. Message and field description also explain Skip and
+expiry recovery. This diagnostic overlay preserves the original question capture,
+marker specification, field keys, required fields and option values; it sets no
+default. Each dispatch records the overlay version and form digest. It does not
+qualify the production projector's exact unmodified desktop rendering. It does not establish that
 schema-valid content is fresh human input, prove human identity or isolate the
 coordinator from a hostile same-user process. Protected admission and actual worker
 containment/consumption remain separate dependencies. Passkey/OIDC remain optional
@@ -46,7 +52,7 @@ There are no answer, actor, key, approval or default-selection arguments. Tool
 description/intent fields do not independently authenticate human readiness.
 Operators must not treat a model-initiated call as proof that a human requested it.
 
-Timeout is explicit, 150..30000 milliseconds; the desktop default is thirty seconds.
+Timeout is explicit, 150..120000 milliseconds; the default is two minutes.
 Skip/decline, cancellation and expiry retain the question and its hold. If a host
 returns valid selected content, `valid_host_input_observed` records only answer
 count and digest; it is not authenticated human evidence. The source adapter then
@@ -54,12 +60,20 @@ closes that display with `failed` at `host_admission`, because this probe delibe
 has no qualified admission port. This expected result does not invalidate a
 successful form observation. No raw answer body is returned in compact status.
 
-Each process uses a distinct controller identity and a sixty-second lease.
+Each process uses a distinct controller identity and a lease lasting at least
+sixty seconds, or the configured display window plus thirty seconds, whichever is
+longer. The lease cannot expire halfway through the two-minute display.
 Orderly shutdown cancels any active presentation, then releases its own lease and
 closes the stores. After an abrupt crash, a competing live lease can delay recovery;
 no forced takeover or automatic prompt occurs. A visible expired desktop form may
-remain selectable: use a fresh explicit recovery, and keep the old form observation
-separate from answer admission.
+remain selectable: use Skip to dismiss it if that control is still available,
+then request a fresh explicit recovery. Neither server-side expiry nor protocol
+cancellation proves that the host removed its visible form. Old replies are
+discarded; this probe does not capture a late answer as a recoverable draft.
+Recovery retains the pending question and requires a new selection/submission.
+After expiry, operators stop the sample and wait for explicit human return rather
+than automatically opening another form. This does not cancel the durable question
+or define cancellation policy for a real worker (none exists in this probe).
 
 ## Evidence and limitations
 
