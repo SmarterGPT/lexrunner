@@ -133,6 +133,7 @@ async function setup(kind: string, heartbeatBeforeDispatch = false) {
     observedAt: "2026-08-12T12:00:06.000Z",
     notificationJson: JSON.stringify({
       method: "item/completed",
+      emittedAtMs: 1791335791251,
       params: {
         threadId: "native-session-1",
         turnId: "turn-1",
@@ -151,6 +152,7 @@ async function setup(kind: string, heartbeatBeforeDispatch = false) {
     observedAt: "2026-08-12T12:00:07.000Z",
     notificationJson: JSON.stringify({
       method: "turn/completed",
+      emittedAtMs: 1791335791251,
       params: {
         threadId: "native-session-1",
         turn: { id: "turn-1", status: "completed", items: [] },

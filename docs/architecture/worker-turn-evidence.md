@@ -1,10 +1,20 @@
 # Terminal worker event capture
 
 The owned Codex connection now queues `turn/completed` notifications for its own
-thread after a dispatch attempt. Only terminal `completed`, `failed` and
+thread and single observed turn after a dispatch attempt. The owned turn is bound
+by dispatch acknowledgement, start notification or an early terminal event;
+conflicting turn IDs/statuses terminate the connection without enqueuing the
+conflicting report. Repeated consistent terminal reports remain bounded queue
+entries. Only terminal `completed`, `failed` and
 `interrupted` statuses are accepted. This is a minimal event projection checked
 against locally generated Codex 0.145.0 schemas, not verification of the full turn
 body or the provider's conclusions.
+
+Installed Codex 0.145.0 also emits a top-level `emittedAtMs` value on native
+notifications. Terminal and final-message projections accept this optional
+nonnegative safe integer explicitly and retain it in the original frame bytes.
+Other unknown top-level fields remain rejected. This provider timing value does
+not replace the host's `observedAt` or establish freshness, identity or permission.
 
 The queue retains each original valid UTF-8 JSON frame, excluding its newline
 delimiter. Invalid UTF-8 fails instead of replacing bytes. EOF finalizes the decoder

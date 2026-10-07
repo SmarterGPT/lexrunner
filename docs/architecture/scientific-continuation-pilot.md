@@ -25,6 +25,11 @@ outside this pilot.
    event delivery, actual interruption and enforcement at the worker's action
    boundary. The current owned Codex connection is still a one-send development
    transport. Do not weaken its scope, replay or isolation guards for this pilot.
+   The first subdependency now exposes a bounded, exact-turn interruption and
+   event-driven terminal wait on that source transport. A stop acknowledgement,
+   cleared question and observed terminal event remain distinct. Controlled pipe
+   tests and an idle native probe qualify only their stated boundaries; authenticated
+   human admission and live worker/action-boundary qualification remain outstanding.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result

@@ -10,6 +10,8 @@ export const MAX_SESSION_EVIDENCE_BYTES = 8 * MAX_TURN_EVIDENCE_BYTES;
 export const TerminalTurnNotification = z
   .object({
     method: z.literal("turn/completed"),
+    // Native notification timing is diagnostic data, not our observation clock.
+    emittedAtMs: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     params: z
       .object({
         threadId: z.string().min(1),

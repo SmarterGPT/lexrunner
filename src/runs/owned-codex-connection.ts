@@ -59,6 +59,14 @@ const Started = z.object({
 });
 const MAX_FRAME = 1024 * 1024;
 const MAX_TOTAL = 8 * MAX_FRAME;
+const TurnIdentity = z.object({ id: text });
+const InterruptParams = z.object({ threadId: text, turnId: text }).strict();
+type TerminalStatus = "completed" | "failed" | "interrupted";
+type RequestWindow = { signal: AbortSignal; deadlineAt: string };
+export interface OwnedCodexTerminalObservation {
+  turnId: string;
+  status: TerminalStatus;
+}
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; cleanup(): void };
 export interface CodexConnectionCloseResult {
   processExited: boolean;
@@ -99,6 +107,15 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
   private stdoutBytes = 0;
   private stderrBytes = 0;
   private turnAttempted = false;
+  private ownedTurnId?: string;
+  private terminalTurnStatus?: TerminalStatus;
+  private interruptAttempted = false;
+  private interruptAcknowledged = false;
+  private terminalWaiter?: {
+    resolve(value: OwnedCodexTerminalObservation | null): void;
+    reject(error: Error): void;
+    cleanup(): void;
+  };
   private startedNotificationId?: string;
   private readonly methods: string[] = [];
   private readonly notifications: Record<string, number> = Object.create(null);
@@ -208,6 +225,10 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       processExited: this.processExited,
       failure: this.failure ?? null,
       turnAttempted: this.turnAttempted,
+      ownedTurnId: this.ownedTurnId ?? null,
+      terminalTurnStatus: this.terminalTurnStatus ?? null,
+      interruptAttempted: this.interruptAttempted,
+      interruptAcknowledged: this.interruptAcknowledged,
       stdoutBytes: this.stdoutBytes,
       stderrBytes: this.stderrBytes,
       methods: [...this.methods],
@@ -272,7 +293,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
   async request(
     method: "turn/start",
     params: CodexTurnStartParams,
-    options: { signal: AbortSignal; deadlineAt: string }
+    options: RequestWindow
   ): Promise<unknown> {
     this.requireOpen();
     if (method !== "turn/start") throw new Error("method_not_permitted");
@@ -286,7 +307,100 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       throw new Error("dispatch_window_expired");
     if (this.turnAttempted) throw new Error("dispatch_already_attempted");
     this.turnAttempted = true;
-    return this.rpc(method, parsed, Math.min(remaining, 30_000), options.signal);
+    const response = await this.rpc(method, parsed, Math.min(remaining, 30_000), options.signal);
+    this.requireOpen();
+    const ack = z.object({ turn: TurnIdentity }).safeParse(response);
+    if (!ack.success) {
+      this.fail("invalid_turn_acknowledgement");
+      throw new Error("invalid_turn_acknowledgement");
+    }
+    if (!this.bindTurn(ack.data.turn.id)) throw new Error("turn_mismatch");
+    return response;
+  }
+
+  /** One explicit stop request for the observed owned turn. An ACK is not a stopped worker. */
+  async interrupt(input: { threadId: string; turnId: string }, options: RequestWindow) {
+    this.requireOpen();
+    const params = InterruptParams.parse(input);
+    if (params.threadId !== this.session.threadId) throw new Error("thread_mismatch");
+    if (!this.ownedTurnId) throw new Error("turn_not_observed");
+    if (params.turnId !== this.ownedTurnId) throw new Error("turn_mismatch");
+    const remaining = Date.parse(options.deadlineAt) - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0 || options.signal.aborted)
+      throw new Error("interrupt_window_expired");
+    if (this.terminalTurnStatus)
+      return { acknowledged: false, terminalStatus: this.terminalTurnStatus };
+    if (this.interruptAttempted) throw new Error("interrupt_already_attempted");
+    this.interruptAttempted = true;
+    // A turn/started notification can arrive before the turn/start response. Stop
+    // that exact observed turn even while its dispatch acknowledgement is pending.
+    const response = await this.rpc(
+      "turn/interrupt",
+      params,
+      Math.min(remaining, 30_000),
+      options.signal,
+      true
+    );
+    this.requireOpen();
+    if (!z.object({}).strict().safeParse(response).success) {
+      this.fail("invalid_interrupt_acknowledgement");
+      throw new Error("invalid_interrupt_acknowledgement");
+    }
+    this.interruptAcknowledged = true;
+    return { acknowledged: true, terminalStatus: this.terminalTurnStatus ?? null };
+  }
+
+  /** Event-driven bounded wait. Timeout returns null; neither timeout nor close proves a stop. */
+  async awaitTerminal(
+    turnId: string,
+    options: RequestWindow
+  ): Promise<OwnedCodexTerminalObservation | null> {
+    const { signal, deadlineAt } = options;
+    if (!this.ownedTurnId) throw new Error("turn_not_observed");
+    if (turnId !== this.ownedTurnId) throw new Error("turn_mismatch");
+    const remaining = Date.parse(deadlineAt) - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0 || signal.aborted)
+      throw new Error("terminal_window_expired");
+    this.requireOpen();
+    if (this.terminalTurnStatus) return { turnId, status: this.terminalTurnStatus };
+    if (this.terminalWaiter) throw new Error("terminal_wait_already_pending");
+    const observed = await new Promise<OwnedCodexTerminalObservation | null>((resolve, reject) => {
+      const finish = (value: OwnedCodexTerminalObservation | null) => {
+        this.terminalWaiter?.cleanup();
+        this.terminalWaiter = undefined;
+        resolve(value);
+      };
+      const aborted = () => {
+        this.terminalWaiter?.cleanup();
+        this.terminalWaiter = undefined;
+        reject(new Error("terminal_wait_aborted"));
+      };
+      const timer = setTimeout(() => finish(null), Math.min(remaining, 30_000));
+      this.terminalWaiter = {
+        resolve: finish,
+        reject,
+        cleanup: () => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", aborted);
+        },
+      };
+      signal.addEventListener("abort", aborted, { once: true });
+    });
+    this.requireOpen();
+    return observed;
+  }
+
+  private bindTurn(turnId: string): boolean {
+    if (!text.safeParse(turnId).success) {
+      this.fail("invalid_turn_identity");
+      return false;
+    }
+    if (this.ownedTurnId && this.ownedTurnId !== turnId) {
+      this.fail("turn_mismatch");
+      return false;
+    }
+    this.ownedTurnId = turnId;
+    return true;
   }
 
   close(): Promise<CodexConnectionCloseResult> {
@@ -336,10 +450,12 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     method: string,
     params: unknown,
     timeoutMs = 15_000,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    allowConcurrent = false
   ): Promise<unknown> {
     this.requireOpen();
-    if (this.pending.size) return Promise.reject(new Error("request_already_pending"));
+    if (this.pending.size && (!allowConcurrent || this.pending.size >= 2))
+      return Promise.reject(new Error("request_already_pending"));
     if (signal?.aborted) return Promise.reject(new Error("request_aborted"));
     const id = ++this.sequence;
     this.methods.push(method);
@@ -365,6 +481,11 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       item.reject(new Error(reason));
     }
     this.pending.clear();
+    if (this.terminalWaiter) {
+      this.terminalWaiter.cleanup();
+      this.terminalWaiter.reject(new Error(reason));
+      this.terminalWaiter = undefined;
+    }
   }
   private fail(reason: string) {
     this.failure ??= reason;
@@ -434,6 +555,22 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
           }
           this.startedNotificationId = id;
         }
+        if (message.method === "turn/started") {
+          const event = z.object({ threadId: text, turn: TurnIdentity }).safeParse(message.params);
+          if (!event.success) {
+            this.fail("invalid_started_turn");
+            return;
+          }
+          if (event.data.threadId !== this.settings?.threadId) {
+            this.fail("thread_mismatch");
+            return;
+          }
+          if (!this.bindTurn(event.data.turn.id)) return;
+          if (this.terminalTurnStatus) {
+            this.fail("turn_already_terminal");
+            return;
+          }
+        }
         if (message.method === "turn/completed") {
           const event = TerminalTurnNotification.safeParse(message);
           if (!event.success) {
@@ -442,6 +579,14 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
           }
           if (event.data.params.threadId !== this.settings?.threadId) {
             this.fail("thread_mismatch");
+            return;
+          }
+          if (!this.bindTurn(event.data.params.turn.id)) return;
+          if (
+            this.terminalTurnStatus &&
+            this.terminalTurnStatus !== event.data.params.turn.status
+          ) {
+            this.fail("terminal_status_conflict");
             return;
           }
           const bytes = Buffer.byteLength(line, "utf8");
@@ -455,6 +600,11 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
             notificationJson: line,
           });
           this.captureBytes += bytes;
+          this.terminalTurnStatus = event.data.params.turn.status;
+          this.terminalWaiter?.resolve({
+            turnId: event.data.params.turn.id,
+            status: this.terminalTurnStatus,
+          });
         }
         if (message.method === "item/completed") {
           const params = message.params as
