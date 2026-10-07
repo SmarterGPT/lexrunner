@@ -351,7 +351,8 @@ export class NativeMcpHumanPresentationHost {
       boundary = "persistence";
       admissionAttempted = true;
       const admitted = await bounded(
-        () => this.service.admitWorkerAnswer(admissionInput, canCommit),
+        (inner) =>
+          this.service.admitWorkerAnswer(admissionInput, () => !inner.aborted && canCommit()),
         signal,
         remaining()
       );

@@ -376,6 +376,81 @@ describe.each(["memory", "sqlite"] as const)("native MCP human host (%s)", (kind
     await h.held();
   });
 
+  it.each(["freshness", "storage"] as const)(
+    "retains a shortened wait's cancellation after clock rollback during %s",
+    async (boundary) => {
+      const h = await setup(kind);
+      let time = h.f.time;
+      h.input.expiresAt = new Date(Date.parse(time) + 30_000).toISOString();
+      let release!: () => void;
+      let entered = false;
+      let admitting = false;
+      const pause = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const delay = async () => {
+        entered = true;
+        time = h.f.time; // Rollback cannot revive the already bounded 100ms wait.
+        await pause;
+      };
+      vi.mocked(h.admission.admitInput).mockImplementation(async (input) => {
+        time = new Date(Date.parse(h.input.expiresAt) - 100).toISOString();
+        return h.f.signed(input.presentation.challenge, {
+          answers: input.answers,
+          answeredAt: input.observedAt,
+        });
+      });
+      const observe = h.f.observer.observe.bind(h.f.observer);
+      vi.spyOn(h.f.observer, "observe").mockImplementation(async () => {
+        if (boundary === "freshness" && admitting) await delay();
+        return observe();
+      });
+      const store = new Proxy(h.f.store, {
+        get(target, key) {
+          if (key === "compareAndSetRunState")
+            return async (input: Parameters<CoordinationStore["compareAndSetRunState"]>[0]) => {
+              if (boundary === "storage" && input.event.type === "worker_answer_admitted")
+                await delay();
+              return target.compareAndSetRunState(input);
+            };
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const service = h.f.serviceFor(store);
+      const admit = service.admitWorkerAnswer.bind(service);
+      let settling: ReturnType<typeof admit> | undefined;
+      vi.spyOn(service, "admitWorkerAnswer").mockImplementation((...args) => {
+        admitting = true;
+        return (settling = admit(...args));
+      });
+      const host = new NativeMcpHumanPresentationHost(
+        service,
+        store,
+        h.channel,
+        h.admission,
+        () => time
+      );
+      try {
+        const pending = host.present(h.input, h.signal.signal);
+        await vi.waitFor(() => expect(entered).toBe(true));
+        expect(await pending).toMatchObject({
+          status: "reconciliation_required",
+          reason: "persistence_or_admission_uncertain",
+        });
+        expect(await h.f.service.getWorkerAnswer("run", h.input.requestId)).toBeNull();
+        release();
+        expect(await settling).toMatchObject({ ok: false, reason: "commit_condition_failed" });
+        if (kind === "sqlite") await h.f.reopen();
+        expect(await h.f.service.getWorkerAnswer("run", h.input.requestId)).toBeNull();
+        await h.held();
+      } finally {
+        release();
+        await settling;
+      }
+    }
+  );
+
   it("discards a response from a replaced connection", async () => {
     const h = await setup(kind);
     vi.mocked(h.channel.request).mockImplementation(async () => {
