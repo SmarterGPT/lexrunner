@@ -16,10 +16,12 @@ outside this pilot.
    adapter negotiation. Explicit cancellation remains available.
 2. **Compact continuation (this slice):** `scripts/compose-continuation.mjs`
    validates the exact assignment and selected trail digests, preserves scope and
-   authority, and reuses `exploration-trail.mjs` to omit raw output only. Findings,
-   failures, interpretation, conditions, limitations, open questions and probe
-   metadata remain visible. Larger views fail explicitly; nothing is silently
-   removed to fit a budget. Source artifacts provide full hydration.
+   authority, and defaults to a decision view. Findings, conclusions, conditions,
+   limitations, open choices, optional next experiments and every probe outcome
+   remain verbatim. Experiment design, commands/timings, raw output, predecessor
+   history and repeated framework explanations stay in the source. Larger views
+   fail explicitly; findings are never selected or truncated to fit a budget.
+   Exact-digest source hydration and an explicit evidence view remain available.
 3. **Human-channel and worker qualification (next dependency):** connect persisted
    requests and receipts to an authenticated host human-response channel; qualify
    event delivery, actual interruption and enforcement at the worker's action
@@ -175,6 +177,8 @@ Run with the owning repository as cwd:
 
 ```powershell
 node --import tsx scripts/compose-continuation.mjs packet.json sha256:PACKET_HASH trail.json sha256:TRAIL_DIGEST
+node scripts/exploration-trail.mjs resume trail.json --decision --expect-digest sha256:TRAIL_DIGEST
+node --import tsx scripts/compose-continuation.mjs packet.json sha256:PACKET_HASH trail.json sha256:TRAIL_DIGEST --evidence-view
 node scripts/exploration-trail.mjs resume trail.json --expect-digest sha256:TRAIL_DIGEST
 ```
 
@@ -183,6 +187,28 @@ predecessor automatically, launches no worker and treats continuity as supplied
 data. Digest consistency does not establish source authentication, relevance,
 freshness or permission. The 64 KiB input, 32 KiB delivery and 16 KiB compact-trail
 bounds are pilot limits, not claims about optimal model token budgets.
+
+### Decision view contract
+
+The default `exploration-decision-resumption-pilot/v1` projection keeps the
+question, attempt, capture time, conditions, every observation, interpretation,
+limitation, open question and suggested experiment. It keeps each probe's source
+pointer, exact exit code (including null), termination and truncation flags.
+It omits premise, experiment, predecessor reference, detailed commands/cwd/timing,
+output counts and output excerpts. `detailsOmitted:true` and the exact source
+location/digest identify the available full record. This is a fixed projection;
+it performs no relevance inference, prose summarization or finding selection.
+Source records stay unchanged. Interpretations remain supplied conclusions,
+and incomplete/truncated evidence remains visible rather than being called success.
+
+The legacy compact evidence view remains available through `--evidence-view`
+or `compose({view:"evidence", ...})`; full `resume` hydrates the verified source.
+Neither view establishes freshness or authenticates the source. The short default
+notice states the current delivery requirement and keeps suggestions optional.
+The full assignment remains unchanged, including scope, authority and criteria.
+Selecting details requires the host/agent's judgment; the projection does not
+promise that omitted experimental detail is irrelevant to every next decision.
+Byte savings measure presentation size, not token counts or model decision quality.
 
 ## Validation
 

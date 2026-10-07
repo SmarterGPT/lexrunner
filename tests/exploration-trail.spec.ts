@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { seal, resume, resumeCompact } from "../scripts/exploration-trail.mjs";
+import { seal, resume, resumeCompact, resumeDecision } from "../scripts/exploration-trail.mjs";
 import { captureProbe } from "../scripts/exploration-probe.mjs";
 
 function observation() {
@@ -33,6 +33,126 @@ function observation() {
     ],
   };
 }
+describe("decision view", () => {
+  it("retains every consequential field and probe outcome without reinterpreting the record", () => {
+    const record = {
+      ...observation(),
+      observations: ["A fails under condition X", "A succeeds under condition Y"],
+      interpretation: "Outcomes conflict across conditions; do not assume A always fails",
+      evidence: [
+        { ...observation().evidence[0], termination: "timeout", outputTruncated: true },
+        { ...observation().evidence[0], exitCode: 1 },
+        { ...observation().evidence[0], exitCode: 0, outputTruncated: false },
+      ],
+    };
+    const trail = seal(record),
+      before = JSON.stringify(trail);
+    const result = resumeDecision(trail, "/source", trail.digest);
+    for (const field of [
+      "question",
+      "attempt",
+      "capturedAt",
+      "conditions",
+      "observations",
+      "interpretation",
+      "limitations",
+      "openQuestions",
+      "possibleNextExperiments",
+    ] as const)
+      expect(result.record[field]).toEqual(record[field]);
+    expect(result.record.evidence).toEqual([
+      {
+        sourcePointer: "/record/evidence/0",
+        exitCode: null,
+        termination: "timeout",
+        outputTruncated: true,
+      },
+      { sourcePointer: "/record/evidence/1", exitCode: 1 },
+      { sourcePointer: "/record/evidence/2", exitCode: 0, outputTruncated: false },
+    ]);
+    expect(result).toMatchObject({
+      evidenceStatus: "supplied",
+      questionDisposition: "open",
+      detailsOmitted: true,
+    });
+    expect(result.record).not.toHaveProperty("premise");
+    expect(result.record).not.toHaveProperty("experiment");
+    expect(result).not.toHaveProperty("guidance");
+    expect(JSON.stringify(trail)).toBe(before);
+    expect(resume(trail, result.source.digest).record).toEqual(record);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(
+      Buffer.byteLength(JSON.stringify(resumeCompact(trail, "/source", trail.digest)))
+    );
+  });
+  it("fits consequential facts when detailed probe metadata alone exceeds the evidence view", () => {
+    const record = {
+      ...observation(),
+      evidence: Array.from({ length: 8 }, (_, index) => ({
+        ...observation().evidence[0],
+        command: ["probe", "x".repeat(2200)],
+        exitCode: index === 0 ? null : index % 2,
+      })),
+    };
+    const trail = seal(record);
+    expect(() => resumeCompact(trail, "/source", trail.digest)).toThrow("16 KiB");
+    const result = resumeDecision(trail, "/source", trail.digest);
+    expect(result.record.observations).toEqual(record.observations);
+    expect(result.record.evidence.map((probe) => probe.exitCode)).toEqual(
+      record.evidence.map((probe) => probe.exitCode)
+    );
+    expect(resume(trail, result.source.digest).record.evidence).toEqual(record.evidence);
+  });
+  it("validates omitted details as well as visible findings against the selected digest", () => {
+    const trail = seal(observation());
+    trail.record.experiment = "Changed method";
+    expect(() => resumeDecision(trail, "/source", trail.digest)).toThrow("digest mismatch");
+    const replacement = seal(trail.record);
+    expect(() => resumeDecision(replacement, "/source", trail.digest)).toThrow(
+      "expected source digest"
+    );
+  });
+  it("keeps authored text and declines an oversized decision instead of dropping conflicts", () => {
+    const record = { ...observation(), observations: ["  café\n猫  ", "é", "é"] };
+    expect(resumeDecision(seal(record), "/source").record.observations).toEqual(
+      record.observations
+    );
+    const huge = seal({ ...record, observations: Array(5).fill("x".repeat(3990)) });
+    expect(() => resumeDecision(huge, "/source")).toThrow("16 KiB");
+    expect(resume(huge).record.observations).toHaveLength(5);
+  });
+  it("runs the decision CLI and refuses conflicting view flags", async () => {
+    const root = await mkdtemp(join(tmpdir(), "exploration-decision-"));
+    try {
+      const source = join(root, "trail.json"),
+        script = resolve("scripts/exploration-trail.mjs");
+      const trail = seal(observation());
+      await writeFile(source, JSON.stringify(trail));
+      const result = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [script, "resume", source, "--decision", "--expect-digest", trail.digest],
+          { encoding: "utf8", timeout: 10000 }
+        )
+      );
+      expect(result).toEqual(resumeDecision(trail, source, trail.digest));
+      expect(() =>
+        execFileSync(process.execPath, [script, "resume", source, "--decision", "--compact"], {
+          stdio: "pipe",
+          timeout: 10000,
+        })
+      ).toThrow();
+      expect(() =>
+        execFileSync(process.execPath, [script, "resume", source, "--decision", "--decision"], {
+          stdio: "pipe",
+          timeout: 10000,
+        })
+      ).toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("opt-in exploration trail", () => {
   it("compacts output without hiding failed probes, contradictory observations or limits", () => {
     const record = {

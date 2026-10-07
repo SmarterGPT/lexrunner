@@ -59,6 +59,24 @@ function fixture() {
 }
 
 describe("compact scientific continuation composition", () => {
+  it("defaults to decision facts and keeps evidence details an explicit view", () => {
+    const input = fixture();
+    const brief = JSON.parse(compose(input));
+    const evidence = JSON.parse(compose({ ...input, view: "evidence" }));
+    expect(brief.continuity.profile).toBe("exploration-decision-resumption-pilot/v1");
+    expect(brief.continuity.detailsOmitted).toBe(true);
+    expect(brief.continuity.record).not.toHaveProperty("experiment");
+    expect(evidence.continuity.record.experiment).toBe(input.trail.record.experiment);
+    expect(evidence.continuity.record.evidence[0].command).toEqual(["probe", "A"]);
+    expect(brief.assignment).toEqual(evidence.assignment);
+    expect(brief.assignment.scope).toEqual(input.packet.scope);
+    expect(brief.assignment.authority).toEqual(input.packet.authority);
+    expect(brief.assignment.acceptance_criteria).toEqual(input.packet.acceptance_criteria);
+    expect(Buffer.byteLength(compose(input))).toBeLessThan(
+      Buffer.byteLength(compose({ ...input, view: "evidence" }))
+    );
+    expect(() => compose({ ...input, view: "guess" })).toThrow("Unsupported continuation view");
+  });
   it("carries failures, comparisons, open criteria and references without rewriting the assignment", () => {
     const input = fixture();
     const before = JSON.stringify(input);
@@ -123,6 +141,24 @@ describe("compact scientific continuation composition", () => {
         { encoding: "utf8", timeout: 10000 }
       );
       const compact = JSON.parse(output);
+      expect(compact.continuity.profile).toBe("exploration-decision-resumption-pilot/v1");
+      const evidenceOutput = execFileSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          resolve("scripts/compose-continuation.mjs"),
+          packetPath,
+          input.expectedPacketHash,
+          trailPath,
+          input.expectedTrailDigest,
+          "--evidence-view",
+        ],
+        { encoding: "utf8", timeout: 10000 }
+      );
+      expect(JSON.parse(evidenceOutput).continuity.record.experiment).toBe(
+        input.trail.record.experiment
+      );
       const full = JSON.parse(
         execFileSync(
           process.execPath,
