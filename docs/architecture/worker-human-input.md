@@ -16,6 +16,13 @@ projection is narrower than the experimental native schema; unsupported requests
 fail closed rather than being silently rewritten. Secret authentication remains
 a separate host flow. Text in a question is untrusted display content.
 
+Installed Codex 0.145.0 exposes this native tool in Plan mode. The source transport
+can explicitly select that experimental mode at connection creation with a
+verified model; ordinary connections retain their existing behavior. Plan-mode
+receipt dispatch is refused until canonical dispatch inputs bind the mode. Other
+runtimes or hosts can produce portable questions without adopting Codex's
+collaboration modes; mode selection is solely an adapter concern.
+
 The queue keeps at most 128 request identities for the connection lifetime and
 2 MiB of pending capture data. Each source JSON is at most 16 KiB, each portable
 capture at most 32 KiB, with at most eight questions and 16 options per question.
@@ -55,8 +62,11 @@ answered after restart by replaying its response or assignment.
 
 Focused tests qualify capture, typed ID fencing, lost-storage-ACK replay,
 memory/SQLite retention, controller lease takeover, corrupted hold rejection and
-real child pipes with a controlled Node fixture. They do not run inference,
-qualify native Codex human prompts, demonstrate an authenticated host or prove
-native containment. The transport remains one-dispatch, read-only development
+real child pipes with a controlled Node fixture. A separate installed-Codex
+0.145.0 probe with a deterministic local provider qualified native Plan-mode
+prompt capture, lost-storage-ACK replay and SQLite retention through interruption.
+Its workspace binding was simulated. Neither test runs inference, demonstrates
+an authenticated host or proves native containment. The transport remains
+one-dispatch, read-only development
 code with fixed child argv and bounded output. No public endpoint, default
 autonomous controller, installation, release or Bridge Goal change is enabled.

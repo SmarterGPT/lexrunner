@@ -48,7 +48,12 @@ beforeEach(() => {
         const message = JSON.parse(chunk.toString());
         sent.push(message);
         queueMicrotask(() => {
-          if (message.method === "initialize") reply({ id: message.id, result: {} });
+          if (message.method === "initialize")
+            reply(
+              mode === "unsupported-experimental"
+                ? { id: message.id, error: { code: -32602, message: "unsupported capability" } }
+                : { id: message.id, result: {} }
+            );
           if (message.method === "thread/start")
             reply({
               id: message.id,
@@ -1082,6 +1087,106 @@ describe("owned Codex connection", () => {
   it("rejects changed settings and cleans up bootstrap", async () => {
     mode = "bad-settings";
     await expect(OwnedCodexConnection.open(options)).rejects.toThrow("bootstrap_rejected");
+    expect(sent.some((x) => x.method === "turn/start")).toBe(false);
+  });
+  it("opts into Plan mode once with the verified model and built-in instructions", async () => {
+    const input = { ...options, model: "test-model", collaborationMode: "plan" as const };
+    connection = await OwnedCodexConnection.open(input);
+    input.model = "other-model";
+    expect(sent.find((x) => x.method === "initialize")!.params).toMatchObject({
+      capabilities: { experimentalApi: true },
+    });
+    await connection.request("turn/start", params, requestOptions());
+    expect(sent.find((x) => x.method === "turn/start")!.params).toEqual({
+      ...params,
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "test-model",
+          developer_instructions: null,
+          reasoning_effort: null,
+        },
+      },
+    });
+    await expect(connection.request("turn/start", params, requestOptions())).rejects.toThrow(
+      "dispatch_already_attempted"
+    );
+    expect(sent.filter((x) => x.method === "turn/start")).toHaveLength(1);
+  });
+  it("retains ordinary launch behavior without experimental negotiation or mode override", async () => {
+    connection = await OwnedCodexConnection.open(options);
+    expect(sent.find((x) => x.method === "initialize")!.params).not.toHaveProperty("capabilities");
+    await connection.request("turn/start", params, requestOptions());
+    expect(sent.find((x) => x.method === "turn/start")!.params).toEqual(params);
+  });
+  it.each([
+    { collaborationMode: "plan" },
+    { collaborationMode: "default", model: "test-model" },
+    { collaborationMode: { mode: "plan" }, model: "test-model" },
+  ])("rejects unbound or unsupported collaboration selection before launch: %j", async (extra) => {
+    const launches = vi.mocked(spawn).mock.calls.length;
+    await expect(
+      OwnedCodexConnection.open({ ...options, ...extra } as typeof options)
+    ).rejects.toThrow();
+    expect(vi.mocked(spawn).mock.calls.length).toBe(launches);
+  });
+  it("closes an incompatible Plan-mode bootstrap without fallback or dispatch", async () => {
+    mode = "unsupported-experimental";
+    const launches = vi.mocked(spawn).mock.calls.length;
+    await expect(
+      OwnedCodexConnection.open({ ...options, model: "test-model", collaborationMode: "plan" })
+    ).rejects.toThrow("bootstrap_rejected");
+    expect(vi.mocked(spawn).mock.calls.length).toBe(launches + 1);
+    expect(sent.map((x) => x.method)).toEqual(["initialize"]);
+  });
+  it("rejects caller mode and instruction changes before spending a Plan-mode dispatch", async () => {
+    connection = await OwnedCodexConnection.open({
+      ...options,
+      model: "test-model",
+      collaborationMode: "plan",
+    });
+    await expect(
+      connection.request(
+        "turn/start",
+        { ...params, collaborationMode: { mode: "default" } } as typeof params,
+        requestOptions()
+      )
+    ).rejects.toThrow();
+    expect(connection.snapshot().turnAttempted).toBe(false);
+    expect(sent.some((x) => x.method === "turn/start")).toBe(false);
+  });
+  it("refuses receipt dispatch whose canonical claim does not bind Plan-mode settings", async () => {
+    connection = await OwnedCodexConnection.open({
+      ...options,
+      model: "test-model",
+      collaborationMode: "plan",
+    });
+    expect(connection.snapshot().requestedCollaborationMode).toBe("plan");
+    await expect(
+      connection.request(
+        "turn/start",
+        { ...params, outputSchema: CodexReceiptOutputSchema },
+        requestOptions()
+      )
+    ).rejects.toThrow("plan_receipt_dispatch_not_supported");
+    expect(connection.snapshot().turnAttempted).toBe(false);
+    expect(sent.some((x) => x.method === "turn/start")).toBe(false);
+  });
+  it("counts injected collaboration settings against the full wire byte limit", async () => {
+    connection = await OwnedCodexConnection.open({
+      ...options,
+      model: "test-model",
+      collaborationMode: "plan",
+    });
+    const large = {
+      threadId: "owned-thread",
+      input: [{ type: "text" as const, text: "a".repeat(256 * 1024 - 100) }],
+    };
+    expect(Buffer.byteLength(JSON.stringify(large), "utf8")).toBeLessThan(256 * 1024);
+    await expect(connection.request("turn/start", large, requestOptions())).rejects.toThrow(
+      "request_limit"
+    );
+    expect(connection.snapshot().turnAttempted).toBe(false);
     expect(sent.some((x) => x.method === "turn/start")).toBe(false);
   });
   it("rejects a different thread and settings overrides before writing", async () => {
