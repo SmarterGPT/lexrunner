@@ -77,6 +77,7 @@ function capture(observation: WorkerObservationInput, extra = ""): WorkerTurnCap
     observedAt: observation.observedAt,
     notificationJson: JSON.stringify({
       method: "turn/completed",
+      emittedAtMs: 1791335791251,
       params: {
         threadId: observation.workerId,
         turn: { id: observation.turnId, status: "completed", items: [{ text: extra }] },

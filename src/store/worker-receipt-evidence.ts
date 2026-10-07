@@ -12,6 +12,7 @@ import {
 export const FinalAgentMessage = z
   .object({
     method: z.literal("item/completed"),
+    emittedAtMs: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     params: z
       .object({
         threadId: z.string().min(1),

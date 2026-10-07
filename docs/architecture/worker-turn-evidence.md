@@ -10,6 +10,12 @@ entries. Only terminal `completed`, `failed` and
 against locally generated Codex 0.145.0 schemas, not verification of the full turn
 body or the provider's conclusions.
 
+Installed Codex 0.145.0 also emits a top-level `emittedAtMs` value on native
+notifications. Terminal and final-message projections accept this optional
+nonnegative safe integer explicitly and retain it in the original frame bytes.
+Other unknown top-level fields remain rejected. This provider timing value does
+not replace the host's `observedAt` or establish freshness, identity or permission.
+
 The queue retains each original valid UTF-8 JSON frame, excluding its newline
 delimiter. Invalid UTF-8 fails instead of replacing bytes. EOF finalizes the decoder
 and reports incomplete UTF-8 or an unterminated frame, preserving earlier queued

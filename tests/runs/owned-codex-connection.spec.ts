@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { OwnedCodexConnection } from "../../src/runs/owned-codex-connection.js";
 import { CodexReceiptOutputSchema } from "../../src/runs/codex-receipt-contract.js";
-import type { WorkerReceiptCapture } from "../../src/store/worker-receipt-evidence.js";
+import {
+  FinalAgentMessage,
+  type WorkerReceiptCapture,
+} from "../../src/store/worker-receipt-evidence.js";
+import { TerminalTurnNotification } from "../../src/store/worker-turn-evidence.js";
 import { InMemoryWorkerObservationStore } from "../../src/store/inmemory/worker-observation-store.js";
 import { createAttachedWorker, taskPacket } from "../store/worker-dispatch-fixture.js";
 
@@ -99,7 +103,29 @@ describe("owned Codex connection", () => {
   const stopParams = { threadId: "owned-thread", turnId: "turn-1" };
   const terminal = (status = "interrupted", turnId = "turn-1") => ({
     method: "turn/completed",
+    emittedAtMs: 1791335791251,
     params: { threadId: "owned-thread", turn: { id: turnId, status } },
+  });
+
+  it("accepts only bounded native emission metadata without opening arbitrary headers", () => {
+    const final = {
+      method: "item/completed",
+      emittedAtMs: 1791335791251,
+      params: {
+        threadId: "owned-thread",
+        turnId: "turn-1",
+        item: { type: "agentMessage", id: "item-1", phase: "final_answer", text: "{}" },
+      },
+    };
+    for (const [schema, event] of [
+      [TerminalTurnNotification, terminal()],
+      [FinalAgentMessage, final],
+    ] as const) {
+      expect(schema.safeParse(event).success).toBe(true);
+      for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1791335791251", null])
+        expect(schema.safeParse({ ...event, emittedAtMs: value }).success).toBe(false);
+      expect(schema.safeParse({ ...event, authority: "approved" }).success).toBe(false);
+    }
   });
 
   it("rejects unobserved, wrong-thread, wrong-turn, and overridden stops without sending", async () => {
@@ -460,6 +486,7 @@ describe("owned Codex connection", () => {
     );
     const event = {
       method: "item/completed",
+      emittedAtMs: 1791335791251,
       params: {
         threadId: "owned-thread",
         turnId: "turn-1",
