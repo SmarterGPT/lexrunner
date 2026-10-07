@@ -77,6 +77,25 @@ export const WorkerHumanAnswerDelivery = z
   );
 export type WorkerHumanAnswerDelivery = z.infer<typeof WorkerHumanAnswerDelivery>;
 
+/** Host observations only: neither a consumption certificate nor action authority. */
+export const WorkerHumanAnswerObservation = z
+  .object({
+    version: z.literal(1),
+    domain: z.literal("lexrunner.worker-answer-observation/v1"),
+    observationId: id,
+    runId: id,
+    requestId: id,
+    claimId: z.string().uuid(),
+    captureHash: SHA256Hash,
+    answerHash: SHA256Hash,
+    evidenceHash: SHA256Hash,
+    kind: z.enum(["request_cleared", "matching_answer_output", "delivery_uncertain"]),
+    observedAt: instant,
+  })
+  .strict()
+  .refine((value) => Buffer.byteLength(JSON.stringify(value), "utf8") <= 4096);
+export type WorkerHumanAnswerObservation = z.infer<typeof WorkerHumanAnswerObservation>;
+
 export function workerHumanAnswerBindingHash(
   request: HumanActionRequest_v1,
   contextHash: string,

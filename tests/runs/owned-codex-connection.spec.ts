@@ -180,6 +180,156 @@ describe("owned Codex connection", () => {
     return { f, input, port };
   }
 
+  it("retains exact typed cleanup evidence after a write, without certifying consumption or resending", async () => {
+    const { f, input, port } = await admittedAnswer(0);
+    await connection!.deliverHumanAnswer(port, input, requestOptions());
+    reply({
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: "0" },
+    });
+    expect(connection!.snapshot().pendingAnswerObservations).toBe(0);
+    const event = {
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: 0 },
+    };
+    reply(event);
+    reply(event);
+    expect(connection!.snapshot().pendingAnswerObservations).toBe(1);
+    expect(
+      await connection!.persistNextAnswerObservation(
+        f.service,
+        await f.mutation("observation", new Date().toISOString())
+      )
+    ).toMatchObject({ ok: true });
+    expect(await f.service.inspectWorkerAnswerDelivery("run", input.requestId)).toMatchObject({
+      holdPending: true,
+      consumptionQualified: false,
+      resendAllowed: false,
+      observations: [{ kind: "request_cleared", claimId: input.claimId }],
+    });
+    expect(connection!.snapshot().pendingAnswerObservations).toBe(0);
+    expect(
+      await connection!.persistNextAnswerObservation(f.service, await f.mutation("empty"))
+    ).toBeNull();
+    expect(sent.filter((v) => !v.method)).toHaveLength(1);
+  });
+
+  it("retains one cleanup observation when terminal status precedes resolved and its duplicate", async () => {
+    const { f, input, port } = await admittedAnswer(0);
+    await connection!.deliverHumanAnswer(port, input, requestOptions());
+    reply({
+      method: "turn/completed",
+      params: { threadId: "owned-thread", turn: { id: "turn-1", status: "completed", items: [] } },
+    });
+    f.session.status = "completed";
+    const cleanup = {
+      method: "serverRequest/resolved",
+      params: { threadId: "owned-thread", requestId: 0 },
+    };
+    reply(cleanup);
+    reply(cleanup);
+    expect(connection!.snapshot()).toMatchObject({
+      terminalTurnStatus: "completed",
+      pendingAnswerObservations: 1,
+    });
+    expect(
+      await connection!.persistNextAnswerObservation(
+        f.service,
+        await f.mutation("after-terminal", new Date().toISOString())
+      )
+    ).toMatchObject({ ok: true });
+    expect(
+      (await f.service.inspectWorkerAnswerDelivery("run", input.requestId))!.observations
+    ).toHaveLength(1);
+    expect(await f.service.inspectWorkerAnswerDelivery("run", input.requestId)).toMatchObject({
+      holdPending: true,
+      consumptionQualified: false,
+      resendAllowed: false,
+    });
+    expect(sent.filter((v) => !v.method)).toHaveLength(1);
+  });
+
+  it("does not create answer observations for a question cleared before any answer attempt", async () => {
+    const { f } = await admittedAnswer(0);
+    reply({ method: "serverRequest/resolved", params: { threadId: "owned-thread", requestId: 0 } });
+    expect(connection!.snapshot().pendingAnswerObservations).toBe(0);
+    expect(
+      await connection!.persistNextAnswerObservation(f.service, await f.mutation("none"))
+    ).toBeNull();
+    expect(sent.filter((v) => !v.method)).toHaveLength(0);
+  });
+
+  it("retries observation storage after lost ACK without another native answer", async () => {
+    const { f, input, port } = await admittedAnswer(0);
+    await connection!.deliverHumanAnswer(port, input, requestOptions());
+    reply({ method: "serverRequest/resolved", params: { threadId: "owned-thread", requestId: 0 } });
+    let lose = true;
+    const storage = {
+      async recordWorkerAnswerObservation(
+        value: Parameters<typeof f.service.recordWorkerAnswerObservation>[0]
+      ) {
+        const result = await f.service.recordWorkerAnswerObservation(value);
+        if (lose) {
+          lose = false;
+          throw new Error("lost observation ACK");
+        }
+        return result;
+      },
+    };
+    await expect(
+      connection!.persistNextAnswerObservation(
+        storage,
+        await f.mutation("lost", new Date().toISOString())
+      )
+    ).rejects.toThrow("lost observation ACK");
+    expect(connection!.snapshot().pendingAnswerObservations).toBe(1);
+    expect(
+      await connection!.persistNextAnswerObservation(
+        storage,
+        await f.mutation("recover", new Date().toISOString())
+      )
+    ).toMatchObject({ ok: true, replay: true });
+    expect(connection!.snapshot().pendingAnswerObservations).toBe(0);
+    expect(sent.filter((v) => !v.method)).toHaveLength(1);
+    expect(
+      (await f.service.inspectWorkerAnswerDelivery("run", input.requestId))!.observations
+    ).toHaveLength(1);
+  });
+
+  it("binds observation persistence to its original Run and snapshots caller inputs during storage", async () => {
+    const { f, input, port } = await admittedAnswer(0);
+    await connection!.deliverHumanAnswer(port, input, requestOptions());
+    reply({ method: "serverRequest/resolved", params: { threadId: "owned-thread", requestId: 0 } });
+    const attempt = await f.mutation("observation", new Date().toISOString());
+    const spy = vi.fn();
+    await expect(
+      connection!.persistNextAnswerObservation(
+        { recordWorkerAnswerObservation: spy },
+        { ...attempt, controller: { ...attempt.controller, runId: "other" } }
+      )
+    ).rejects.toThrow("answer_observation_run_mismatch");
+    expect(spy).not.toHaveBeenCalled();
+    let release!: () => void;
+    const paused = {
+      async recordWorkerAnswerObservation(
+        value: Parameters<typeof f.service.recordWorkerAnswerObservation>[0]
+      ) {
+        await new Promise<void>((done) => {
+          release = done;
+        });
+        return f.service.recordWorkerAnswerObservation(value);
+      },
+    };
+    const storing = connection!.persistNextAnswerObservation(paused, attempt);
+    attempt.controller.runId = "changed";
+    await expect(
+      connection!.persistNextAnswerObservation(f.service, await f.mutation("concurrent"))
+    ).rejects.toThrow("answer_observation_in_progress");
+    release();
+    expect(await storing).toMatchObject({ ok: true });
+    expect(sent.filter((v) => !v.method)).toHaveLength(1);
+  });
+
   it.each([0, "0"])(
     "writes a persisted host-admitted answer once with exact typed native request ID %j",
     async (id) => {

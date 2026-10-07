@@ -39,7 +39,15 @@ outside this pilot.
    persistence](worker-human-answers.md), with an owned Codex response adapter.
    Its signature verifies a configured host's assertion; a real human channel,
    protected signing root, consumption reconciliation and action containment still
-   need host qualification. Local writes never release a human hold.
+   need host qualification. Local writes never release a human hold. A bounded
+   delivery-observation journal now retains exact claim-bound cleanup/output/
+   uncertainty evidence and survives coordinator reopen. Its compact read-back
+   explicitly refuses consumption qualification and resend authority. It supplies
+   reconciliation data, not automatic hold release.
+   A source-only Codex content matcher now compares the exact native item ID and
+   answer-result bytes against the saved admission and records a matching output
+   through the same journal. Content matching does not authenticate the evidence
+   source, qualify consumption or grant dependent-action admission.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result
@@ -54,6 +62,71 @@ outside this pilot.
 The agent interprets evidence and proposes experiments. Deterministic services
 persist and enforce bindings; they do not certify that an explanation is true or
 that the first working candidate is optimal.
+
+## Collaboration and waiting
+
+The implementation agent chooses methods, proposes alternatives and retains useful
+failed experiments. Routine reversible work does not need a new approval ceremony.
+Human holds preserve unanswered decisions, not a score for agent behavior. Compact
+records exist for recovery and evidence reuse rather than transcript collection.
+
+Every proposed activity should remain tied to the original request. While a needed
+answer is pending, distinguish work needed under every plausible answer from work
+whose value depends on that answer. Do not implement multiple speculative answers.
+A short investigation may be useful if it can improve the decision; state its
+question, expected useful finding and stopping condition, then stop when additional
+work depends on the human. Failure is useful when its retained lesson changes the
+next attempt. These are collaboration guidelines, not a mandatory experiment quota.
+
+The current controller still conservatively holds the entire Run. It does not
+yet classify or dispatch independent work during that hold. Selective continuation
+requires explicit request/decision dependencies, bounded experiment admission and
+invalidation when an answer changes direction; a claim of independence is not
+execution authority. Independent inspection in the hosting collaboration remains
+possible within the existing task and permission scope.
+
+## Presentation recovery (source slice)
+
+Question lifetime, presentation lifetime and execution permission are separate.
+The portable human service now retains up to sixteen display claims per captured
+question in the existing fenced Run state. A claim commits the exact challenge and
+presentation before display. Replay, including after a lost storage acknowledgement,
+is inspection only: newlyClaimed:false must never display again. A claim is not
+proof that the host rendered the form. Capacity refuses further claims without
+evicting questions or history.
+
+Skip/decline, cancellation, expiry and transport failure close only the presentation.
+They never create an answer or release the hold. The agreed timeout policy is to
+pause as needed: retain the unanswered question and stop answer-dependent work
+until explicit human return. Cancelling the task itself requires a separate
+instruction. The whole-Run hold remains conservative; selective independent work
+is not enabled by a display timeout. A protected host can explicitly
+recover the same still-applicable question by naming the previous presentation,
+using fresh presentation/challenge identities and rechecking context, workspace and
+worker binding. This records explicit recovery intent; caller fields alone do not
+authenticate that a human requested it. An unobserved expired display is retired
+atomically with the next claim. An active display cannot be replaced. Closed and
+superseded presentation replies cannot be admitted, and legacy challenge issuance
+cannot bypass a managed presentation. Signed host answer admission atomically
+marks the current display answered while retaining the worker hold.
+
+Core APIs import no Codex UI, passkey or OIDC implementation. Configured host
+attestation remains required for this source answer path; passkey/OIDC are optional
+host trust implementations, not required ordinary user ceremonies. Protected host
+integration and signer protection remain separate qualification work.
+
+The live Codex desktop diagnostic established that an expired original form can
+remain visible/selectable after its transport request has ended. This source slice
+does not control Codex's renderer or qualify visible cleanup. Hosts must show clear
+expired/pending status and recover with a fresh display; a stale option click cannot
+answer the durable question. No automatic recovery prompt is enabled here.
+
+Controlled memory/SQLite tests compose presentation outcomes, coordinator reopen,
+host admission and local write with the real supervisor. Downstream observation,
+launch, receipt, verification, acceptance and transition ports remain uninvoked
+while held. This is controller-fence evidence, not live worker suspension, OS
+containment, successful hold release or production delivery qualification. The
+next slice is the native host adapter and consumption/action-boundary qualification.
 
 ## Human hold semantics
 

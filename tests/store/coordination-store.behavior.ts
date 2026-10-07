@@ -49,6 +49,57 @@ export function runCoordinationStoreBehaviorTests(factory: CoordinationStoreHarn
       await harness?.cleanup();
     });
 
+    it("vetoes a new mutation atomically without changing state or consuming its idempotency key", async () => {
+      const acquired = await harness.primary.acquireControllerLease({
+        runId: "guard",
+        controllerId: "controller",
+        leaseId: "lease",
+        now: T0,
+        ttlMs: 60000,
+        initialState: { phase: "initial" },
+      });
+      if (!acquired.acquired) throw new Error("fixture acquisition failed");
+      const input = {
+        ...credential(acquired.lease),
+        expectedRevision: 0,
+        ...mutation("guarded-write", "next"),
+        state: { phase: "next" },
+        now: T1,
+      };
+      for (const guard of [
+        () => false,
+        () => {
+          throw new Error("guard failed");
+        },
+      ]) {
+        try {
+          expect(
+            await harness.primary.compareAndSetRunState({ ...input, commitGuard: guard })
+          ).toMatchObject({ updated: false, reason: "commit_condition_failed" });
+        } catch (error) {
+          expect((error as Error).message).toBe("guard failed");
+        }
+        expect(await harness.secondary.getRunCoordination("guard")).toMatchObject({
+          revision: 0,
+          state: { phase: "initial" },
+        });
+        expect(await harness.secondary.listRunCoordinationEvents("guard")).toEqual([]);
+      }
+      expect(
+        await harness.primary.compareAndSetRunState({ ...input, commitGuard: () => true })
+      ).toMatchObject({ updated: true, idempotentReplay: false });
+      // Replay observes the original commit. It must not invoke a guard or mutate again.
+      expect(
+        await harness.primary.compareAndSetRunState({
+          ...input,
+          commitGuard: () => {
+            throw new Error("replay invoked guard");
+          },
+        })
+      ).toMatchObject({ updated: true, idempotentReplay: true });
+      expect(await harness.secondary.listRunCoordinationEvents("guard")).toHaveLength(1);
+    });
+
     it("allows exactly one winner when controllers race to acquire a run", async () => {
       const [first, second] = await Promise.all([
         harness!.primary.acquireControllerLease({

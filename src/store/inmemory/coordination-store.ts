@@ -197,7 +197,14 @@ export class InMemoryCoordinationStore implements CoordinationStore {
       return { updated: false, reason: "stale_revision", currentRevision: record.revision };
     }
 
-    record.state = cloneJsonValue(input.state);
+    const nextState = cloneJsonValue(input.state);
+    if (input.commitGuard && input.commitGuard() !== true)
+      return {
+        updated: false,
+        reason: "commit_condition_failed",
+        currentRevision: record.revision,
+      };
+    record.state = nextState;
     record.revision += 1;
     record.updatedAt = new Date(nowMs).toISOString();
     const event: RunCoordinationEvent = {

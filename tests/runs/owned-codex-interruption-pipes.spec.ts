@@ -9,6 +9,8 @@ import {
   readHumanActionState,
 } from "../../src/runs/agent-work-human-action-service.js";
 import { SqliteCoordinationStore } from "../../src/store/sqlite/coordination-store.js";
+import { humanAnswerFixture } from "../store/worker-human-answer-fixture.js";
+import { randomUUID } from "node:crypto";
 
 // A controlled JSONL child, not Codex or inference. Node executes the extensionless
 // app-server fixture using the transport's fixed argv on Windows and Linux alike.
@@ -35,6 +37,14 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
           options: [{ label: "A", description: "Use retained evidence." }] }] }
     });
   }
+  if (!message.method && message.id === "question-42") {
+    if (fs.readFileSync("mode", "utf8") === "terminal-first") send({
+      method: "turn/completed", params: { threadId: "owned-thread", turn: { id: "turn-1", status: "completed", items: [] } }
+    });
+    const cleanup = { method: "serverRequest/resolved", params: { threadId: "owned-thread", requestId: "question-42" } };
+    send(cleanup);
+    send(cleanup);
+  }
   if (message.method === "turn/interrupt") {
     send({ id: message.id, result: {} });
     if (["terminal", "question"].includes(fs.readFileSync("mode", "utf8"))) setImmediate(() => send({
@@ -49,6 +59,91 @@ const window = () => ({
 });
 
 describe("owned interruption over real child pipes (controlled protocol)", () => {
+  it.each([false, true])(
+    "persists cleanup observation over real child pipes and SQLite reopen (terminal first: %s)",
+    async (terminalFirst) => {
+      const root = await mkdtemp(join(tmpdir(), "owned-answer-observation-"));
+      let connection: OwnedCodexConnection | undefined;
+      let f: Awaited<ReturnType<typeof humanAnswerFixture>> | undefined;
+      try {
+        const home = join(root, "home");
+        await mkdir(home);
+        await writeFile(join(root, "app-server"), fixture);
+        await writeFile(join(root, "mode"), "question");
+        connection = await OwnedCodexConnection.open({
+          executable: process.execPath,
+          cwd: root,
+          codexHome: home,
+          adapterId: "controlled-child",
+          adapterVersion: "1",
+        });
+        await connection.request(
+          "turn/start",
+          { threadId: "owned-thread", input: [{ type: "text", text: "controlled protocol" }] },
+          window()
+        );
+        const waitUntil = async (predicate: () => boolean) => {
+          const deadline = Date.now() + 3000;
+          while (!predicate() && Date.now() < deadline)
+            await new Promise((done) => setTimeout(done, 10));
+          expect(predicate()).toBe(true);
+        };
+        await waitUntil(() => connection!.snapshot().pendingHumanInputCaptures === 1);
+        f = await humanAnswerFixture("sqlite", new Date().toISOString());
+        f.session.workerId = "owned-thread";
+        f.session.workerRuntime = "codex-native";
+        const persisted = await connection.persistNextHumanInputCapture(f.service, {
+          ...(await f.mutation("question")),
+          attemptId: "attempt",
+          workspaceLeaseId: "workspace",
+          workerSessionId: "worker",
+          workspaceLeaseRevision: 2,
+          expectedHeadSha: f.observed.headSha,
+        });
+        if (!persisted?.ok) throw new Error("capture failed");
+        const requestId = persisted.requestId;
+        if (terminalFirst) await writeFile(join(root, "mode"), "terminal-first");
+        const answer = f.signed(await f.challenge(requestId));
+        expect(
+          await f.service.admitWorkerAnswer({ ...(await f.mutation("answer")), answer })
+        ).toMatchObject({ ok: true });
+        expect(
+          await connection.deliverHumanAnswer(
+            f.service,
+            { ...(await f.mutation("delivery")), requestId, claimId: randomUUID() },
+            window()
+          )
+        ).toMatchObject({ status: "written" });
+        await waitUntil(() => connection!.snapshot().pendingAnswerObservations === 1);
+        expect(
+          await connection.persistNextAnswerObservation(
+            f.service,
+            await f.mutation("observation", new Date().toISOString())
+          )
+        ).toMatchObject({ ok: true });
+        await connection.close();
+        await f.reopen();
+        expect(await f.service.inspectWorkerAnswerDelivery("run", requestId)).toMatchObject({
+          holdPending: true,
+          resendAllowed: false,
+          consumptionQualified: false,
+          delivery: { disposition: "written" },
+          observations: [{ kind: "request_cleared" }],
+        });
+        const calls = (await readFile(join(root, "calls.jsonl"), "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(calls.filter((v) => !v.method)).toEqual([
+          { id: "question-42", result: { answers: { choice: { answers: ["A"] } } } },
+        ]);
+      } finally {
+        await connection?.close();
+        await f?.cleanup();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
   it("persists a native question through lost storage ACK, interruption and SQLite reopen without answering", async () => {
     const root = await mkdtemp(join(tmpdir(), "owned-codex-question-"));
     let connection: OwnedCodexConnection | undefined;

@@ -326,23 +326,26 @@ export class SqliteCoordinationStore implements CoordinationStore {
         return { updated: false, reason: "stale_revision", currentRevision: row.revision };
       }
 
-      const result = this.db
-        .prepare(
-          `UPDATE run_coordination
+      const stateJson = this.serializeState(input.state);
+      const payloadJson = this.serializeState(input.event.payload);
+      const update = this.db.prepare(
+        `UPDATE run_coordination
            SET stateJson = ?, revision = revision + 1, updatedAt = ?
            WHERE runId = ? AND revision = ? AND controllerId = ? AND leaseId = ?
              AND fencingToken = ? AND expiresAt > ?`
-        )
-        .run(
-          this.serializeState(input.state),
-          now,
-          input.runId,
-          input.expectedRevision,
-          input.controllerId,
-          input.leaseId,
-          input.fencingToken,
-          now
-        );
+      );
+      if (input.commitGuard && input.commitGuard() !== true)
+        return { updated: false, reason: "commit_condition_failed", currentRevision: row.revision };
+      const result = update.run(
+        stateJson,
+        now,
+        input.runId,
+        input.expectedRevision,
+        input.controllerId,
+        input.leaseId,
+        input.fencingToken,
+        now
+      );
 
       if (result.changes !== 1) {
         throw new Error("Coordination state changed during an immediate transaction");
@@ -365,8 +368,8 @@ export class SqliteCoordinationStore implements CoordinationStore {
           input.leaseId,
           input.fencingToken,
           input.event.type,
-          this.serializeState(input.event.payload),
-          this.serializeState(input.state),
+          payloadJson,
+          stateJson,
           now
         );
       return {

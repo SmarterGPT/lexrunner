@@ -64,6 +64,11 @@ export interface CompareAndSetRunStateInput extends ControllerLeaseCredential {
   state: JsonValue;
   event: RunCoordinationEventInput;
   now: string;
+  /** Optional protected, process-local veto. Stores must call synchronously after
+   * preparation and immediately before a new atomic mutation, with no intervening
+   * await. It must be pure, non-reentrant and return true to permit the write.
+   * Never serialized or treated as authority; replay creates no new mutation. */
+  commitGuard?: () => boolean;
 }
 
 export interface RunCoordinationEventInput {
@@ -117,7 +122,11 @@ export type CompareAndSetRunStateResult =
     }
   | {
       updated: false;
-      reason: Exclude<LeaseFailureReason, "held_by_other"> | "stale_revision" | "mutation_conflict";
+      reason:
+        | Exclude<LeaseFailureReason, "held_by_other">
+        | "stale_revision"
+        | "mutation_conflict"
+        | "commit_condition_failed";
       currentRevision?: number;
     };
 
