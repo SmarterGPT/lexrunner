@@ -252,6 +252,20 @@ describe("owned Codex connection", () => {
     });
   });
 
+  it.each(["before-dispatch", "during-turn"])(
+    "rejects questions missing their request ID %s",
+    async (stage) => {
+      connection = await OwnedCodexConnection.open(options);
+      if (stage === "during-turn") await connection.request("turn/start", params, requestOptions());
+      const { id: _id, ...missingId } = humanInput();
+      reply(missingId);
+      expect(connection.snapshot()).toMatchObject({
+        failure: "unsupported_human_input",
+        pendingHumanInputCaptures: 0,
+      });
+    }
+  );
+
   it("refuses concurrent questions", async () => {
     connection = await OwnedCodexConnection.open(options);
     await connection.request("turn/start", params, requestOptions());

@@ -609,12 +609,12 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
           return;
         }
         this.notifications[message.method] = (this.notifications[message.method] ?? 0) + 1;
+        if (message.method === "item/tool/requestUserInput") {
+          this.captureHumanInput(message, line);
+          if (this.failure) return;
+          continue;
+        }
         if (message.id !== undefined) {
-          if (message.method === "item/tool/requestUserInput") {
-            this.captureHumanInput(message, line);
-            if (this.failure) return;
-            continue;
-          }
           this.fail("server_request_unsupported");
           return;
         }
