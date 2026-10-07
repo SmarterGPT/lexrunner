@@ -39,7 +39,11 @@ outside this pilot.
    persistence](worker-human-answers.md), with an owned Codex response adapter.
    Its signature verifies a configured host's assertion; a real human channel,
    protected signing root, consumption reconciliation and action containment still
-   need host qualification. Local writes never release a human hold.
+   need host qualification. Local writes never release a human hold. A bounded
+   delivery-observation journal now retains exact claim-bound cleanup/output/
+   uncertainty evidence and survives coordinator reopen. Its compact read-back
+   explicitly refuses consumption qualification and resend authority. It supplies
+   reconciliation data, not automatic hold release.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result
@@ -88,7 +92,11 @@ proof that the host rendered the form. Capacity refuses further claims without
 evicting questions or history.
 
 Skip/decline, cancellation, expiry and transport failure close only the presentation.
-They never create an answer or release the hold. A protected host can explicitly
+They never create an answer or release the hold. The agreed timeout policy is to
+pause as needed: retain the unanswered question and stop answer-dependent work
+until explicit human return. Cancelling the task itself requires a separate
+instruction. The whole-Run hold remains conservative; selective independent work
+is not enabled by a display timeout. A protected host can explicitly
 recover the same still-applicable question by naming the previous presentation,
 using fresh presentation/challenge identities and rechecking context, workspace and
 worker binding. This records explicit recovery intent; caller fields alone do not

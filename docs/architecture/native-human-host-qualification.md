@@ -78,6 +78,23 @@ After expiry, operators stop the sample and wait for explicit human return rathe
 than automatically opening another form. This does not cancel the durable question
 or define cancellation policy for a real worker (none exists in this probe).
 
+## Observed desktop path
+
+An October 7, 2026 desktop run of source candidate `a79994f` with Codex MCP client
+`0.160.1`, Node `24.14.1` and Windows x64 retained one question across four
+presentations and a host restart. The human confirmed Skip on the first display.
+A thirty-second display expired during distraction and remained pending. After
+explicit return, the updated two-minute recovery form returned a valid selection
+in about 3.5 seconds; the human confirmed seeing the directions/limit and personally
+selecting B and submitting. The recorded digest matched that answer. Post-status
+retained the same question and hold, with no admitted answer or in-flight request.
+The diagnostic admission port refused by design. No fifth display was shown.
+
+This establishes those display and fresh-submission observations on that exact
+artifact/client/runtime. It does not authenticate arbitrary future input, qualify
+signer protection, demonstrate automatic dismissal, or release a worker. Reuse
+this evidence only while its relevant implementation and artifacts are unchanged.
+
 ## Evidence and limitations
 
 Controlled tests exercise protocol accept/decline/cancel, malformed content,

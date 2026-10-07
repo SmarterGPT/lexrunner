@@ -79,6 +79,44 @@ not release the portable hold. Captured-question completed receipts remain
 refused. Qualified consumption reconciliation and dependent-action admission
 are separate dependencies; timeout, silence and restarts cannot approve them.
 
+## Bounded delivery reconciliation
+
+`recordWorkerAnswerObservation` retains up to sixteen immutable host observations
+per send claim in the existing Run journal. Each strict observation binds the Run,
+question, full capture hash, admitted answer hash and delivery claim; it carries an
+observation ID, timestamp, evidence digest and a bounded kind. Exact replay reads
+the existing record, even after a lost storage acknowledgement; a conflicting ID
+or full history is refused without eviction. Current controller fencing and Run
+revision still guard mutations. Observation times precede neither claim nor
+admission and cannot be in the future at recording.
+
+`request_cleared`, `matching_answer_output` and `delivery_uncertain` are host
+observations, not consumption certificates. Their kind and digest do not prove
+provenance or truth. A protected host must retain the referenced evidence itself
+and qualify its interpretation. Recording remains possible after the delivery
+deadline, worker termination or workspace change because it preserves history;
+it does not authorize action against that historical context. A superseded or
+settled question, wrong binding, stale controller/revision or `not_sent` delivery
+is refused. No completed worker-question receipt is enabled.
+
+`inspectWorkerAnswerDelivery` provides bounded read-back without answer bodies,
+signatures or raw event text. It reports the hold, delivery disposition and
+observations with `consumptionQualified:false` and `resendAllowed:false`. No
+observation turns a local write into confirmed consumption or removes uncertainty
+from the delivery journal.
+
+The owned Codex adapter captures its first exact typed `serverRequest/resolved`
+event after an answer write was attempted. It binds that cleanup observation to
+the persisted claim before sending, retains it in a bounded queue and offers
+`persistNextAnswerObservation` to the protected host. String and numeric IDs stay
+distinct. Pre-answer cleanup creates no answer observation; duplicate cleanup is
+ignored. Lost storage acknowledgements retain the queued record for exact replay,
+without another native answer. This event can describe prompt cleanup, so even
+its successfully persisted observation keeps the human hold active. Process loss
+before persistence can lose this diagnostic event; it never permits a resend or
+inferred consumption. This source slice installs no host and exposes no CLI/MCP
+answer or observation route.
+
 ## Evidence
 
 Focused memory/SQLite tests exercise host signature tampering, untrusted

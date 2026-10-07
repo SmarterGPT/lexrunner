@@ -30,6 +30,7 @@ import {
 import {
   SignedWorkerHumanAnswer,
   WorkerHumanAnswerDelivery,
+  WorkerHumanAnswerObservation,
   workerHumanAnswersMatch,
 } from "../schemas/worker-human-answer.js";
 import type { AttachedCodexTransport, CodexTurnStartParams } from "./codex-worker-dispatch.js";
@@ -121,8 +122,19 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
   private readonly capturedHumanInputs: WorkerHumanInputCapture[] = [];
   private readonly humanRequests = new Map<
     string,
-    { hash: string; cleared: boolean; answerAttempted?: boolean }
+    {
+      hash: string;
+      cleared: boolean;
+      answerAttempted?: boolean;
+      deliveryBinding?: Pick<
+        WorkerHumanAnswerObservation,
+        "runId" | "requestId" | "claimId" | "captureHash" | "answerHash"
+      >;
+    }
   >();
+  private readonly capturedAnswerObservations: WorkerHumanAnswerObservation[] = [];
+  private answerObservationBusy = false;
+  private answerObservationBytes = 0;
   private humanCaptureBytes = 0;
   private humanCaptureBusy = false;
   private humanAnswerBusy = false;
@@ -275,6 +287,8 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       pendingHumanInputCaptureBytes: this.humanCaptureBytes,
       unclearedHumanRequests: [...this.humanRequests.values()].filter((value) => !value.cleared)
         .length,
+      pendingAnswerObservations: this.capturedAnswerObservations.length,
+      pendingAnswerObservationBytes: this.answerObservationBytes,
       humanAnswerWriteAttempts: [...this.humanRequests.values()].filter(
         (value) => value.answerAttempted
       ).length,
@@ -413,6 +427,13 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
         ) - Date.now();
       if (applicable() && timeout > 0) {
         pending!.answerAttempted = true;
+        pending!.deliveryBinding = {
+          runId: input.controller.runId,
+          requestId: input.requestId,
+          claimId: delivery.claimId,
+          captureHash: computeCanonicalHash(capture),
+          answerHash: delivery.answerHash,
+        };
         disposition = "uncertain";
         // The body comes only from persisted, host-admitted data. No raw response API.
         const response = {
@@ -446,6 +467,32 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       };
     } finally {
       this.humanAnswerBusy = false;
+    }
+  }
+
+  /** Replay only evidence persistence after a lost ACK; never resend the native answer. */
+  async persistNextAnswerObservation(
+    service: Pick<AgentWorkHumanActionService, "recordWorkerAnswerObservation">,
+    input: HumanActionMutationInput
+  ) {
+    input = structuredClone(input);
+    if (this.answerObservationBusy) throw new Error("answer_observation_in_progress");
+    const next = this.capturedAnswerObservations[0];
+    if (!next) return null;
+    if (next.runId !== input.controller.runId) throw new Error("answer_observation_run_mismatch");
+    this.answerObservationBusy = true;
+    try {
+      const result = await service.recordWorkerAnswerObservation({
+        ...input,
+        observation: structuredClone(next),
+      });
+      if (result.ok) {
+        this.capturedAnswerObservations.shift();
+        this.answerObservationBytes -= Buffer.byteLength(JSON.stringify(next), "utf8");
+      }
+      return result;
+    } finally {
+      this.answerObservationBusy = false;
     }
   }
 
@@ -878,8 +925,31 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
             return;
           }
           const request = this.humanRequests.get(JSON.stringify(event.data.params.requestId));
-          if (request) request.cleared = true;
-          // Cleanup is never an answer, terminal event, queue removal or hold release.
+          if (request && !request.cleared) {
+            request.cleared = true;
+            if (request.deliveryBinding) {
+              const observation = WorkerHumanAnswerObservation.parse({
+                version: 1,
+                domain: "lexrunner.worker-answer-observation/v1",
+                ...request.deliveryBinding,
+                observationId: `${this.captureId}:answer:${++this.captureSequence}`,
+                kind: "request_cleared",
+                observedAt: new Date().toISOString(),
+                evidenceHash: computeCanonicalHash(event.data),
+              });
+              const bytes = Buffer.byteLength(JSON.stringify(observation), "utf8");
+              if (
+                this.capturedAnswerObservations.length >= 128 ||
+                this.answerObservationBytes + bytes > 2 * MAX_FRAME
+              ) {
+                this.fail("answer_observation_capture_limit");
+                return;
+              }
+              this.capturedAnswerObservations.push(observation);
+              this.answerObservationBytes += bytes;
+            }
+          }
+          // Cleanup evidence is never an answer, consumption qualification or hold release.
         }
         if (message.method === "item/completed") {
           const params = message.params as

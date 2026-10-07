@@ -14,6 +14,7 @@ import {
   SignedWorkerHumanAnswer,
   WorkerHumanAnswerChallenge,
   WorkerHumanAnswerDelivery,
+  WorkerHumanAnswerObservation,
   workerHumanAnswerBindingHash,
   workerHumanAnswersMatch,
 } from "../schemas/worker-human-answer.js";
@@ -45,10 +46,30 @@ const entrySchema = z
     answerChallenge: WorkerHumanAnswerChallenge.optional(),
     workerAnswer: SignedWorkerHumanAnswer.optional(),
     answerDelivery: WorkerHumanAnswerDelivery.optional(),
+    answerObservations: z.array(WorkerHumanAnswerObservation).min(1).max(16).optional(),
     presentations: WorkerHumanPresentationHistory.optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
+    if (entry.answerObservations) {
+      if (
+        !entry.workerInput ||
+        !entry.workerAnswer ||
+        !entry.answerDelivery ||
+        new Set(entry.answerObservations.map((v) => v.observationId)).size !==
+          entry.answerObservations.length ||
+        entry.answerObservations.some(
+          (v) =>
+            v.runId !== entry.request.run_id ||
+            v.requestId !== entry.request.request_id ||
+            v.claimId !== entry.answerDelivery?.claimId ||
+            v.answerHash !== entry.answerDelivery?.answerHash ||
+            v.captureHash !== computeCanonicalHash(entry.workerInput) ||
+            Date.parse(v.observedAt) < Date.parse(entry.answerDelivery.claimedAt)
+        )
+      )
+        ctx.addIssue({ code: "custom", message: "Invalid answer observation binding" });
+    }
     if (entry.presentations) {
       const current = entry.presentations[entry.presentations.length - 1];
       if (
@@ -521,6 +542,77 @@ export class AgentWorkHumanActionService {
       observedAt: input.now,
     });
     return this.commit(input, record.state, state, "worker_answer_write_observed", input.requestId);
+  }
+
+  /** Retain bounded host evidence, including post-deadline reconciliation; never release a hold. */
+  async recordWorkerAnswerObservation(
+    input: HumanActionMutationInput & { observation: WorkerHumanAnswerObservation }
+  ): Promise<HumanActionMutationResult> {
+    input = structuredClone(input);
+    const observation = WorkerHumanAnswerObservation.parse(input.observation);
+    const loaded = await this.loadWorkerQuestion(input, observation.requestId);
+    if (!loaded.ok) return loaded;
+    const { record, state, entry } = loaded;
+    const delivery = entry.answerDelivery;
+    if (
+      !entry.workerAnswer ||
+      !delivery ||
+      observation.runId !== input.controller.runId ||
+      observation.claimId !== delivery.claimId ||
+      observation.answerHash !== delivery.answerHash ||
+      observation.captureHash !== computeCanonicalHash(entry.workerInput)
+    )
+      return { ok: false, reason: "answer_observation_binding_mismatch" };
+    const prior = entry.answerObservations?.find(
+      (v) => v.observationId === observation.observationId
+    );
+    if (prior)
+      return computeCanonicalHash(prior) === computeCanonicalHash(observation)
+        ? { ok: true, revision: record.revision, replay: true }
+        : { ok: false, reason: "answer_observation_conflict" };
+    if (record.revision !== input.expectedRunRevision)
+      return { ok: false, reason: "stale_run_revision" };
+    if (delivery.disposition === "not_sent") return { ok: false, reason: "answer_not_sent" };
+    if (
+      Date.parse(observation.observedAt) < Date.parse(delivery.claimedAt) ||
+      Date.parse(observation.observedAt) > Date.parse(input.now)
+    )
+      return { ok: false, reason: "invalid_answer_observation_time" };
+    if ((entry.answerObservations?.length ?? 0) >= 16)
+      return { ok: false, reason: "answer_observation_capacity" };
+    entry.answerObservations = [...(entry.answerObservations ?? []), observation];
+    return this.commit(
+      input,
+      record.state,
+      state,
+      "worker_answer_observation_recorded",
+      observation.requestId
+    );
+  }
+
+  /** Compact protected host read; hashes bind observations, not their truth or provenance. */
+  async inspectWorkerAnswerDelivery(runId: string, requestId: string) {
+    const record = await this.coordination.getRunCoordination(runId);
+    if (!record) return null;
+    const entry = readHumanActionState(record.state).entries.find(
+      (v) => v.request.request_id === requestId
+    );
+    if (!entry?.workerInput || entry.supersededBy || entry.receipt) return null;
+    return {
+      requestId,
+      holdPending: true,
+      answerAdmitted: Boolean(entry.workerAnswer),
+      delivery: entry.answerDelivery
+        ? {
+            claimId: entry.answerDelivery.claimId,
+            answerHash: entry.answerDelivery.answerHash,
+            disposition: entry.answerDelivery.disposition,
+          }
+        : null,
+      observations: entry.answerObservations ?? [],
+      consumptionQualified: false,
+      resendAllowed: false,
+    };
   }
 
   private async loadWorkerQuestion(input: HumanActionMutationInput, requestId: string) {
