@@ -328,6 +328,15 @@ export async function createNativeHumanHostProbe(root, timeoutMs = 120000) {
       if (!created.ok) return { status: "reconciliation_required", reason: created.reason };
       entry = readHumanActionState((await store.getRunCoordination(runId)).state).entries[0];
     }
+    // Reacquiring this process's live lease does not extend its expiry.
+    // Renew for each display, including same-process recovery after distraction.
+    const renewed = await store.renewControllerLease({
+      ...controller,
+      now: new Date().toISOString(),
+      ttlMs: Math.max(60000, timeoutMs + 30000),
+    });
+    if (!renewed.renewed)
+      return { status: "blocked", reason: renewed.reason, boundary: "controller_renewal" };
     const result = await host.present(
       {
         ...(await mutation("presentation")),

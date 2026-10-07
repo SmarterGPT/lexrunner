@@ -62,7 +62,10 @@ successful form observation. No raw answer body is returned in compact status.
 
 Each process uses a distinct controller identity and a lease lasting at least
 sixty seconds, or the configured display window plus thirty seconds, whichever is
-longer. The lease cannot expire halfway through the two-minute display.
+longer. The acquired credential is renewed before every display; reacquiring an
+existing same-process lease alone does not extend it. Renewal failure blocks
+dispatch. The lease therefore covers explicit recovery after the previous window
+ends as well as the first two-minute display.
 Orderly shutdown cancels any active presentation, then releases its own lease and
 closes the stores. After an abrupt crash, a competing live lease can delay recovery;
 no forced takeover or automatic prompt occurs. A visible expired desktop form may

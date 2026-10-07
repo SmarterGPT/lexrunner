@@ -221,6 +221,47 @@ describe("non-authorizing native human host qualification probe", () => {
     expect((await second.call("recover_sample")).presentation.presentationCount).toBe(2);
   });
 
+  it("renews the same process lease for delayed recovery and closes after the original lease expiry", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = Date.now();
+    const first = await fixture(undefined, { action: "decline", content: null });
+    const original = await first.call("present_sample");
+    vi.setSystemTime(start + 121000);
+    let opened!: () => void;
+    let release!: () => void;
+    const dispatched = new Promise<void>((done) => {
+      opened = done;
+    });
+    const response = new Promise<void>((done) => {
+      release = done;
+    });
+    first.client.setRequestHandler(ElicitRequestSchema, async () => {
+      opened();
+      await response;
+      return { action: "decline", content: null };
+    });
+    const recovering = first.call("recover_sample");
+    try {
+      await dispatched;
+      vi.setSystemTime(start + 200000);
+      const competitor = await fixture(first.root);
+      expect((await competitor.call("recover_sample")).result.reason).toBe(
+        "another_probe_controller_active"
+      );
+      expect(competitor.shown()).toBe(0);
+    } finally {
+      release();
+    }
+    const recovered = await recovering;
+    expect(recovered).toMatchObject({
+      requestId: original.requestId,
+      holdPending: true,
+      answerAdmitted: false,
+      result: { status: "pending", reason: "declined" },
+      presentation: { presentationCount: 2, disposition: "declined" },
+    });
+  });
+
   it.each([149, 120001, Number.NaN])("refuses an invalid display window %s", async (timeout) => {
     const root = await mkdtemp(join(tmpdir(), "native-host-window-"));
     await expect(createNativeHumanHostProbe(root, timeout)).rejects.toThrow("150..120000ms");
