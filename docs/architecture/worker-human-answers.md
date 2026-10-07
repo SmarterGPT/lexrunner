@@ -117,6 +117,38 @@ before persistence can lose this diagnostic event; it never permits a resend or
 inferred consumption. This source slice installs no host and exposes no CLI/MCP
 answer or observation route.
 
+## Exact native answer-output content
+
+`matchCodexHumanAnswerOutput` checks a strict, bounded Responses
+`function_call_output` against a persisted Codex question capture and signed
+answer. It requires the captured native item ID as `call_id`, the exact portable
+request/Run binding, and the exact JSON result bytes emitted by the owned adapter.
+It refuses additional source fields, missing/extra answers, duplicate JSON keys,
+changed whitespace inside authored text, Unicode normalization and alternate
+JSON rendering. It deliberately checks this adapter's serialization rather than
+normalizing arbitrary provider bodies. String and numeric server request IDs
+remain distinct in capture validation; neither is substituted for the item ID.
+
+The result exposes bounded hashes only. Signature syntax is validated, but this
+pure content matcher does not authenticate a signature, the source connection,
+the provider request, or a human. Its `sourceAuthenticated:false`,
+`consumptionQualified:false` and `resendAllowed:false` fields remain explicit.
+Even fabricated matching bytes can pass the content check; a protected host must
+separately retain and authenticate the source evidence and qualify its origin.
+The evidence digest uses the existing compact canonical hash of the strict
+three-field output object. Authored output text is a string and is never parsed
+or normalized; a retained source object can reproduce the digest.
+
+`recordCodexHumanAnswerOutput` is a protected source-only composition. It reads
+the saved admission and existing delivery claim, runs the content check and
+records a `matching_answer_output` observation through the portable service's
+existing controller/revision guards. Caller inputs are snapshotted before reads.
+Exact replay after a lost storage acknowledgement does not send another answer.
+`not_sent` remains refused, and `uncertain` remains uncertain. The content record
+neither authenticates its source nor changes the hold or authorizes an action.
+No host installation, public CLI/MCP route, completed receipt or automatic retry
+is enabled. Source-body retention and origin qualification remain host work.
+
 ## Evidence
 
 Focused memory/SQLite tests exercise host signature tampering, untrusted

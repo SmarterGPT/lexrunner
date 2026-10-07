@@ -44,6 +44,10 @@ outside this pilot.
    uncertainty evidence and survives coordinator reopen. Its compact read-back
    explicitly refuses consumption qualification and resend authority. It supplies
    reconciliation data, not automatic hold release.
+   A source-only Codex content matcher now compares the exact native item ID and
+   answer-result bytes against the saved admission and records a matching output
+   through the same journal. Content matching does not authenticate the evidence
+   source, qualify consumption or grant dependent-action admission.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result
