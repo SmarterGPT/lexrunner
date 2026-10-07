@@ -106,7 +106,8 @@ export type AdvanceCoordinatedRunResult =
         | "stale_fence"
         | "lease_expired"
         | "stale_revision"
-        | "mutation_conflict";
+        | "mutation_conflict"
+        | "commit_condition_failed";
       currentRevision?: number;
     };
 

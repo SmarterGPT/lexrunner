@@ -381,7 +381,9 @@ export class AgentWorkHumanActionService {
 
   /** No caller-supplied trust keys. The configured host attests its own human admission. */
   async admitWorkerAnswer(
-    input: HumanActionMutationInput & { answer: SignedWorkerHumanAnswer }
+    input: HumanActionMutationInput & { answer: SignedWorkerHumanAnswer },
+    /** Protected process-local veto; cannot authenticate or weaken core checks. */
+    commitGuard?: () => boolean
   ): Promise<HumanActionMutationResult> {
     input = structuredClone(input);
     const answer = SignedWorkerHumanAnswer.parse(input.answer);
@@ -422,7 +424,8 @@ export class AgentWorkHumanActionService {
       record.state,
       state,
       "worker_answer_admitted",
-      entry.request.request_id
+      entry.request.request_id,
+      commitGuard
     );
   }
 
@@ -754,7 +757,8 @@ export class AgentWorkHumanActionService {
     original: JsonValue,
     state: HumanState,
     type: string,
-    requestId: string
+    requestId: string,
+    commitGuard?: () => boolean
   ): Promise<HumanActionMutationResult> {
     const root = rootObject(original);
     const result = await this.coordination.compareAndSetRunState({
@@ -770,6 +774,7 @@ export class AgentWorkHumanActionService {
       },
       event: { type, payload: { requestId } },
       now: input.now,
+      ...(commitGuard ? { commitGuard } : {}),
     });
     return result.updated
       ? { ok: true, revision: result.record.revision, replay: result.idempotentReplay }

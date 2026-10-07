@@ -46,7 +46,7 @@ export interface NativeHumanFormChannel {
   capabilities(): unknown;
   request(
     form: NativeHumanForm & { mode: Mode },
-    window: { signal: AbortSignal; timeoutMs: number }
+    window: { signal: AbortSignal; timeoutMs: number; connection: object }
   ): Promise<unknown>;
 }
 /** Protected host root. It must qualify human input and own identity/key selection. */
@@ -69,13 +69,22 @@ export function mcpHumanFormChannel(
   return {
     connection: () => server.transport ?? null,
     capabilities: () => server.getClientCapabilities(),
-    request: (form, window) =>
-      server.request({ method: "elicitation/create", params: { ...form } }, ElicitResultSchema, {
-        signal: window.signal,
-        timeout: window.timeoutMs,
-        maxTotalTimeout: window.timeoutMs,
-        resetTimeoutOnProgress: false,
-      }),
+    request: (form, window) => {
+      // SDK request dispatch is synchronous up to transport.send. No await may
+      // separate this identity check from that call.
+      if (server.transport !== window.connection || window.signal.aborted)
+        return Promise.reject(new WindowEnded());
+      return server.request(
+        { method: "elicitation/create", params: { ...form } },
+        ElicitResultSchema,
+        {
+          signal: window.signal,
+          timeout: window.timeoutMs,
+          maxTotalTimeout: window.timeoutMs,
+          resetTimeoutOnProgress: false,
+        }
+      );
+    },
   };
 }
 
@@ -250,6 +259,8 @@ export class NativeMcpHumanPresentationHost {
     };
     const wallRemaining = () => Date.parse(claimed!.challenge.expiresAt) - Date.parse(now());
     const remaining = () => Math.min(wallRemaining(), monotonicDeadline - performance.now());
+    const canCommit = () =>
+      !signal.aborted && remaining() > 0 && this.channel.connection() === connection;
     const applicable = async () => {
       boundary = "presentation_binding";
       if (signal.aborted || remaining() <= 0 || this.channel.connection() !== connection)
@@ -296,7 +307,10 @@ export class NativeMcpHumanPresentationHost {
       await applicable();
       boundary = "transport";
       const raw = await bounded(
-        (inner, timeoutMs) => this.channel.request({ ...form, mode }, { signal: inner, timeoutMs }),
+        (inner, timeoutMs) => {
+          if (!canCommit()) throw new WindowEnded();
+          return this.channel.request({ ...form, mode }, { signal: inner, timeoutMs, connection });
+        },
         signal,
         remaining()
       );
@@ -336,7 +350,11 @@ export class NativeMcpHumanPresentationHost {
         throw new WindowEnded();
       boundary = "persistence";
       admissionAttempted = true;
-      const admitted = await this.service.admitWorkerAnswer(admissionInput);
+      const admitted = await bounded(
+        () => this.service.admitWorkerAnswer(admissionInput, canCommit),
+        signal,
+        remaining()
+      );
       return admitted.ok
         ? { status: "admitted_hold_pending" as const, replay: admitted.replay }
         : { status: "reconciliation_required" as const, reason: admitted.reason };

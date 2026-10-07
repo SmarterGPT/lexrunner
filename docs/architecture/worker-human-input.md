@@ -71,6 +71,18 @@ of MCP and UI code. The SDK bridge selects standard form or the declared OpenAI 
 extension, binds the current transport object, and bounds each channel/admission wait
 by the display deadline and cancellation signal. A process-local monotonic budget spans
 both stages, so progress or a wall-clock rollback cannot extend the original wait.
+Connection identity is rechecked at dispatch, including at the SDK bridge immediately
+before its synchronous transport send. Core admission carries a protected process-local
+veto into coordination CAS. Both source stores check cancellation, connection and the
+shared deadline inside the mutation critical section immediately before a new write,
+including after delayed freshness checks or delayed storage entry. This veto adds refusal,
+never authentication or permission. It is not serialized as answer or integration data.
+Once the synchronous atomic mutation begins, later cancellation cannot undo that commit;
+a delayed acknowledgement remains a persistence observation, not a new admission.
+The adapter also bounds the core-admission wait. A timeout/cancelled wait after admission
+begins reports reconciliation required and never closes over a possibly committed answer;
+the store veto prevents a still-pending mutation from committing after that boundary.
+Custom stores must enforce the same CAS guard contract before this composition is qualified.
 A changed connection or closed display makes its reply unusable. A nonconforming
 port that ignores cancellation cannot trigger a later admission after its wait ends.
 

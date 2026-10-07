@@ -246,6 +246,136 @@ describe.each(["memory", "sqlite"] as const)("native MCP human host (%s)", (kind
     expect(h.admission.admitInput).toHaveBeenCalledOnce();
   });
 
+  it("refuses dispatch when a reconnect occurs after preflight", async () => {
+    const h = await setup(kind);
+    const original = h.channel.connection;
+    let reads = 0;
+    h.channel.connection = () => {
+      const identity = original();
+      if (++reads === 3) queueMicrotask(() => h.replaceConnection());
+      return identity;
+    };
+    expect(await h.host().present(h.input, h.signal.signal)).toMatchObject({
+      status: "pending",
+      reason: "failed",
+    });
+    expect(h.channel.request).not.toHaveBeenCalled();
+    expect(h.admission.admitInput).not.toHaveBeenCalled();
+    await h.held();
+  });
+
+  it.each(["freshness", "storage"] as const)(
+    "fences cancellation, expiry and reconnect after delayed %s entry",
+    async (boundary) => {
+      // Three fresh journals isolate each refusal and exercise both concrete stores.
+      for (const end of ["cancel", "expire", "reconnect"] as const) {
+        const h = await setup(kind);
+        let release!: () => void;
+        let entered = false;
+        let admitting = false;
+        const pause = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const elapsed = vi.spyOn(performance, "now").mockReturnValue(100);
+        const observer = h.f.observer.observe.bind(h.f.observer);
+        vi.spyOn(h.f.observer, "observe").mockImplementation(async () => {
+          if (boundary === "freshness" && admitting) {
+            entered = true;
+            await pause;
+          }
+          return observer();
+        });
+        const store = new Proxy(h.f.store, {
+          get(target, key) {
+            if (key === "compareAndSetRunState")
+              return async (input: Parameters<CoordinationStore["compareAndSetRunState"]>[0]) => {
+                if (boundary === "storage" && input.event.type === "worker_answer_admitted") {
+                  entered = true;
+                  await pause;
+                }
+                return target.compareAndSetRunState(input);
+              };
+            const value = Reflect.get(target, key);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+        const service = h.f.serviceFor(store);
+        const admit = service.admitWorkerAnswer.bind(service);
+        let settling: ReturnType<typeof admit> | undefined;
+        vi.spyOn(service, "admitWorkerAnswer").mockImplementation((...args) => {
+          admitting = true;
+          return (settling = admit(...args));
+        });
+        const host = new NativeMcpHumanPresentationHost(service, store, h.channel, h.admission);
+        try {
+          const pending = host.present(h.input, h.signal.signal);
+          await vi.waitFor(() => expect(entered).toBe(true));
+          if (end === "cancel") h.signal.abort();
+          if (end === "expire") elapsed.mockReturnValue(30_100);
+          if (end === "reconnect") h.replaceConnection();
+          release();
+          expect(await pending).toMatchObject({
+            status: "reconciliation_required",
+          });
+          await settling;
+          if (kind === "sqlite") await h.f.reopen();
+          expect(await h.f.service.getWorkerAnswer("run", h.input.requestId)).toBeNull();
+          expect(
+            (await h.f.store.listRunCoordinationEvents("run")).some(
+              (event) => event.type === "worker_answer_admitted"
+            )
+          ).toBe(false);
+          await h.held();
+        } finally {
+          release();
+          elapsed.mockRestore();
+        }
+      }
+    }
+  );
+
+  it("bounds a stalled core admission and fences its eventual write", async () => {
+    const h = await setup(kind);
+    h.input.expiresAt = new Date(Date.now() + 250).toISOString();
+    let release!: () => void;
+    let entered = false;
+    const pause = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const store = new Proxy(h.f.store, {
+      get(target, key) {
+        if (key === "compareAndSetRunState")
+          return async (input: Parameters<CoordinationStore["compareAndSetRunState"]>[0]) => {
+            if (input.event.type === "worker_answer_admitted") {
+              entered = true;
+              await pause;
+            }
+            return target.compareAndSetRunState(input);
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const service = h.f.serviceFor(store);
+    const admit = service.admitWorkerAnswer.bind(service);
+    let settling: ReturnType<typeof admit> | undefined;
+    vi.spyOn(service, "admitWorkerAnswer").mockImplementation(
+      (...args) => (settling = admit(...args))
+    );
+    const host = new NativeMcpHumanPresentationHost(service, store, h.channel, h.admission);
+    const pending = host.present(h.input, h.signal.signal);
+    await vi.waitFor(() => expect(entered).toBe(true));
+    expect(await pending).toMatchObject({
+      status: "reconciliation_required",
+      reason: "persistence_or_admission_uncertain",
+    });
+    release();
+    expect(await settling).toMatchObject({ ok: false, reason: "commit_condition_failed" });
+    if (kind === "sqlite") await h.f.reopen();
+    expect(await h.f.service.getWorkerAnswer("run", h.input.requestId)).toBeNull();
+    await h.held();
+  });
+
   it("discards a response from a replaced connection", async () => {
     const h = await setup(kind);
     vi.mocked(h.channel.request).mockImplementation(async () => {
@@ -435,6 +565,27 @@ describe("form projection and SDK transport conformance", () => {
     });
     expect(shown).toBe(1);
     await h.held();
+  });
+
+  it("binds SDK dispatch to the expected transport without sending on a replacement", async () => {
+    const request = vi.fn();
+    const replacement = {};
+    const server = {
+      transport: replacement,
+      getClientCapabilities: () => ({ elicitation: { form: {} } }),
+      request,
+    } as unknown as Parameters<typeof mcpHumanFormChannel>[0];
+    const h = await setup("memory");
+    const capture = readHumanActionState((await h.f.store.getRunCoordination("run"))!.state)
+      .entries[0].workerInput!;
+    const channel = mcpHumanFormChannel(server);
+    await expect(
+      channel.request(
+        { ...projectNativeHumanForm(capture, h.input.expiresAt), mode: "form" },
+        { signal: h.signal.signal, timeoutMs: 1000, connection: {} }
+      )
+    ).rejects.toThrow();
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("negotiates the tested OpenAI form extension without inventing a standard capability", async () => {
