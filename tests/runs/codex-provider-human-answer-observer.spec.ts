@@ -1,3 +1,4 @@
+import { CodexProviderIngressSession } from "../../src/runs/codex-provider-ingress-session.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
@@ -29,12 +30,18 @@ const DIGEST = "sha256:" + "a".repeat(64);
 const PROMPT_CANARY = "private-unrelated-prompt-canary";
 const HEADER_CANARY = "private-header-canary";
 const SECRET_ERROR = "protected-path-or-secret-error-canary";
+const ingressSessions: CodexProviderIngressSession[] = [];
 
 afterEach(async () => {
+  for (const session of ingressSessions.splice(0)) session.revoke();
   for (const f of fixtures.splice(0)) await f.cleanup();
 });
 
-async function prepared(kind: "memory" | "sqlite" = "memory", freeText = false) {
+async function prepared(
+  kind: "memory" | "sqlite" = "memory",
+  freeText = false,
+  connectionId?: string
+) {
   const f = await humanAnswerFixture(kind);
   fixtures.push(f);
   f.session.workerRuntime = "codex-native";
@@ -64,6 +71,7 @@ async function prepared(kind: "memory" | "sqlite" = "memory", freeText = false) 
   };
   const capture = {
     ...f.capture(),
+    ...(connectionId ? { connectionId, observationId: `${connectionId}:1` } : {}),
     requestJson: JSON.stringify(nativeRequest),
     providerRequestId: 7,
   };
@@ -651,7 +659,12 @@ describe("observation window and append uncertainty", () => {
 
 describe("protected retained evidence composition", () => {
   it("seals, independently reads and reconciles the observed request while holding dependent work", async () => {
-    const p = await prepared("sqlite");
+    const p = await prepared("sqlite", false, randomUUID());
+    const ingress = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 60000 });
+    ingressSessions.push(ingress);
+    const credential = ingress.claimChildEnvironment(
+      p.binding.capture.connectionId
+    ).LEXRUNNER_PROVIDER_SESSION;
     const root = join(p.f.root, "provider-output-evidence");
     await mkdir(root);
     // Synthetic attestation/sync ports do not establish production ACL protection,
@@ -679,8 +692,16 @@ describe("protected retained evidence composition", () => {
       openedAt: p.f.time,
     });
     const revision = (await p.f.store.getRunCoordination("run"))!.revision;
-    const observer = new CodexProviderHumanAnswerObserver(session, p.binding, () => p.f.time);
-    const result = await deliver(observer, { bytes: body(p.output) });
+    const observer = new CodexProviderHumanAnswerObserver(
+      session,
+      p.binding,
+      () => p.f.time,
+      ingress
+    );
+    const result = await deliver(observer, {
+      bytes: body(p.output),
+      headers: { "x-lexrunner-provider-session": credential },
+    });
     expect(result).toMatchObject({ status: "captured", consumptionQualified: false });
     if (result.status !== "captured") throw new Error("capture fixture failed");
     // Observation itself has no journal or send port and leaves coordination untouched.
@@ -692,7 +713,15 @@ describe("protected retained evidence composition", () => {
     const frame = CodexHumanAnswerOutputEvidence.parse(
       JSON.parse(Buffer.from(verified.frames[0]!.bytes).toString("utf8"))
     );
-    expect(frame.providerRequest).toMatchObject({ requestHash: result.requestHash });
+    expect(frame.providerRequest).toMatchObject({
+      requestHash: result.requestHash,
+      session: {
+        sessionId: ingress.snapshot().sessionId,
+        bindingHash: ingress.snapshot().bindingHash,
+        credentialPossessionVerified: true,
+      },
+    });
+    expect(Buffer.from(verified.frames[0]!.bytes).toString("utf8")).not.toContain(credential);
     const sourceEvidence = {
       captureId: result.captureId,
       captureRoot: reference.capture_root!,
@@ -733,5 +762,127 @@ describe("protected retained evidence composition", () => {
     expect(compact).not.toContain(HEADER_CANARY);
     expect(compact).not.toContain(p.binding.answer.signature);
     expect(compact).not.toContain('"output"');
+  });
+});
+
+describe("session-gated provider answer ingress", () => {
+  async function bound() {
+    const p = await prepared("memory", false, randomUUID());
+    const session = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 60000 });
+    ingressSessions.push(session);
+    const credential = session.claimChildEnvironment(
+      p.binding.capture.connectionId
+    ).LEXRUNNER_PROVIDER_SESSION;
+    const evidence = sink();
+    const observer = new CodexProviderHumanAnswerObserver(
+      evidence,
+      p.binding,
+      () => p.f.time,
+      session
+    );
+    return { p, session, credential, evidence, observer };
+  }
+
+  it.each(["missing", "wrong", "duplicate"])(
+    "refuses %s credentials before reading or capturing",
+    async (kind) => {
+      const b = await bound();
+      let on: ReturnType<typeof vi.spyOn> | undefined;
+      const headers =
+        kind === "missing"
+          ? {}
+          : {
+              "x-lexrunner-provider-session":
+                kind === "wrong" ? "x".repeat(43) : [b.credential, b.credential],
+            };
+      const result = await deliver(b.observer, {
+        bytes: body(b.p.output),
+        headers,
+        beforeObserve: (request) => {
+          on = vi.spyOn(request, "on");
+        },
+      });
+      expect(result).toEqual({ status: "blocked", reason: "provider_session_not_authorized" });
+      expect(on!.mock.calls.filter(([event]) => event === "data")).toHaveLength(0);
+      expect(b.evidence.append).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain(b.credential);
+    }
+  );
+
+  it("retains the nonsecret session binding without source or human authentication", async () => {
+    const b = await bound();
+    const result = await deliver(b.observer, {
+      bytes: body(b.p.output),
+      headers: { "x-lexrunner-provider-session": b.credential },
+    });
+    expect(result).toMatchObject({
+      status: "captured",
+      sourceAuthenticated: false,
+      consumptionQualified: false,
+      resendAllowed: false,
+    });
+    const raw = Buffer.from(b.evidence.frames[0]!.bytes).toString("utf8");
+    expect(CodexHumanAnswerOutputEvidence.parse(JSON.parse(raw)).providerRequest!.session).toEqual({
+      sessionId: b.session.snapshot().sessionId,
+      bindingHash: computeCanonicalHash({
+        runId: "run",
+        connectionId: b.p.binding.capture.connectionId,
+      }),
+      credentialPossessionVerified: true,
+    });
+    expect(raw).not.toContain(b.credential);
+    expect(raw).not.toContain(createHash("sha256").update(b.credential).digest("hex"));
+    expect(raw).not.toContain("x-lexrunner-provider-session");
+  });
+
+  it.each(["run", "connection"])("refuses a mismatched %s transport binding", async (kind) => {
+    const b = await bound();
+    const other = new CodexProviderIngressSession(
+      { runId: kind === "run" ? "other" : "run" },
+      { ttlMs: 60000 }
+    );
+    ingressSessions.push(other);
+    other.claimChildEnvironment(
+      kind === "connection" ? randomUUID() : b.p.binding.capture.connectionId
+    );
+    expect(
+      () => new CodexProviderHumanAnswerObserver(b.evidence, b.p.binding, () => b.p.f.time, other)
+    ).toThrow("invalid_provider_answer_binding");
+  });
+
+  it("revocation aborts a partial body and prevents append", async () => {
+    const b = await bound();
+    const result = await deliver(b.observer, {
+      bytes: Buffer.from('{"input":['),
+      leaveOpen: true,
+      headers: { "x-lexrunner-provider-session": b.credential },
+      afterStarted: () => {
+        setTimeout(() => b.session.revoke(), 15);
+      },
+    });
+    expect(result).toMatchObject({ status: "blocked", reason: "provider_request_cancelled" });
+    expect(b.evidence.append).not.toHaveBeenCalled();
+    expect(b.session.signal.aborted).toBe(true);
+  });
+
+  it("revocation during a possible append retains uncertainty and refuses another capture", async () => {
+    const b = await bound();
+    b.evidence.append.mockImplementation(async () => {
+      b.session.revoke();
+      return { captureId: b.evidence.captureId, sequence: 1, evidenceRef: DIGEST };
+    });
+    expect(
+      await deliver(b.observer, {
+        bytes: body(b.p.output),
+        headers: { "x-lexrunner-provider-session": b.credential },
+      })
+    ).toEqual({ status: "blocked", reason: "provider_capture_uncertain" });
+    expect(
+      await deliver(b.observer, {
+        bytes: body(b.p.output),
+        headers: { "x-lexrunner-provider-session": b.credential },
+      })
+    ).toEqual({ status: "blocked", reason: "provider_capture_uncertain" });
+    expect(b.evidence.append).toHaveBeenCalledTimes(1);
   });
 });

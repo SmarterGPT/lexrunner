@@ -59,6 +59,12 @@ outside this pilot.
    bounds. It composes with the same sealed-capture read-back. This establishes
    observed selected content, not sender authentication or full raw-request replay;
    sender/session protection and genuine human admission remain qualifications.
+   An optional host-owned session capability now gates ingress before body reading,
+   binds one owned child transport and revokes on expiry/failure/exit. Retained
+   session metadata establishes credential possession only; intended-child
+   identity, protected custody and human origin remain unqualified. The transport
+   binding is allocated before questions exist, while later answer observers retain
+   their separate persisted request/answer/claim bindings.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result

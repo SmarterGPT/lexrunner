@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { CodexProviderIngressSession } from "./codex-provider-ingress-session.js";
 import { isAbsolute, normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
@@ -166,7 +167,15 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
   private readonly notifications: Record<string, number> = Object.create(null);
   private settings?: { threadId: string; cwd: string; model: string; modelProvider: string };
 
-  private constructor(private readonly options: OwnedCodexConnectionOptions) {
+  private readonly sessionAborted = () => {
+    if (!this.failure && !this.closing && !this.processExited)
+      this.fail("provider_session_unavailable");
+  };
+
+  private constructor(
+    private readonly options: OwnedCodexConnectionOptions,
+    private readonly providerSession?: CodexProviderIngressSession
+  ) {
     this.adapterId = options.adapterId;
     this.adapterVersion = options.adapterVersion;
     const environment = Object.fromEntries(
@@ -186,6 +195,8 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       )
     );
     environment.CODEX_HOME = options.codexHome;
+    if (providerSession)
+      Object.assign(environment, providerSession.claimChildEnvironment(this.captureId));
     this.child = spawn(options.executable, ["app-server", "--stdio"], {
       cwd: options.cwd,
       env: environment,
@@ -193,9 +204,13 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    providerSession?.signal.addEventListener("abort", this.sessionAborted, { once: true });
+    this.child.once("exit", () => providerSession?.revoke());
     this.exited = new Promise((resolve) =>
       this.child.once("close", (code, signal) => {
         this.processExited = true;
+        providerSession?.signal.removeEventListener("abort", this.sessionAborted);
+        providerSession?.revoke();
         this.finalizeOutput();
         this.exitCode = code;
         this.signal = signal;
@@ -215,9 +230,20 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     });
   }
 
-  static async open(input: OwnedCodexConnectionOptions): Promise<OwnedCodexConnection> {
+  static async open(
+    input: OwnedCodexConnectionOptions,
+    providerSession?: CodexProviderIngressSession
+  ): Promise<OwnedCodexConnection> {
+    if (providerSession !== undefined && !(providerSession instanceof CodexProviderIngressSession))
+      throw new TypeError("invalid_provider_session");
     const options = Options.parse(input);
-    const connection = new OwnedCodexConnection(options);
+    let connection: OwnedCodexConnection;
+    try {
+      connection = new OwnedCodexConnection(options, providerSession);
+    } catch {
+      providerSession?.revoke();
+      throw new Error("connection_spawn_failed");
+    }
     try {
       await connection.rpc("initialize", {
         clientInfo: { name: "lexrunner_owned_connection", version: "1.0.0" },
@@ -712,6 +738,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
 
   close(): Promise<CodexConnectionCloseResult> {
     this.closing ??= this.stop();
+    this.providerSession?.revoke();
     return this.closing;
   }
   private async stop(): Promise<CodexConnectionCloseResult> {
@@ -746,6 +773,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
     }
   }
   private requireOpen() {
+    if (this.providerSession?.signal.aborted) throw new Error("provider_session_unavailable");
     if (this.failure || this.processExited || this.closing)
       throw new Error(this.failure ?? "connection_closed");
   }
@@ -796,6 +824,7 @@ export class OwnedCodexConnection implements AttachedCodexTransport {
   }
   private fail(reason: string) {
     this.failure ??= reason;
+    this.providerSession?.revoke();
     this.rejectPending(this.failure);
     if (!this.processExited) this.child.kill();
   }
