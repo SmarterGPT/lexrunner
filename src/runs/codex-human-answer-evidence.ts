@@ -25,6 +25,23 @@ export const CodexHumanAnswerOutputEvidence = z
     answerHash: SHA256Hash,
     observedAt: z.string().datetime({ offset: true }),
     output: CodexHumanAnswerOutput,
+    // Selected-item projection observed at HTTP ingress, not sender authentication
+    // or full raw-request retention. The request digest alone cannot replay it.
+    providerRequest: z
+      .object({
+        observerId: z.string().uuid(),
+        requestSequence: z.number().int().min(1).max(128),
+        requestHash: SHA256Hash,
+        requestBytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(1024 * 1024),
+        method: z.literal("POST"),
+        path: z.literal("/v1/responses"),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .refine((value) => Buffer.byteLength(canonicalJSONStringify(value), "utf8") <= MAX_FRAME_BYTES);

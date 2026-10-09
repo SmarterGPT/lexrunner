@@ -189,6 +189,46 @@ Changed locators conflict with a recorded observation. Retention loss or expiry
 cannot be bypassed by an old successful read. The hold and uncertain delivery
 disposition remain unchanged throughout.
 
+## Host-owned provider ingress observation
+
+`CodexProviderHumanAnswerObserver` is a source-only adapter for a host-owned HTTP
+Responses ingress. Construct it with a write-only existing evidence capture and
+the persisted question, admitted answer and exact send claim. The observer
+snapshots those bindings and creates its own observation identity and time.
+Attach it as the first body reader to the actual `IncomingMessage`; it does not
+create a server, proxy inference, forward credentials or configure a provider.
+
+The observer accepts only complete `POST /v1/responses` JSON requests, with fatal
+UTF-8 decoding, at most 1 MiB, nesting depth 64 and 4096 input items. Each instance
+serializes observation, permits at most 128 attempts, and bounds each body/append
+window to at most 30 seconds. Encoded or previously consumed streams, unsupported
+content types/encodings, duplicate JSON keys including escaped-equivalent names,
+and duplicate/missing target outputs are refused. The selected output must have
+exactly the existing three fields; optional native item metadata is refused
+rather than silently discarded. Authored output text remains byte-exact.
+
+After content matching, one canonical output envelope is appended through the
+existing capture. Optional `providerRequest` metadata retains the host-created
+observer ID, attempt sequence and raw request byte count/digest. No whole
+prompt-bearing request body or HTTP headers are retained. This is a selected-item
+projection; the digest alone cannot reproduce or independently reparse the full
+request. The host seals/indexes the existing capture and uses
+`recordRetainedCodexHumanAnswerOutput` for fresh read-back and fenced recording.
+An uncertain append or mismatched acknowledgement blocks further use of that
+observer; retain the capture and independently reconcile it instead of retrying
+the append. Cancellation or stream failure while reading the body destroys the
+supplied request and its underlying HTTP connection, which can affect other
+pipelined or keep-alive requests. The host must own and recover that connection
+lifecycle as well as its HTTP response and overall ingress.
+
+A capture proves this observer received matching bytes. Loopback address, request
+digest, constructor context and even a matching output do not authenticate the
+sender as the intended Codex child, establish fresh human input, prove remote
+provider receipt, qualify worker consumption or release a hold. Authority fields
+remain false. Production sender/session protection and human-channel admission
+are separate qualifications; this adapter introduces no mandatory passkey/OIDC
+workflow, protected service installation or public CLI/MCP route.
+
 ## Evidence
 
 Focused memory/SQLite tests exercise host signature tampering, untrusted
