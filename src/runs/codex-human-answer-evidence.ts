@@ -39,6 +39,14 @@ export const CodexHumanAnswerOutputEvidence = z
           .max(1024 * 1024),
         method: z.literal("POST"),
         path: z.literal("/v1/responses"),
+        session: z
+          .object({
+            sessionId: z.string().uuid(),
+            bindingHash: SHA256Hash,
+            credentialPossessionVerified: z.literal(true),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { CodexProviderIngressSession } from "./codex-provider-ingress-session.js";
 import type { IncomingMessage } from "node:http";
 import { performance } from "node:perf_hooks";
 import { TextDecoder } from "node:util";
@@ -169,10 +170,20 @@ export class CodexProviderHumanAnswerObserver {
   constructor(
     private readonly evidence: Pick<GovernedAttemptEvidenceCapture, "captureId" | "append">,
     binding: Binding,
-    private readonly clock: () => string = () => new Date().toISOString()
+    private readonly clock: () => string = () => new Date().toISOString(),
+    private readonly providerSession?: CodexProviderIngressSession
   ) {
     try {
       this.binding = Binding.parse(structuredClone(binding));
+      if (
+        providerSession !== undefined &&
+        (!(providerSession instanceof CodexProviderIngressSession) ||
+          !providerSession.matchesBinding({
+            runId: this.binding.runId,
+            connectionId: this.binding.capture.connectionId,
+          }))
+      )
+        throw new Error();
       this.captureId = z.string().min(1).max(128).parse(evidence.captureId);
       const request = CodexHumanInputRequest.parse(JSON.parse(this.binding.capture.requestJson));
       this.itemId = request.params.itemId;
@@ -221,13 +232,18 @@ export class CodexProviderHumanAnswerObserver {
     const selectedWindow = Window.safeParse({ timeoutMs: window.timeoutMs });
     if (!selectedWindow.success)
       return { status: "blocked" as const, reason: "invalid_provider_observation_window" };
-    const signal = window.signal;
+    const signal = this.providerSession
+      ? AbortSignal.any([window.signal, this.providerSession.signal])
+      : window.signal;
     const timeoutMs = selectedWindow.data.timeoutMs;
     const sequence = ++this.sequence;
     this.busy = true;
     const deadline = performance.now() + timeoutMs;
     let appending = false;
     try {
+      const session = this.providerSession?.authorize(request);
+      if (this.providerSession && !session)
+        throw new IngressError("provider_session_not_authorized");
       if (signal.aborted) throw new IngressError("provider_request_cancelled");
       if (request.method !== "POST" || request.url !== "/v1/responses")
         throw new IngressError("provider_request_route_mismatch");
@@ -304,6 +320,7 @@ export class CodexProviderHumanAnswerObserver {
           requestBytes: bytes.length,
           method: "POST",
           path: "/v1/responses",
+          ...(session ? { session } : {}),
         },
       });
       if (signal.aborted || deadline <= performance.now())

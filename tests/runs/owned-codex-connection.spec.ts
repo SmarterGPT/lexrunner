@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { OwnedCodexConnection } from "../../src/runs/owned-codex-connection.js";
+import { CodexProviderIngressSession } from "../../src/runs/codex-provider-ingress-session.js";
 import { CodexReceiptOutputSchema } from "../../src/runs/codex-receipt-contract.js";
 import {
   FinalAgentMessage,
@@ -1646,5 +1647,119 @@ describe("owned Codex connection", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  it("binds the provider session to its actual captured connection and fixed child environment", async () => {
+    const session = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 10000 });
+    connection = await OwnedCodexConnection.open(options, session);
+    const environment =
+      vi.mocked(spawn).mock.calls[vi.mocked(spawn).mock.calls.length - 1][2]!.env!;
+    const token = environment.LEXRUNNER_PROVIDER_SESSION!;
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(environment.CODEX_HOME).toBe(options.codexHome);
+    expect(environment.NODE_OPTIONS).toBeUndefined();
+    expect(session.snapshot().state).toBe("bound");
+    await connection.request("turn/start", params, requestOptions());
+    reply(humanInput(0));
+    const f = await humanAnswerFixture("memory", new Date().toISOString());
+    answerFixtures.push(f);
+    f.session.workerId = "owned-thread";
+    f.session.workerRuntime = "codex-native";
+    const requested = vi.spyOn(f.service, "request");
+    expect(
+      await connection.persistNextHumanInputCapture(f.service, {
+        ...(await f.mutation("session-question")),
+        attemptId: "attempt",
+        workspaceLeaseId: "workspace",
+        workerSessionId: "worker",
+        workspaceLeaseRevision: 2,
+        expectedHeadSha: "a".repeat(40),
+      })
+    ).toMatchObject({ ok: true });
+    const capture = requested.mock.calls[0][0].workerInput!;
+    expect(session.matchesBinding({ runId: "run", connectionId: capture.connectionId })).toBe(true);
+    expect(
+      session.matchesBinding({ runId: "different-run", connectionId: capture.connectionId })
+    ).toBe(false);
+    expect(JSON.stringify(connection.snapshot())).not.toContain(token);
+    expect(JSON.stringify(sent)).not.toContain(token);
+    expect(JSON.stringify(session.snapshot())).not.toContain(token);
+    expect(() => session.claimChildEnvironment(capture.connectionId)).toThrow();
+    await connection.close();
+    expect(session.snapshot().state).toBe("revoked");
+    expect(session.signal.aborted).toBe(true);
+  });
+
+  it("does not inherit an ambient provider session credential without an explicit session", async () => {
+    const previous = process.env.LEXRUNNER_PROVIDER_SESSION;
+    process.env.LEXRUNNER_PROVIDER_SESSION = "ambient-session-credential-canary";
+    try {
+      connection = await OwnedCodexConnection.open(options);
+      const environment =
+        vi.mocked(spawn).mock.calls[vi.mocked(spawn).mock.calls.length - 1][2]!.env!;
+      expect(environment.LEXRUNNER_PROVIDER_SESSION).toBeUndefined();
+      expect(JSON.stringify(sent)).not.toContain("ambient-session-credential-canary");
+    } finally {
+      if (previous === undefined) delete process.env.LEXRUNNER_PROVIDER_SESSION;
+      else process.env.LEXRUNNER_PROVIDER_SESSION = previous;
+    }
+  });
+
+  it("revokes provider ingress after a rejected bootstrap", async () => {
+    const session = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 10000 });
+    mode = "bad-settings";
+    await expect(OwnedCodexConnection.open(options, session)).rejects.toThrow("bootstrap_rejected");
+    expect(session.snapshot().state).toBe("revoked");
+    expect(session.signal.aborted).toBe(true);
+  });
+
+  it("revokes a claimed provider session when child spawn throws", async () => {
+    const session = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 10000 });
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      throw new Error("controlled spawn failure");
+    });
+    await expect(OwnedCodexConnection.open(options, session)).rejects.toThrow();
+    expect(session.snapshot().state).toBe("revoked");
+    expect(session.signal.aborted).toBe(true);
+  });
+
+  it("revokes provider ingress on an owned protocol failure without retaining the credential", async () => {
+    const session = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 10000 });
+    connection = await OwnedCodexConnection.open(options, session);
+    const token =
+      vi.mocked(spawn).mock.calls[vi.mocked(spawn).mock.calls.length - 1][2]!.env!
+        .LEXRUNNER_PROVIDER_SESSION!;
+    reply({ id: 99, result: { secret: token } });
+    expect(connection.snapshot().failure).not.toBeNull();
+    expect(session.snapshot().state).toBe("revoked");
+    expect(session.signal.aborted).toBe(true);
+    expect(JSON.stringify(connection.snapshot())).not.toContain(token);
+  });
+
+  it("revokes provider ingress as soon as the owned child exits", async () => {
+    const session = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 10000 });
+    connection = await OwnedCodexConnection.open(options, session);
+    child.emit("exit", 0, null);
+    expect(session.snapshot().state).toBe("revoked");
+    expect(session.signal.aborted).toBe(true);
+    child.emit("close", 0, null);
+  });
+
+  it("revokes provider ingress on child close before any turn is dispatched", async () => {
+    const session = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 10000 });
+    connection = await OwnedCodexConnection.open(options, session);
+    child.emit("close", 0, null);
+    expect(session.snapshot().state).toBe("revoked");
+    expect(session.signal.aborted).toBe(true);
+    expect(connection.snapshot().turnAttempted).toBe(false);
+  });
+
+  it("revokes provider ingress and stops its mocked child after finite session expiry", async () => {
+    const session = new CodexProviderIngressSession({ runId: "run" }, { ttlMs: 100 });
+    connection = await OwnedCodexConnection.open(options, session);
+    await new Promise<void>((resolve) => setTimeout(resolve, 130));
+    expect(session.snapshot().state).toBe("expired");
+    expect(session.signal.aborted).toBe(true);
+    expect(connection.snapshot().failure).not.toBeNull();
+    expect(child.kill).toHaveBeenCalledOnce();
   });
 });

@@ -246,3 +246,49 @@ and subsequent interruption. This is bounded native conformance evidence, not a
 production acknowledgement, human-authentication qualification, real workspace
 lease, OS reboot, inference or action-containment proof. No account credentials
 are copied. Failed and successful probe receipts remain outside the source tree.
+
+## Local provider session credential
+
+The optional source-only `CodexProviderIngressSession` allocates a fresh 256-bit
+capability in host memory for one owned child launch. Allocate it with the Run ID
+before spawn. `OwnedCodexConnection.open(options, session)` privately claims it
+once using the connection's own capture UUID, then injects only the fixed
+`LEXRUNNER_PROVIDER_SESSION` environment variable. The host separately configures
+the fixed `x-lexrunner-provider-session` header through the isolated child's
+provider configuration. No arbitrary environment map, ambient credential
+forwarding, user-level configuration edit or provider server is added.
+
+The transport binding hashes the Run and connection. Question and delivery claim
+IDs do not exist at spawn; each later answer observer independently binds their
+persisted capture, admission and claim. Its optional fourth constructor argument
+must be the same session with the exact Run/capture connection binding. This keeps
+the bootstrap transport identity separate from each answer's identity.
+
+Before reading the HTTP body, the gate requires exactly one fixed header in
+`rawHeaders`, canonical 32-byte base64url encoding and constant-time credential
+comparison. Missing, wrong, duplicate or comma-folded credentials are refused.
+The host disposes rejected requests; refusal does not drain or close their body.
+A finite monotonic lifetime of at most fifteen minutes has no silent renewal.
+Expiry, explicit close, bootstrap/transport failure and child exit revoke the
+capability. Exit revocation precedes stdio closure, which descendants can delay.
+Revocation aborts an active observer body read and may close its HTTP connection;
+revocation during a possible append retains the existing uncertain disposition.
+It never permits a repeat send or capture retry after an uncertain append.
+
+The canonical output envelope retains only an optional session UUID, nonsecret
+Run/connection binding hash and `credentialPossessionVerified:true`. It retains
+neither the credential, its digest, headers nor environment. Fresh sealed-source
+read-back and coordination journaling still use the existing composition. An
+ordinary observer without the optional session remains usable; omitting the gate
+does not satisfy a requirement for trusted-origin verification.
+
+Possession is the entire guarantee. A child can copy the capability to another
+client; descendants or sufficiently privileged processes may obtain it. The
+controlled native 0.145 compatibility experiment explicitly accepts a separate
+client holding the capability. Neither private class fields nor clearing one
+buffer establishes OS custody, secrecy of copied strings/environments, protected
+loading or human presence. The tested header mapping and owned lifecycle do not
+qualify all Codex versions or remote provider receipt. `sourceAuthenticated`,
+`intendedChildQualified` and consumption remain false. Human admission, signing
+custody and action/hold-release qualification remain separate dependencies.
+No signer, service, passkey/OIDC enrollment or installed package is enabled.
