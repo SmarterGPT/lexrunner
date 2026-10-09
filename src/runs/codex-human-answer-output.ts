@@ -2,9 +2,10 @@ import { z } from "zod";
 import { CodexHumanInputCapture, CodexHumanInputRequest } from "../schemas/codex-human-input.js";
 import {
   SignedWorkerHumanAnswer,
+  WorkerHumanAnswerSourceEvidence,
   workerHumanAnswersMatch,
 } from "../schemas/worker-human-answer.js";
-import { computeCanonicalHash } from "../schemas/task-contract.js";
+import { computeCanonicalHash, SHA256Hash } from "../schemas/task-contract.js";
 import type {
   AgentWorkHumanActionService,
   HumanActionMutationInput,
@@ -20,6 +21,10 @@ const Output = z
       .min(1)
       .refine((value) => Buffer.byteLength(value, "utf8") <= 16 * 1024),
   })
+  .strict();
+export { Output as CodexHumanAnswerOutput };
+const DeliveryBinding = z
+  .object({ claimId: z.string().uuid(), captureHash: SHA256Hash, answerHash: SHA256Hash })
   .strict();
 const Binding = z
   .object({
@@ -79,6 +84,8 @@ export async function recordCodexHumanAnswerOutput(
     observationId: string;
     observedAt: string;
     output: z.infer<typeof Output>;
+    sourceEvidence?: WorkerHumanAnswerSourceEvidence;
+    deliveryBinding?: z.infer<typeof DeliveryBinding>;
   }
 ) {
   input = structuredClone(input);
@@ -88,6 +95,8 @@ export async function recordCodexHumanAnswerOutput(
       observationId: id,
       observedAt: z.string().datetime({ offset: true }),
       output: Output,
+      sourceEvidence: WorkerHumanAnswerSourceEvidence.optional(),
+      deliveryBinding: DeliveryBinding.optional(),
     })
     .strict()
     .safeParse({
@@ -95,6 +104,8 @@ export async function recordCodexHumanAnswerOutput(
       observationId: input.observationId,
       observedAt: input.observedAt,
       output: input.output,
+      ...(input.sourceEvidence ? { sourceEvidence: input.sourceEvidence } : {}),
+      ...(input.deliveryBinding ? { deliveryBinding: input.deliveryBinding } : {}),
     });
   if (!evidence.success) return { ok: false as const, reason: "invalid_answer_output_evidence" };
   const stored = await service.getWorkerAnswer(input.controller.runId, input.requestId);
@@ -111,6 +122,15 @@ export async function recordCodexHumanAnswerOutput(
   const report = await service.inspectWorkerAnswerDelivery(input.controller.runId, input.requestId);
   if (!report?.delivery || report.delivery.answerHash !== match.answerHash)
     return { ok: false as const, reason: "answer_output_delivery_mismatch" };
+  const expected = evidence.data.deliveryBinding;
+  if (
+    (evidence.data.sourceEvidence && !expected) ||
+    (expected &&
+      (expected.claimId !== report.delivery.claimId ||
+        expected.captureHash !== match.captureHash ||
+        expected.answerHash !== match.answerHash))
+  )
+    return { ok: false as const, reason: "answer_output_source_binding_mismatch" };
   const result = await service.recordWorkerAnswerObservation({
     controller: input.controller,
     expectedRunRevision: input.expectedRunRevision,
@@ -128,6 +148,7 @@ export async function recordCodexHumanAnswerOutput(
       evidenceHash: match.evidenceHash,
       kind: "matching_answer_output",
       observedAt: evidence.data.observedAt,
+      ...(evidence.data.sourceEvidence ? { sourceEvidence: evidence.data.sourceEvidence } : {}),
     },
   });
   return result.ok

@@ -149,6 +149,46 @@ neither authenticates its source nor changes the hold or authorizes an action.
 No host installation, public CLI/MCP route, completed receipt or automatic retry
 is enabled. Source-body retention and origin qualification remain host work.
 
+## Retained answer-output source
+
+`CodexHumanAnswerOutputEvidence` defines a strict, at-most-32-KiB envelope for a
+host observer to append as `control_evidence` through the existing protected
+capture. It retains the exact output object plus Run/question/capture/answer/send
+claim bindings and observation identity/time. Encode the envelope with
+`canonicalJSONStringify`, including its newline, then seal and index the capture.
+The inner output string preserves authored bytes. The source-only composition
+adds no automatic provider interception or new capture lifecycle.
+
+`recordRetainedCodexHumanAnswerOutput` uses the separate host-owned independent
+reader before journaling. It requires a complete, unexpired pinned capture root,
+one selected frame with the exact chain digest and absolute observation time, and
+canonical envelope bytes. Missing, changed, incomplete, untrusted or conflicting
+evidence cannot create a new observation. It then checks the saved admission and
+delivery binding through the existing output recorder and controller/revision
+guards. Coordination retains only the optional opaque `sourceEvidence` locator:
+capture ID/root and frame sequence/hash. The existing `evidenceHash` still hashes
+the output object, rather than the container or frame. Legacy observations without
+the locator remain inspectable. Locators are data; freshly hydrate and verify them
+before relying on retained content. Direct protected-core callers do not acquire
+verified-source status merely by supplying a locator.
+
+A successful read reports `sourceEvidenceVerified:true`, meaning integrity
+read-back only. `sourceAuthenticated:false`, `consumptionQualified:false` and
+`resendAllowed:false` remain explicit. Fabricated matching bytes can still be
+retained; producer origin and genuine human input remain separate host
+qualification. The existing local evidence profile is Stage-1 synthetic and its
+default OS protection/durability dependencies fail closed. Controlled attestors
+and temporary-file tests do not qualify production isolation. No signer or
+mandatory passkey/OIDC workflow is introduced.
+
+Capture persistence and coordination mutation are separate operations. If the
+source is retained but journal acknowledgement is lost, keep the sealed artifact
+and replay the exact locator/observation under a current controller. This re-reads
+evidence and confirms the immutable observation; it never sends another answer.
+Changed locators conflict with a recorded observation. Retention loss or expiry
+cannot be bypassed by an old successful read. The hold and uncertain delivery
+disposition remain unchanged throughout.
+
 ## Evidence
 
 Focused memory/SQLite tests exercise host signature tampering, untrusted
