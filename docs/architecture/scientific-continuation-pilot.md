@@ -54,6 +54,11 @@ outside this pilot.
    existing independent evidence reader before recording its compact locator.
    This supplies recoverable source bytes and fresh integrity checking; origin,
    human admission and worker action qualification remain separate dependencies.
+   A source-only host-owned HTTP Responses observer now retains the exact selected
+   answer output plus request digest/sequence under explicit body, time and attempt
+   bounds. It composes with the same sealed-capture read-back. This establishes
+   observed selected content, not sender authentication or full raw-request replay;
+   sender/session protection and genuine human admission remain qualifications.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result
