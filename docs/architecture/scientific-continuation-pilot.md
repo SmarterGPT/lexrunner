@@ -49,7 +49,11 @@ outside this pilot.
    A source-only Codex content matcher now compares the exact native item ID and
    answer-result bytes against the saved admission and records a matching output
    through the same journal. Content matching does not authenticate the evidence
-   source, qualify consumption or grant dependent-action admission.
+   source, qualify consumption or grant dependent-action admission. A retained
+   source composition now reads a pinned, sealed output envelope through the
+   existing independent evidence reader before recording its compact locator.
+   This supplies recoverable source bytes and fresh integrity checking; origin,
+   human admission and worker action qualification remain separate dependencies.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result

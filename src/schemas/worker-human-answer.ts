@@ -77,6 +77,17 @@ export const WorkerHumanAnswerDelivery = z
   );
 export type WorkerHumanAnswerDelivery = z.infer<typeof WorkerHumanAnswerDelivery>;
 
+/** Opaque retained-source locator. Integrity and origin must be checked by the host. */
+export const WorkerHumanAnswerSourceEvidence = z
+  .object({
+    captureId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u),
+    captureRoot: SHA256Hash,
+    frameSequence: z.number().int().positive().max(65_536),
+    frameHash: SHA256Hash,
+  })
+  .strict();
+export type WorkerHumanAnswerSourceEvidence = z.infer<typeof WorkerHumanAnswerSourceEvidence>;
+
 /** Host observations only: neither a consumption certificate nor action authority. */
 export const WorkerHumanAnswerObservation = z
   .object({
@@ -91,8 +102,10 @@ export const WorkerHumanAnswerObservation = z
     evidenceHash: SHA256Hash,
     kind: z.enum(["request_cleared", "matching_answer_output", "delivery_uncertain"]),
     observedAt: instant,
+    sourceEvidence: WorkerHumanAnswerSourceEvidence.optional(),
   })
   .strict()
+  .refine((value) => !value.sourceEvidence || value.kind === "matching_answer_output")
   .refine((value) => Buffer.byteLength(JSON.stringify(value), "utf8") <= 4096);
 export type WorkerHumanAnswerObservation = z.infer<typeof WorkerHumanAnswerObservation>;
 
