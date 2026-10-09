@@ -72,7 +72,7 @@ function parseRequest(bytes: Buffer): unknown {
   return JSON.parse(source);
 }
 
-/** Only consumes the supplied ingress request. Cancellation closes that request. */
+/** Consumes one ingress request; body cancellation/failure also closes its HTTP connection. */
 function readBody(request: IncomingMessage, signal: AbortSignal, timeoutMs: number) {
   return new Promise<Buffer>((resolve, reject) => {
     const buffer = Buffer.allocUnsafe(MAX_BODY_BYTES);

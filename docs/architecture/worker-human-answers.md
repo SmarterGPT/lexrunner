@@ -216,8 +216,10 @@ request. The host seals/indexes the existing capture and uses
 `recordRetainedCodexHumanAnswerOutput` for fresh read-back and fenced recording.
 An uncertain append or mismatched acknowledgement blocks further use of that
 observer; retain the capture and independently reconcile it instead of retrying
-the append. Body cancellation closes only the supplied ingress request. The host
-remains responsible for its HTTP response and overall ingress lifecycle.
+the append. Cancellation or stream failure while reading the body destroys the
+supplied request and its underlying HTTP connection, which can affect other
+pipelined or keep-alive requests. The host must own and recover that connection
+lifecycle as well as its HTTP response and overall ingress.
 
 A capture proves this observer received matching bytes. Loopback address, request
 digest, constructor context and even a matching output do not authenticate the
