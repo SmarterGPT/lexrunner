@@ -123,6 +123,9 @@ describe.each(["memory", "sqlite"] as const)("native MCP human host (%s)", (kind
     });
     expect(h.channel.request).toHaveBeenCalledOnce();
     expect(h.admission.admitInput).toHaveBeenCalledOnce();
+    expect(vi.mocked(h.admission.admitInput).mock.calls[0][2].sourceConnection).toBe(
+      h.channel.connection()
+    );
   });
 
   it.each(["decline", "cancel"])(

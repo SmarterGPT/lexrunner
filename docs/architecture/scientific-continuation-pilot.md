@@ -65,6 +65,14 @@ outside this pilot.
    identity, protected custody and human origin remain unqualified. The transport
    binding is allocated before questions exist, while later answer observers retain
    their separate persisted request/answer/claim bindings.
+   An SDK-free admission host now composes separately supplied fresh-input
+   qualification and fixed-purpose signing ports. It binds exact input to a fresh
+   nonce/configured host, carries the native live connection/remaining window,
+   verifies the signature and blocks after uncertain signing. Controlled tests
+   establish composition only. Genuine input, durable qualification-event custody,
+   protected signing/trust and safe recovery still require a qualified host profile;
+   the live diagnostic keeps null admission. No mandatory passkey/OIDC or service
+   enrollment is introduced, and admission still cannot release a hold.
 4. **Bounded science execution:** use existing WorkItems, immutable packets,
    Attempts, retry deltas and receipts to dispatch one next experiment selected by
    the agent. A changed premise, faithful replication or useful negative result
@@ -143,7 +151,8 @@ host admission and local write with the real supervisor. Downstream observation,
 launch, receipt, verification, acceptance and transition ports remain uninvoked
 while held. This is controller-fence evidence, not live worker suspension, OS
 containment, successful hold release or production delivery qualification. The
-next slice is the native host adapter and consumption/action-boundary qualification.
+next dependencies are genuine input/signing-host qualification and
+consumption/action-boundary qualification.
 
 ## Human hold semantics
 
