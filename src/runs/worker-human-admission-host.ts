@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
+import { WorkerHumanAdmissionInput } from "../schemas/worker-human-input-event.js";
+export { WorkerHumanAdmissionInput } from "../schemas/worker-human-input-event.js";
 import { computeCanonicalHash, SHA256Hash } from "../schemas/task-contract.js";
-import { WorkerHumanInputCapture } from "../schemas/worker-human-input.js";
-import { WorkerHumanPresentation } from "../schemas/worker-human-presentation.js";
 import {
   SignedWorkerHumanAnswer,
   WorkerHumanAnswerPayload,
@@ -18,19 +18,6 @@ import {
 const instant = z.string().datetime({ offset: true });
 const id = z.string().min(1).max(512);
 const maximumAttempts = 128;
-export const WorkerHumanAdmissionInput = z
-  .object({
-    presentation: WorkerHumanPresentation,
-    capture: WorkerHumanInputCapture,
-    answers: z
-      .array(z.object({ questionId: id, value: z.string().min(1).max(4096) }).strict())
-      .min(1)
-      .max(8),
-    observedAt: instant,
-  })
-  .strict();
-export type WorkerHumanAdmissionInput = z.infer<typeof WorkerHumanAdmissionInput>;
-
 export interface WorkerHumanAdmissionWindow {
   timeoutMs: number;
   /** Opaque live input connection; reconnect must replace this object. */

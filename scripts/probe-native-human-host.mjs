@@ -10,6 +10,7 @@ import { z } from "zod";
 import {
   AgentWorkHumanActionService,
   readHumanActionState,
+  readWorkerHumanInputJournal,
 } from "../src/runs/agent-work-human-action-service.ts";
 import {
   NativeMcpHumanPresentationHost,
@@ -20,6 +21,12 @@ import {
   WorkerHumanInputCapture,
   hashWorkerHumanInput,
 } from "../src/schemas/worker-human-input.ts";
+
+import {
+  WorkerHumanInputEvent,
+  hashWorkerHumanInputEvent,
+} from "../src/schemas/worker-human-input-event.ts";
+import { computeCanonicalHash } from "../src/schemas/task-contract.ts";
 
 // Source-only UI qualification. Synthetic workspace/session, no signer or verifier.
 // The production adapter is exercised; human trust and worker containment are not.
@@ -49,6 +56,7 @@ export async function createNativeHumanHostProbe(root, timeoutMs = 120000) {
     "../src/store/sqlite/coordination-store.ts",
     "../src/store/coordination-store.ts",
     "../src/schemas/worker-human-input.ts",
+    "../src/schemas/worker-human-input-event.ts",
     "../src/schemas/worker-human-presentation.ts",
     "../src/schemas/worker-human-answer.ts",
     "../src/schemas/task-contract.ts",
@@ -166,13 +174,89 @@ export async function createNativeHumanHostProbe(root, timeoutMs = 120000) {
     });
     return originalRequest(projected, window);
   };
+  const formConnections = new WeakMap();
   const host = new NativeMcpHumanPresentationHost(service, store, channel, {
-    admitInput: async (input) => {
-      record("valid_host_input_observed", {
-        presentationId: input.presentation.presentationId,
-        answerCount: input.answers.length,
-        answerDigest: digest(input.answers),
+    admitInput: async (input, signal, window) => {
+      const connection = window.sourceConnection;
+      let connectionId = formConnections.get(connection);
+      if (!connectionId) {
+        connectionId = randomUUID();
+        formConnections.set(connection, connectionId);
+      }
+      const event = WorkerHumanInputEvent.parse({
+        version,
+        eventId: randomUUID(),
+        input,
+        source: {
+          hostSessionId: bootId,
+          connectionId,
+          profileId: "native-mcp-ui-observation/v1",
+          profileHash: computeCanonicalHash({
+            specHash,
+            timeoutMs,
+            projection: "diagnostic-directions-v1",
+          }),
+          runtimeHash: computeCanonicalHash({
+            node: process.version,
+            platform: process.platform,
+            architecture: process.arch,
+            executable: process.execPath,
+            sourceDigest,
+            client: server.getClientVersion() ?? null,
+          }),
+        },
       });
+      const eventHash = hashWorkerHumanInputEvent(event);
+      const deadline = performance.now() + window.timeoutMs;
+      const canCommit = () =>
+        !signal.aborted &&
+        performance.now() < deadline &&
+        Date.now() < Date.parse(input.presentation.challenge.expiresAt) &&
+        channel.connection() === connection;
+      let boundary = "record";
+      try {
+        const recorded = await service.recordWorkerInputEvent(
+          { ...(await mutation("input-event")), event },
+          canCommit
+        );
+        if (!recorded.ok) {
+          record("input_event_refused", {
+            eventId: event.eventId,
+            eventHash,
+            boundary,
+            reason: recorded.reason,
+          });
+          return null;
+        }
+        boundary = "reserve";
+        const reserved = await service.reserveWorkerInputEvent(
+          {
+            ...(await mutation("input-reservation")),
+            eventId: event.eventId,
+            eventHash,
+            reservationId: randomUUID(),
+            source: event.source,
+          },
+          canCommit
+        );
+        record("valid_host_input_observed", {
+          presentationId: input.presentation.presentationId,
+          answerCount: input.answers.length,
+          answerDigest: digest(input.answers),
+          eventId: event.eventId,
+          eventHash,
+          recorded: true,
+          reserved: reserved.ok,
+          newlyReserved: reserved.ok && reserved.newlyReserved,
+          ...(!reserved.ok ? { reason: reserved.reason } : {}),
+        });
+      } catch {
+        record("input_event_acknowledgement_uncertain", {
+          eventId: event.eventId,
+          eventHash,
+          boundary,
+        });
+      }
       return null; // Deliberate: no authentication/signing, admission or delivery.
     },
   });
@@ -203,6 +287,7 @@ export async function createNativeHumanHostProbe(root, timeoutMs = 120000) {
         )
       : null;
     const capabilities = server.getClientCapabilities();
+    const inputEvents = state ? readWorkerHumanInputJournal(state.state).entries : [];
     return {
       version,
       runtime: {
@@ -232,6 +317,11 @@ export async function createNativeHumanHostProbe(root, timeoutMs = 120000) {
           capabilities?.extensions?.["openai/form"] ||
           capabilities?.extensions?.["openai/elicitation"]?.form
         ),
+      },
+      inputJournal: {
+        recordedCount: inputEvents.length,
+        reservedCount: inputEvents.filter((v) => v.reservation).length,
+        humanQualified: false,
       },
       questionCount: entries.length,
       requestId: entry?.request.request_id ?? null,

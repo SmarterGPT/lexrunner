@@ -8,6 +8,7 @@ import {
 import {
   computeCanonicalHash,
   computeCanonicalHashFromCompactJSON,
+  SHA256Hash,
 } from "../schemas/task-contract.js";
 import { WorkerHumanInputCapture } from "../schemas/worker-human-input.js";
 import {
@@ -34,6 +35,13 @@ import type {
   WorkspaceObservation,
 } from "../store/workspace-lifecycle-store.js";
 
+import {
+  WorkerHumanInputEvent,
+  WorkerHumanInputEventRecord,
+  WorkerHumanInputSource,
+  hashWorkerHumanInputEvent,
+} from "../schemas/worker-human-input-event.js";
+
 const KEY = "agentWorkHumanActions";
 const entrySchema = z
   .object({
@@ -48,9 +56,36 @@ const entrySchema = z
     answerDelivery: WorkerHumanAnswerDelivery.optional(),
     answerObservations: z.array(WorkerHumanAnswerObservation).min(1).max(16).optional(),
     presentations: WorkerHumanPresentationHistory.optional(),
+    inputEvents: z.array(WorkerHumanInputEventRecord).min(1).max(16).optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
+    if (
+      entry.inputEvents &&
+      (!entry.workerInput ||
+        new Set(entry.inputEvents.map((v) => v.event.input.presentation.presentationId)).size !==
+          entry.inputEvents.length ||
+        entry.inputEvents.some(({ event, recordedAt, reservation }) => {
+          const captured = event.input;
+          const historical = entry.presentations?.find(
+            (v) => v.presentationId === captured.presentation.presentationId
+          );
+          return (
+            !historical ||
+            captured.presentation.challenge.runId !== entry.request.run_id ||
+            captured.presentation.challenge.requestId !== entry.request.request_id ||
+            computeCanonicalHash(captured.capture) !== computeCanonicalHash(entry.workerInput) ||
+            computeCanonicalHash(captured.presentation.challenge) !==
+              computeCanonicalHash(historical.challenge) ||
+            captured.presentation.previousPresentationId !== historical.previousPresentationId ||
+            (historical.closedAt !== undefined &&
+              (Date.parse(recordedAt) > Date.parse(historical.closedAt) ||
+                (reservation !== undefined &&
+                  Date.parse(reservation.reservedAt) > Date.parse(historical.closedAt))))
+          );
+        }))
+    )
+      ctx.addIssue({ code: "custom", message: "Invalid retained input-event references" });
     if (entry.answerObservations) {
       if (
         !entry.workerInput ||
@@ -121,7 +156,21 @@ const entrySchema = z
   });
 const stateSchema = z
   .object({ version: z.literal(1), entries: z.array(entrySchema).max(128) })
-  .strict();
+  .strict()
+  .refine((state) => {
+    const retained = state.entries.flatMap((v) => v.inputEvents ?? []);
+    const reservations = retained.flatMap((v) =>
+      v.reservation ? [v.reservation.reservationId] : []
+    );
+    return (
+      retained.length <= 128 &&
+      Buffer.byteLength(JSON.stringify(retained), "utf8") <= 1024 * 1024 &&
+      new Set(retained.map((v) => v.event.eventId)).size === retained.length &&
+      new Set(retained.map((v) => v.event.input.presentation.presentationId)).size ===
+        retained.length &&
+      new Set(reservations).size === reservations.length
+    );
+  }, "Invalid Run input-event journal capacity or identities");
 type HumanState = z.infer<typeof stateSchema>;
 
 export interface HumanActionMutationInput {
@@ -140,6 +189,14 @@ export function readHumanActionState(state: JsonValue): HumanState {
   if (metadata === undefined) return { version: 1, entries: [] };
   const value = rootObject(metadata)[KEY];
   return value === undefined ? { version: 1, entries: [] } : stateSchema.parse(value);
+}
+
+/** Historical data only; never a qualification or processing permission. */
+export function readWorkerHumanInputJournal(state: JsonValue) {
+  return {
+    version: 1 as const,
+    entries: readHumanActionState(state).entries.flatMap((v) => v.inputEvents ?? []),
+  };
 }
 
 export function humanActionSummary(state: JsonValue, now: string) {
@@ -613,6 +670,172 @@ export class AgentWorkHumanActionService {
       consumptionQualified: false,
       resendAllowed: false,
     };
+  }
+
+  /** Source-only protocol recording. No qualification, signature, answer or hold settlement. */
+  async recordWorkerInputEvent(
+    input: HumanActionMutationInput & { event: WorkerHumanInputEvent },
+    commitGuard: () => boolean
+  ) {
+    input = structuredClone(input);
+    const event = WorkerHumanInputEvent.parse(input.event);
+    const eventHash = hashWorkerHumanInputEvent(event);
+    const loaded = await this.loadWorkerInputJournal(input);
+    if (!loaded.ok) return loaded;
+    const { record, state } = loaded;
+    const retained = state.entries.flatMap((v) => v.inputEvents ?? []);
+    const prior = retained.find((v) => v.event.eventId === event.eventId);
+    if (prior)
+      return prior.eventHash === eventHash
+        ? {
+            ok: true as const,
+            revision: record.revision,
+            replay: true,
+            newlyRecorded: false,
+            eventHash,
+          }
+        : { ok: false as const, reason: "input_event_conflict" };
+    if (
+      retained.some(
+        (v) => v.event.input.presentation.presentationId === event.input.presentation.presentationId
+      )
+    )
+      return { ok: false as const, reason: "presentation_input_already_recorded" };
+    if (retained.length === 128) return { ok: false as const, reason: "input_event_capacity" };
+    const entry = state.entries.find(
+      (v) => v.request.request_id === event.input.presentation.challenge.requestId
+    );
+    if (!entry?.workerInput || entry.supersededBy || entry.receipt)
+      return { ok: false as const, reason: "worker_question_not_pending" };
+    const applicable = this.inputEventApplicable(input, event, entry);
+    if (applicable) return { ok: false as const, reason: applicable };
+    const stale = await this.workerQuestionFreshness(input, { ...loaded, entry });
+    if (stale) return { ok: false as const, reason: stale };
+    if ((entry.inputEvents?.length ?? 0) === 16)
+      return { ok: false as const, reason: "input_event_capacity" };
+    if (typeof commitGuard !== "function")
+      return { ok: false as const, reason: "input_event_guard_required" };
+    const retainedEvent = WorkerHumanInputEventRecord.parse({
+      event,
+      eventHash,
+      recordedAt: input.now,
+    });
+    entry.inputEvents = [...(entry.inputEvents ?? []), retainedEvent];
+    if (
+      Buffer.byteLength(JSON.stringify(state.entries.flatMap((v) => v.inputEvents ?? [])), "utf8") >
+      1024 * 1024
+    )
+      return { ok: false as const, reason: "input_event_byte_capacity" };
+    const result = await this.commit(
+      input,
+      record.state,
+      state,
+      "worker_input_event_recorded",
+      entry.request.request_id,
+      commitGuard
+    );
+    return result.ok ? { ...result, newlyRecorded: !result.replay, eventHash } : result;
+  }
+
+  /** Reserve once for local processing. Replay confirms history, never authorizes a new operation. */
+  async reserveWorkerInputEvent(
+    input: HumanActionMutationInput & {
+      eventId: string;
+      eventHash: string;
+      reservationId: string;
+      source: WorkerHumanInputSource;
+    },
+    commitGuard: () => boolean
+  ) {
+    input = structuredClone(input);
+    z.string().uuid().parse(input.eventId);
+    z.string().uuid().parse(input.reservationId);
+    SHA256Hash.parse(input.eventHash);
+    const source = WorkerHumanInputSource.parse(input.source);
+    const loaded = await this.loadWorkerInputJournal(input);
+    if (!loaded.ok) return loaded;
+    const { record, state } = loaded;
+    const entry = state.entries.find((v) =>
+      v.inputEvents?.some((e) => e.event.eventId === input.eventId)
+    );
+    const retained = entry?.inputEvents?.find((v) => v.event.eventId === input.eventId);
+    if (!retained || !entry) return { ok: false as const, reason: "input_event_not_found" };
+    if (
+      retained.eventHash !== input.eventHash ||
+      computeCanonicalHash(retained.event.source) !== computeCanonicalHash(source)
+    )
+      return { ok: false as const, reason: "input_event_conflict" };
+    if (retained.reservation)
+      return retained.reservation.reservationId === input.reservationId
+        ? {
+            ok: true as const,
+            revision: record.revision,
+            replay: true,
+            newlyReserved: false,
+            eventHash: retained.eventHash,
+          }
+        : { ok: false as const, reason: "input_event_already_reserved" };
+    if (
+      state.entries
+        .flatMap((v) => v.inputEvents ?? [])
+        .some((v) => v.reservation?.reservationId === input.reservationId)
+    )
+      return { ok: false as const, reason: "input_reservation_conflict" };
+    if (!entry.workerInput || entry.supersededBy || entry.receipt)
+      return { ok: false as const, reason: "worker_question_not_pending" };
+    const applicable = this.inputEventApplicable(input, retained.event, entry);
+    if (applicable || Date.parse(input.now) < Date.parse(retained.recordedAt))
+      return { ok: false as const, reason: applicable ?? "invalid_time" };
+    const stale = await this.workerQuestionFreshness(input, { ...loaded, entry });
+    if (stale) return { ok: false as const, reason: stale };
+    if (typeof commitGuard !== "function")
+      return { ok: false as const, reason: "input_event_guard_required" };
+    retained.reservation = { reservationId: input.reservationId, reservedAt: input.now };
+    if (
+      Buffer.byteLength(JSON.stringify(state.entries.flatMap((v) => v.inputEvents ?? [])), "utf8") >
+      1024 * 1024
+    )
+      return { ok: false as const, reason: "input_event_byte_capacity" };
+    const result = await this.commit(
+      input,
+      record.state,
+      state,
+      "worker_input_event_reserved",
+      entry.request.request_id,
+      commitGuard
+    );
+    return result.ok
+      ? { ...result, newlyReserved: !result.replay, eventHash: retained.eventHash }
+      : result;
+  }
+
+  private async loadWorkerInputJournal(input: HumanActionMutationInput) {
+    if (!z.string().datetime({ offset: true }).safeParse(input.now).success)
+      return { ok: false as const, reason: "invalid_time" };
+    const record = await this.coordination.getRunCoordination(input.controller.runId);
+    if (!record) return { ok: false as const, reason: "not_found" };
+    return { ok: true as const, record, state: readHumanActionState(record.state) };
+  }
+
+  private inputEventApplicable(
+    input: HumanActionMutationInput,
+    event: WorkerHumanInputEvent,
+    entry: HumanState["entries"][number]
+  ) {
+    const history = entry.presentations ?? [];
+    const current = history[history.length - 1];
+    if (
+      entry.workerAnswer ||
+      !current ||
+      current.disposition !== "active" ||
+      computeCanonicalHash(current) !== computeCanonicalHash(event.input.presentation) ||
+      computeCanonicalHash(entry.workerInput) !== computeCanonicalHash(event.input.capture) ||
+      event.input.presentation.challenge.runId !== input.controller.runId ||
+      Date.parse(input.now) < Date.parse(event.input.observedAt) ||
+      Date.parse(input.now) >= Date.parse(current.challenge.expiresAt)
+    )
+      return "input_event_not_applicable";
+    return null;
   }
 
   private async loadWorkerQuestion(input: HumanActionMutationInput, requestId: string) {
