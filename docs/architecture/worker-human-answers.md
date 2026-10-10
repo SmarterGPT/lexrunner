@@ -353,3 +353,50 @@ qualify all Codex versions or remote provider receipt. `sourceAuthenticated`,
 `intendedChildQualified` and consumption remain false. Human admission, signing
 custody and action/hold-release qualification remain separate dependencies.
 No signer, service, passkey/OIDC enrollment or installed package is enabled.
+
+## Durable protocol input observations
+
+The source-only human-action service records a strict `WorkerHumanInputEvent`
+inside the existing held-question entry. This preserves the question's context
+hash and uses the existing fenced coordination transaction; no second store or
+integration-time input is added. The record retains exact admission input,
+original active presentation/challenge, authored answers and observation time.
+A domain-separated canonical digest binds a fresh event UUID and supplied host
+session, human-form connection, profile ID/hash and runtime hash. The form
+connection is distinct from the worker capture connection. These pins describe
+an observation; they are not independently authenticated expectations, human
+presence, protected loading or signing custody.
+
+New records require the current pending presentation, capture, challenge,
+Run context, workspace and worker session, a current controller/revision, and a
+synchronous process-local commit veto. Only one event can be retained for a
+presentation; a different UUID cannot bypass that restriction. At most sixteen
+events per question, 128 per Run, 64 KiB per event and 1 MiB of aggregate compact
+retained records are accepted. Capacity refuses new writes without eviction.
+Coordination stores retain resulting snapshots on each revision, so these byte
+caps bound each retained journal snapshot, not total database size over its
+whole lifecycle. Historical capture and presentation references are validated
+on read. Corrupt state fails closed.
+
+`reserveWorkerInputEvent` records one immutable local processing reservation
+for that exact event/hash/source while the presentation remains applicable. A
+reservation ID cannot be reused for another event in the Run. Controller,
+lease, fence and mutation identity remain in the existing transaction journal.
+This is not authenticated-event consumption or permission to qualify, sign,
+send, execute or release a hold. Read-only exact replay returns
+`newlyRecorded:false` or `newlyReserved:false`, preserving original bytes and
+timestamps after closure, expiry, takeover or reopen. A lost acknowledgement
+requires explicit readback/reconciliation, never a new event, reservation or
+automatic processing attempt. A historical success must not drive a fresh
+downstream operation. Changing the event/source/hash or reserved identity is
+refused.
+
+The diagnostic native probe now records and locally reserves accepted protocol
+input, then deliberately returns null admission. Its bounded status derives
+record/reservation counts from coordination and exposes no answer bodies. Its
+separate digest-only telemetry does not settle uncertain coordination writes.
+Skip, cancellation, timeout and late responses create no input events or new
+displays. Explicit human recovery retains the same held question with a fresh
+presentation and fresh source-session/connection observations after restart.
+No signer, positive qualifier, passkey/OIDC requirement, service installation,
+public answer-entry tool, worker delivery or action completion is enabled.

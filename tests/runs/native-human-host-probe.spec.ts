@@ -57,6 +57,7 @@ describe("non-authorizing native human host qualification probe", () => {
     expect(f.shown()).toBe(0);
     const first = await f.call("present_sample");
     expect(first).toMatchObject({
+      inputJournal: { recordedCount: 1, reservedCount: 1, humanQualified: false },
       questionCount: 1,
       holdPending: true,
       answerAdmitted: false,
@@ -71,6 +72,11 @@ describe("non-authorizing native human host qualification probe", () => {
     const reopened = await fixture(f.root);
     const persisted = await reopened.call("status");
     expect(persisted.requestId).toBe(first.requestId);
+    expect(persisted.inputJournal).toEqual({
+      recordedCount: 1,
+      reservedCount: 1,
+      humanQualified: false,
+    });
     expect(reopened.shown()).toBe(0);
     const recovered = await reopened.call("recover_sample");
     expect(recovered).toMatchObject({
@@ -80,6 +86,12 @@ describe("non-authorizing native human host qualification probe", () => {
       presentation: { presentationCount: 2 },
     });
     expect(recovered.requestId).toBe(first.requestId);
+    expect(recovered.inputJournal).toEqual({
+      recordedCount: 2,
+      reservedCount: 2,
+      humanQualified: false,
+    });
+    expect(JSON.stringify(recovered)).not.toContain('"value":"B"');
     expect(recovered.presentation.presentationId).not.toBe(first.presentation.presentationId);
     expect(reopened.shown()).toBe(1);
   });
@@ -94,6 +106,11 @@ describe("non-authorizing native human host qualification probe", () => {
         holdPending: true,
         answerAdmitted: false,
         result: { status: "pending", reason: action === "decline" ? "declined" : "cancelled" },
+      });
+      expect(result.inputJournal).toEqual({
+        recordedCount: 0,
+        reservedCount: 0,
+        humanQualified: false,
       });
       expect(result.observations.some((v: any) => v.kind === "valid_host_input_observed")).toBe(
         false
@@ -121,6 +138,11 @@ describe("non-authorizing native human host qualification probe", () => {
     await new Promise((done) => setImmediate(done));
     const later = await f.call("status");
     expect(later.answerAdmitted).toBe(false);
+    expect(later.inputJournal).toEqual({
+      recordedCount: 0,
+      reservedCount: 0,
+      humanQualified: false,
+    });
     expect(later.observations.filter((v: any) => v.kind === "dispatch")).toHaveLength(1);
     expect(later.observations.some((v: any) => v.kind === "valid_host_input_observed")).toBe(false);
     expect((await f.call("present_sample")).result.reason).toBe("explicit_recovery_required");
