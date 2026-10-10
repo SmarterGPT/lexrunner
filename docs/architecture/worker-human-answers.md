@@ -33,6 +33,67 @@ No public authenticated Codex-app answer hook has been established. This slice
 adds neither a UI nor a secret-prompt channel. A host must render the persisted
 question as untrusted text and preserve its exact options and Other behavior.
 
+## Qualified input and signing composition
+
+`WorkerHumanAdmissionHost` is an SDK-free source composition, not a qualified
+production host. Construction snapshots the configured Run/host/key/public-key
+trust, allowed actors and qualification/signing method references. It supplies
+neither positive qualification by default nor a private key, identity enrollment,
+service installation or public CLI/MCP admission route. Ordinary tooling remains
+usable without a protected host; optional passkey/OIDC research remains separate.
+
+`admitInput(input, signal, window)` receives the active presentation, persisted
+capture, exact authored answers, observation time, opaque live source connection
+and finite remaining timeout. The native presentation adapter supplies its already
+captured connection outside `structuredClone` and its remaining window; its final
+applicability check and durable commit guard remain intact. Other applications can
+supply the same ports without importing the MCP SDK. Reconnect must replace the
+connection object, and the trusted source accessor must return that same object
+before and after every asynchronous stage.
+
+The host validates active disposition, configured Run, captured request ID,
+challenge/observation times, payload bounds and exact admissible answers before
+qualification. A fresh UUID and domain-separated digest bind the entire snapshot
+to the configured Run/host/key. The separately supplied protected qualifier must
+independently establish fresh human input for that exact binding and connection,
+atomically consume its authentication event, and durably retain immutable
+event-to-input/binding/connection evidence across restart. Its strict result echoes
+the UUID/digest and supplies an allowed actor, event reference and qualification
+time inside the current window. A schema-valid form acceptance, logged-in actor,
+provider credential or returned digest cannot substitute for that implementation.
+
+One host instance serializes admissions, permits at most 128 applicable attempts
+and never evicts its locally reserved event references. It reserves a qualified
+event before signing. Those process-local checks do not establish durable event
+freshness or prevent replay across replacement/restart; the protected qualifier
+owns that guarantee. The existing portable service independently checks the full
+request/context challenge binding and current workspace/worker/controller state,
+which are not available to this input-only composition.
+
+The fixed-purpose signer receives copied canonical payload bytes (including the
+trailing newline), the exact qualification record and remaining connection/time
+window. It returns only a signature; identity, challenge, answer bytes and answer
+time remain host-selected. The host verifies the result against the immutable
+configured public key before returning an envelope. Qualification and signing
+share one wall-clock/monotonic budget capped by the caller window, challenge expiry
+and fifteen minutes. Abort, expiry, reconnect, malformed results or late completion
+cannot enter a later stage. Refused qualification never invokes signing.
+
+After any possible signing attempt, failure, cancellation, timeout, mismatched
+signature or uncertain result returns no envelope and leaves this host instance
+blocked as `signing_unconfirmed`. There is no automatic signing retry or state
+reset. The protected host must retain and reconcile source/signer evidence before
+explicit recovery; constructing another instance alone does not establish safe
+recovery or durable uniqueness. Diagnostics contain counts and bounded failure
+categories, never answer bodies, actor/event references, signatures or raw errors.
+
+Controlled memory/SQLite composition tests and native/SDK adapter tests establish
+binding, signature verification and retained holds under the tested failures. They do not qualify
+genuine human input, signing/trust custody or a deployed host profile. The live
+diagnostic keeps its deliberate null admission and no verifier. Durable answer
+admission, acknowledgement reconciliation, single-send delivery and hold settlement
+remain in their existing layers.
+
 ## Persistence and replay
 
 The question and hold must already be committed before the host issues a

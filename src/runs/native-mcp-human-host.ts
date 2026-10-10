@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import type { WorkerHumanAdmissionPort } from "./worker-human-admission-host.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ElicitResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -49,18 +50,7 @@ export interface NativeHumanFormChannel {
     window: { signal: AbortSignal; timeoutMs: number; connection: object }
   ): Promise<unknown>;
 }
-/** Protected host root. It must qualify human input and own identity/key selection. */
-export interface NativeHumanAdmissionPort {
-  admitInput(
-    input: {
-      presentation: WorkerHumanPresentation;
-      capture: WorkerHumanInputCapture;
-      answers: { questionId: string; value: string }[];
-      observedAt: string;
-    },
-    signal: AbortSignal
-  ): Promise<SignedWorkerHumanAnswer | null>;
-}
+export type NativeHumanAdmissionPort = WorkerHumanAdmissionPort;
 
 /** The SDK stays in this adapter; the portable core has no MCP/UI dependency. */
 export function mcpHumanFormChannel(
@@ -322,7 +312,7 @@ export class NativeMcpHumanPresentationHost {
       const observedAt = now();
       boundary = "host_admission";
       const attestation = await bounded(
-        (inner) =>
+        (inner, timeoutMs) =>
           this.admission.admitInput(
             structuredClone({
               presentation: claimed!,
@@ -330,7 +320,8 @@ export class NativeMcpHumanPresentationHost {
               answers: response.answers!,
               observedAt,
             }),
-            inner
+            inner,
+            { timeoutMs, sourceConnection: connection }
           ),
         signal,
         remaining()
