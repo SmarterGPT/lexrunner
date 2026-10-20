@@ -33,6 +33,12 @@ The `doctor` MCP tool supports an `environmentQuality` parameter:
 }
 ```
 
+`environmentQuality` is optional, boolean, and defaults to `false`. The MCP schema is strict:
+unknown fields (including ad hoc `repoRoot`, `cwd`, or `baseDir` selectors) and wrong-typed values
+are invalid parameters. The server captures its startup working directory as the diagnostic root;
+start the server in the repository you intend to inspect. Results report that root as
+`diagnosticBase` and the separately resolved profile root as `configuration.profileDir`.
+
 ## Hostility Score
 
 The hostility score ranges from 0 to 1, where:

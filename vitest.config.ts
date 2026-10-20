@@ -29,6 +29,7 @@ export default defineConfig({
       "**/tests/workspaces/workspace-coordinator-sqlite-git.spec.ts",
       "**/tests/application/gate-candidate-routing-git.spec.ts",
       "**/tests/application/gate-execution-service.spec.ts",
+      "**/tests/application/workspace-diagnostics-git.spec.ts",
       "**/tests/mcp-candidate-routing-git.spec.ts",
       "**/tests/commands/gate-run-selection.spec.ts",
       "**/tests/cluster-gates-rollback.spec.ts",

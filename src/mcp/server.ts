@@ -53,7 +53,9 @@ import {
 } from "../application/plan-artifact-service.js";
 import {
   ConfigurationQueryService,
+  parseWorkspaceDoctorArgs,
   WorkspaceConfigServiceError,
+  WorkspaceDoctorArgsJsonSchema,
   WorkspaceDiagnosticsService,
   WorkspaceInitializationService,
 } from "../application/workspace-config-services.js";
@@ -278,6 +280,7 @@ type ListRunsInput = z.infer<typeof ListRunsInputSchema>;
  * Create and configure the MCP server
  */
 function createServer(options?: McpServerOptions): Server {
+  const serverBaseDir = path.resolve(process.cwd());
   // Initialize RunStore (use provided or create default)
   const runStore = options?.runStore ?? createRunStore();
   const server = new Server(
@@ -888,16 +891,7 @@ function createServer(options?: McpServerOptions): Server {
           name: "doctor",
           description:
             "Run environment and configuration sanity checks with optional hostility scoring",
-          inputSchema: {
-            type: "object",
-            properties: {
-              environmentQuality: {
-                type: "boolean",
-                description: "Include environmental hostility scoring in the check",
-                default: false,
-              },
-            },
-          },
+          inputSchema: { ...WorkspaceDoctorArgsJsonSchema, type: "object" },
         },
         {
           name: "merge_order",
@@ -1233,11 +1227,11 @@ function createServer(options?: McpServerOptions): Server {
         return await handleProfileResolve(args as ProfileResolveArgs);
 
       case "doctor":
-        return await handleDoctor(args as { environmentQuality?: boolean });
+        return await handleDoctor(args, serverBaseDir);
 
       // Core tools
       case "health":
-        return await handleHealth(args as { includeMetrics?: boolean });
+        return await handleHealth(args as { includeMetrics?: boolean }, serverBaseDir);
 
       case "config_show":
         return await handleConfigShow(args as { key?: string });
@@ -2031,11 +2025,16 @@ async function handleProfileResolve(
 /**
  * Handle health check
  */
-async function handleHealth(args: {
-  includeMetrics?: boolean;
-}): Promise<{ content: [{ type: "text"; text: string }] }> {
+async function handleHealth(
+  args: {
+    includeMetrics?: boolean;
+  },
+  diagnosticBase = path.resolve(process.cwd())
+): Promise<{
+  content: [{ type: "text"; text: string }];
+}> {
   const doctor = await new WorkspaceDiagnosticsService().run({
-    baseDir: process.cwd(),
+    baseDir: diagnosticBase,
     environmentQuality: args.includeMetrics,
   });
 
@@ -2589,12 +2588,14 @@ async function handleStatus(args: {
 /**
  * Handle doctor tool - Environment and configuration sanity checks
  */
-async function handleDoctor(args: {
-  environmentQuality?: boolean;
-}): Promise<{ content: [{ type: "text"; text: string }] }> {
+async function handleDoctor(
+  raw: unknown,
+  diagnosticBase = path.resolve(process.cwd())
+): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
+    const args = parseWorkspaceDoctorArgs(raw);
     const checks = await new WorkspaceDiagnosticsService().run({
-      baseDir: process.cwd(),
+      baseDir: diagnosticBase,
       environmentQuality: args.environmentQuality,
     });
 
@@ -2609,7 +2610,9 @@ async function handleDoctor(args: {
   } catch (error) {
     if (error instanceof WorkspaceConfigServiceError) {
       throwMcpAXError(
-        ErrorCode.InternalError,
+        error.code === "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID"
+          ? ErrorCode.InvalidParams
+          : ErrorCode.InternalError,
         mcpToolError(error.code, error.message, { tool: "doctor" })
       );
     }

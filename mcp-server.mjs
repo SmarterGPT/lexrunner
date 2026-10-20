@@ -28,6 +28,7 @@ const config = {
   profileDir: process.env.LEX_PR_PROFILE_DIR,
   allowMutations: process.env.ALLOW_MUTATIONS === "true",
 };
+const serverBaseDir = resolve(process.cwd());
 
 console.error(`[lexrunner] Starting MCP server`);
 console.error(
@@ -61,7 +62,7 @@ function sharedServiceError(error, tool, fallbackCode) {
             details: error.source ? { source: error.source } : undefined,
           }
         : {};
-    return new Error(
+    const wrapped = new Error(
       core.canonicalJSONStringify(
         core.mcpToolError(error.code, error.message || "Shared service failed", {
           tool,
@@ -69,6 +70,8 @@ function sharedServiceError(error, tool, fallbackCode) {
         })
       )
     );
+    wrapped.code = error.code;
+    return wrapped;
   }
   return new Error(
     core.canonicalJSONStringify(
@@ -697,7 +700,7 @@ const tools = {
     call: async (args) => {
       try {
         const doctor = await new core.WorkspaceDiagnosticsService().run({
-          baseDir: process.cwd(),
+          baseDir: serverBaseDir,
           environmentQuality: args.includeMetrics,
         });
         const health = {
@@ -1046,15 +1049,13 @@ const tools = {
 
   doctor: {
     description: "Run environment and configuration sanity checks",
-    inputSchema: {
-      type: "object",
-      properties: {},
-    },
+    inputSchema: core.WorkspaceDoctorArgsJsonSchema,
     call: async (args) => {
       try {
+        const parsed = core.parseWorkspaceDoctorArgs(args);
         const checks = await new core.WorkspaceDiagnosticsService().run({
-          baseDir: process.cwd(),
-          environmentQuality: args.environmentQuality,
+          baseDir: serverBaseDir,
+          environmentQuality: parsed.environmentQuality,
         });
 
         return {
@@ -1283,7 +1284,7 @@ async function handleRequest(request) {
           jsonrpc: "2.0",
           id,
           error: {
-            code: -32603,
+            code: error?.code === "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID" ? -32602 : -32603,
             message: error.message,
           },
         };

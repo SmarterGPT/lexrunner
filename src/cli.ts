@@ -1407,9 +1407,18 @@ export type {
 } from "./application/merge-application-service.js";
 export {
   ConfigurationQueryService,
+  parseWorkspaceDoctorArgs,
   WorkspaceConfigServiceError,
+  WorkspaceDoctorArgsJsonSchema,
+  WorkspaceDoctorArgsSchema,
   WorkspaceDiagnosticsService,
   WorkspaceInitializationService,
+} from "./application/workspace-config-services.js";
+export type {
+  BoundedDoctorResult,
+  ParsedWorkspaceDoctorArgs,
+  WorkspaceConfigFailureCode,
+  WorkspaceDoctorArgs,
 } from "./application/workspace-config-services.js";
 export {
   INTEGRATION_RECORD_REMOVAL_VERSION,

@@ -295,14 +295,21 @@ lex-pr doctor --json
 
 ```json
 {
+  "diagnosticBase": "/path/to/repository",
   "hasErrors": false,
   "issues": [],
   "suggestions": [],
-  "nodejs": { "status": "ok", "current": "v20.10.0" },
+  "configuration": { "profileDir": "/path/to/repository/.smartergpt" },
+  "nodejs": { "status": "ok", "current": "v24.10.0" },
   "git": { "status": "ok", "isClean": true, "currentBranch": "main" },
   "github": { "detected": true, "authenticated": true }
 }
 ```
+
+MCP `doctor` accepts only optional boolean `environmentQuality` (default `false`). Unknown
+properties and wrong-typed values return invalid parameters. It diagnoses the server startup
+working directory rather than accepting a per-call root override; the result exposes both
+`diagnosticBase` and `configuration.profileDir` so callers can verify the inspected roots.
 
 ### 4. Compute Merge Order
 

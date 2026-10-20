@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ConfigurationQueryService,
   evaluateNodeRuntime,
+  parseWorkspaceDoctorArgs,
   WorkspaceConfigServiceError,
+  WorkspaceDoctorArgsJsonSchema,
   WorkspaceDiagnosticsService,
   WorkspaceInitializationService,
 } from "../../src/application/workspace-config-services.js";
@@ -102,13 +104,59 @@ describe("workspace/config application services", () => {
 
   it("accepts a matching major-only Node pin in bounded diagnostics", async () => {
     const root = fixtureRoot();
+    fs.mkdirSync(path.join(root, ".smartergpt"));
+    fs.writeFileSync(path.join(root, ".smartergpt", "profile.yml"), "role: development\n");
     fs.writeFileSync(path.join(root, ".nvmrc"), `${process.versions.node.split(".")[0]}\n`);
-    const result = await new WorkspaceDiagnosticsService().run({ baseDir: root });
+    const result = await withoutProfileEnvironment(() =>
+      new WorkspaceDiagnosticsService().run({ baseDir: root })
+    );
 
     expect(result).toMatchObject({
       contract: "bounded-ax-v1",
+      diagnosticBase: path.resolve(root),
+      configuration: { profileDir: path.join(root, ".smartergpt") },
       nodejs: { status: "ok", current: process.version, required: ">=24" },
     });
+  });
+
+  it("publishes and enforces one bounded strict doctor argument contract", () => {
+    expect(WorkspaceDoctorArgsJsonSchema).toMatchObject({
+      type: "object",
+      properties: {
+        environmentQuality: { type: "boolean", default: false },
+      },
+      additionalProperties: false,
+    });
+    expect(WorkspaceDoctorArgsJsonSchema).not.toHaveProperty("required");
+    expect(parseWorkspaceDoctorArgs(undefined)).toEqual({ environmentQuality: false });
+    expect(parseWorkspaceDoctorArgs({})).toEqual({ environmentQuality: false });
+    expect(parseWorkspaceDoctorArgs({ environmentQuality: true })).toEqual({
+      environmentQuality: true,
+    });
+
+    for (const invalid of [
+      { repoRoot: "ignored" },
+      { environmentQuality: "true" },
+      JSON.parse('{"__proto__":"never-print-this"}'),
+      null,
+    ]) {
+      expect(() => parseWorkspaceDoctorArgs(invalid)).toThrowError(
+        expect.objectContaining<Partial<WorkspaceConfigServiceError>>({
+          code: "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID",
+        })
+      );
+    }
+
+    const hostileName = "\0".repeat(10_000);
+    let error: unknown;
+    try {
+      parseWorkspaceDoctorArgs({ [hostileName]: "never-print-this" });
+    } catch (problem) {
+      error = problem;
+    }
+    expect(error).toMatchObject({ code: "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID" });
+    expect(Buffer.byteLength((error as Error).message, "utf8")).toBeLessThan(1024);
+    expect((error as Error).message).not.toContain("never-print-this");
   });
 
   it("interprets major-only pins while enforcing and reporting the package floor", () => {
@@ -131,4 +179,19 @@ function fixtureRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "lexrunner-workspace-service-"));
   roots.push(root);
   return root;
+}
+
+async function withoutProfileEnvironment<T>(operation: () => Promise<T>): Promise<T> {
+  const previousPrimary = process.env.LEX_PR_PROFILE_DIR;
+  const previousAlias = process.env.LEXRUNNER_PROFILE_DIR;
+  delete process.env.LEX_PR_PROFILE_DIR;
+  delete process.env.LEXRUNNER_PROFILE_DIR;
+  try {
+    return await operation();
+  } finally {
+    if (previousPrimary === undefined) delete process.env.LEX_PR_PROFILE_DIR;
+    else process.env.LEX_PR_PROFILE_DIR = previousPrimary;
+    if (previousAlias === undefined) delete process.env.LEXRUNNER_PROFILE_DIR;
+    else process.env.LEXRUNNER_PROFILE_DIR = previousAlias;
+  }
 }
