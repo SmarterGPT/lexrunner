@@ -101,6 +101,20 @@ describe("GateExecutionService", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("rejects pattern-like artifact declarations before execution or artifact creation", async () => {
+    const parent = temporaryArtifactDirectory();
+    const artifactDir = join(parent, "must-not-be-created");
+    const execute = vi.fn(async () => undefined);
+    const inputPlan = plan(["one"]);
+    inputPlan.items[0]!.gates[0]!.artifacts = ["reports/**/*.json"];
+
+    await expect(
+      new GateExecutionService(execute).run({ plan: inputPlan, artifactDir })
+    ).rejects.toMatchObject({ code: "GATE_ARTIFACT_DECLARATION_UNSUPPORTED" });
+    expect(execute).not.toHaveBeenCalled();
+    expect(existsSync(artifactDir)).toBe(false);
+  });
+
   it.each([0, -1, 1.5, 86_400_001, Number.NaN])(
     "rejects invalid operation timeout %s before execution",
     async (timeoutMs) => {

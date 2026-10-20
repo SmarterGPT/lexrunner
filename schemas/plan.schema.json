@@ -279,7 +279,8 @@
                       "default": [],
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Exact literal artifact path; glob, brace, and extglob syntax is unsupported"
                       }
                     },
                     "input": {

@@ -64,6 +64,10 @@ export const PlanItem = z
 - Schema is strict - no additional properties allowed
 - **Note**: Current `schemas/plan.schema.json` incorrectly requires `repo`/`branch` fields that don't exist in the Zod schema
 
+Gate artifact declarations identify one exact path each. Durable execution rejects empty,
+NUL-containing, glob, brace, and extglob declarations before admission. Absolute paths remain
+supported; relative paths resolve against the gate execution directory.
+
 ### Gate Schema
 
 ```typescript
@@ -75,6 +79,7 @@ export const Gate = z
     env: z.record(z.string()).default({}),
     runtime: z.enum(["local", "container", "ci-service"]).default("local"),
     container: ContainerSpec.optional(),
+    // Exact literal paths only; glob, brace, and extglob syntax is not expanded.
     artifacts: z.array(z.string()).default([]),
   })
   .strict();
