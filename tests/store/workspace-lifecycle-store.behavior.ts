@@ -12,6 +12,7 @@ import { AgentWorkFanoutService } from "../../src/runs/agent-work-fanout-service
 import type {
   ControllerLease,
   ControllerLeaseCredential,
+  JsonValue,
 } from "../../src/store/coordination-store.js";
 import type {
   WorkspaceLifecycleStore,
@@ -149,6 +150,12 @@ function credential(lease: ControllerLease): ControllerLeaseCredential {
   };
 }
 
+function expectOwnProtoVersion(value: JsonValue, expected: number): void {
+  const metadata = (value as Record<string, JsonValue>).metadata as Record<string, JsonValue>;
+  expect(Object.hasOwn(metadata, "__proto__")).toBe(true);
+  expect(metadata["__proto__"]).toEqual({ version: expected });
+}
+
 export function runWorkspaceLifecycleStoreBehaviorTests(
   factory: WorkspaceLifecycleHarnessFactory
 ): void {
@@ -224,6 +231,46 @@ export function runWorkspaceLifecycleStoreBehaviorTests(
       });
       await bindEnvelope();
     }
+
+    it("preserves special JSON keys in transition details and mutation replay identity", async () => {
+      await createAttempt();
+      const details = JSON.parse(
+        '{"kind":"operator-note","metadata":{"__proto__":{"version":1}}}'
+      ) as JsonValue;
+      const input = {
+        runId: "run-1",
+        controller,
+        expectedRunRevision: 0,
+        mutationId: "special-transition-details",
+        now: T1,
+        attemptId: "attempt-1",
+        expectedAttemptRevision: 0,
+        status: "cancelled" as const,
+        details,
+      };
+
+      const first = await store.transitionAttempt(input);
+      expect(first).toMatchObject({ updated: true, idempotentReplay: false });
+      if (!first.updated) return;
+      const firstDetails = (first.event.payload as Record<string, JsonValue>).details!;
+      expectOwnProtoVersion(firstDetails, 1);
+      const events = await store.listWorkspaceLifecycleEvents("run-1");
+      expect(events).toHaveLength(2);
+      const retainedDetails = (events[1]!.payload as Record<string, JsonValue>).details!;
+      expectOwnProtoVersion(retainedDetails, 1);
+
+      const retry = await store.transitionAttempt(input);
+      expect(retry).toMatchObject({ updated: true, idempotentReplay: true });
+      if (!retry.updated) return;
+      expectOwnProtoVersion((retry.event.payload as Record<string, JsonValue>).details!, 1);
+
+      const changedDetails = JSON.parse(
+        '{"kind":"operator-note","metadata":{"__proto__":{"version":2}}}'
+      ) as JsonValue;
+      await expect(
+        store.transitionAttempt({ ...input, details: changedDetails })
+      ).resolves.toMatchObject({ updated: false, reason: "mutation_conflict" });
+    });
 
     it("rejects blind work retries and atomically preserves a meaningful retry delta", async () => {
       await createAttempt();

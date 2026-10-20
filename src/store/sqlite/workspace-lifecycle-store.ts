@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ZodType } from "zod";
 import { canonicalJSONStringify } from "../../util/canonicalJson.js";
+import { coordinationJSONStringify } from "../coordination-json.js";
 import { computeCanonicalHash } from "../../schemas/task-contract.js";
 import { evaluateStrictAgentWorkFanIn } from "../../agent-work-fanin-policy.js";
 import {
@@ -17,7 +18,7 @@ import {
   validateAgentEngineVerificationV2PacketReferences,
   validateAgentTaskReceiptV2PacketReferences,
 } from "../../schemas/agent-work.js";
-import { calculateExpiry, cloneJsonValue, parseInstant } from "../coordination-store.js";
+import { calculateExpiry, parseInstant } from "../coordination-store.js";
 import type { JsonValue } from "../coordination-store.js";
 import {
   AgentTaskReceiptOutcome as AgentTaskReceiptOutcomeSchema,
@@ -3448,7 +3449,7 @@ export class SqliteWorkspaceLifecycleStore
       if (parseInstant(coordination.expiresAt!, "expiresAt") <= parseInstant(input.now, "now"))
         return this.failure("lease_expired");
 
-      const fingerprint = canonicalJSONStringify(input as unknown as JsonValue);
+      const fingerprint = coordinationJSONStringify(input as unknown as JsonValue);
       const workerClaim = this.db
         .prepare(
           `SELECT 1 FROM worker_session_mutations WHERE runId = ? AND mutationId = ?
@@ -4356,7 +4357,7 @@ function bindEvidence(
 }
 
 function json(value: unknown): string {
-  return canonicalJSONStringify(cloneJsonValue(value as JsonValue));
+  return coordinationJSONStringify(value as JsonValue);
 }
 
 function toEvent(row: EventRow): WorkspaceLifecycleEvent {

@@ -7,6 +7,7 @@
  */
 
 export type JsonPrimitive = string | number | boolean | null;
+/** Stores preserve every JSON-representable own string key, including `__proto__`. */
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
 export interface ControllerLease {
