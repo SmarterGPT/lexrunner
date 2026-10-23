@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import YAML from "yaml";
+import { z } from "zod";
 
 import {
   bootstrapWorkspace,
@@ -24,6 +25,7 @@ const SENSITIVE_KEY = /(token|secret|password|credential|private[_-]?key|auth)/i
 export type WorkspaceConfigFailureCode =
   | "WORKSPACE_INIT_FAILED"
   | "WORKSPACE_DIAGNOSTICS_FAILED"
+  | "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID"
   | "CONFIG_KEY_NOT_FOUND"
   | "CONFIG_RESULT_LIMIT_EXCEEDED"
   | "PROFILE_RESOLUTION_FAILED";
@@ -73,6 +75,7 @@ export interface BoundedProfileResult {
 
 export interface BoundedDoctorResult {
   contract: "bounded-ax-v1";
+  diagnosticBase: string;
   hasErrors: boolean;
   issues: string[];
   suggestions: string[];
@@ -88,6 +91,43 @@ export interface BoundedDoctorResult {
   github?: { detected: boolean; authenticated?: boolean; user?: string; error?: string };
   git?: { status: "ok" | "error"; isClean?: boolean; currentBranch?: string; error?: string };
   environmentQuality?: ReturnType<typeof runEnvironmentQualityCheck>;
+}
+
+export const WorkspaceDoctorArgsSchema = z.strictObject({
+  environmentQuality: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Include environmental hostility scoring in the check"),
+});
+export type WorkspaceDoctorArgs = z.input<typeof WorkspaceDoctorArgsSchema>;
+export type ParsedWorkspaceDoctorArgs = z.output<typeof WorkspaceDoctorArgsSchema>;
+export const WorkspaceDoctorArgsJsonSchema = z.toJSONSchema(WorkspaceDoctorArgsSchema, {
+  io: "input",
+});
+
+export function parseWorkspaceDoctorArgs(value: unknown): ParsedWorkspaceDoctorArgs {
+  const normalized = value === undefined ? {} : value;
+  const unsupported =
+    normalized !== null && typeof normalized === "object" && !Array.isArray(normalized)
+      ? Object.keys(normalized)
+          .filter((key) => key !== "environmentQuality")
+          .sort()
+      : [];
+  if (unsupported.length) {
+    throw new WorkspaceConfigServiceError(
+      "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID",
+      `doctor accepts only optional boolean environmentQuality; unsupported properties: ${boundedArgumentNames(unsupported)}`
+    );
+  }
+
+  const parsed = WorkspaceDoctorArgsSchema.safeParse(normalized);
+  if (parsed.success) return parsed.data;
+
+  throw new WorkspaceConfigServiceError(
+    "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID",
+    "doctor accepts only optional boolean environmentQuality"
+  );
 }
 
 /** Transport-neutral owner for deterministic workspace initialization. */
@@ -116,13 +156,14 @@ export class WorkspaceDiagnosticsService {
     baseDir: string;
     environmentQuality?: boolean;
   }): Promise<BoundedDoctorResult> {
+    const diagnosticBase = path.resolve(input.baseDir);
     const issues: string[] = [];
     const suggestions: string[] = [];
     let hasErrors = false;
     let nodejs: BoundedDoctorResult["nodejs"];
     let expectedPin: string | undefined;
     try {
-      expectedPin = fs.readFileSync(path.join(input.baseDir, ".nvmrc"), "utf8").trim();
+      expectedPin = fs.readFileSync(path.join(diagnosticBase, ".nvmrc"), "utf8").trim();
     } catch {
       suggestions.push("Consider adding .nvmrc for Node.js version consistency");
     }
@@ -135,10 +176,10 @@ export class WorkspaceDiagnosticsService {
       );
     }
 
-    const configuration = bootstrapWorkspace(input.baseDir);
+    const configuration = bootstrapWorkspace(diagnosticBase);
     let github: BoundedDoctorResult["github"];
     try {
-      const api = await createGitHubAPI();
+      const api = await createGitHubAPI(diagnosticBase);
       if (api) {
         const auth = await api.checkAuth();
         github = {
@@ -155,7 +196,7 @@ export class WorkspaceDiagnosticsService {
 
     let git: BoundedDoctorResult["git"];
     try {
-      const operations = createGitOperations(input.baseDir);
+      const operations = createGitOperations(diagnosticBase);
       git = {
         status: "ok",
         isClean: await operations.isClean(),
@@ -170,16 +211,24 @@ export class WorkspaceDiagnosticsService {
 
     return boundedResult({
       contract: "bounded-ax-v1",
+      diagnosticBase: bounded(diagnosticBase, MAX_PATH_BYTES),
       hasErrors,
       issues: boundedStrings(issues),
       suggestions: boundedStrings(suggestions),
       nodejs,
       configuration,
-      projectType: bounded(detectProjectType(input.baseDir), MAX_LABEL_BYTES),
+      projectType: bounded(detectProjectType(diagnosticBase), MAX_LABEL_BYTES),
       environmentSuggestions: boundedStrings(getEnvironmentSuggestions()),
       github,
       git,
-      ...(input.environmentQuality ? { environmentQuality: runEnvironmentQualityCheck() } : {}),
+      ...(input.environmentQuality
+        ? {
+            environmentQuality: runEnvironmentQualityCheck({
+              cwd: diagnosticBase,
+              profileDir: configuration.profileDir,
+            }),
+          }
+        : {}),
     });
   }
 }
@@ -389,6 +438,23 @@ function boundedStrings(values: string[]): string[] {
     );
   }
   return values.map((value) => bounded(value, MAX_PATH_BYTES));
+}
+
+function boundedArgumentNames(names: string[]): string {
+  const displayed = names.slice(0, 16).map((name) => JSON.stringify(boundedPrefix(name, 128)));
+  return boundedPrefix(
+    `${displayed.join(", ")}${names.length > displayed.length ? `, … (+${names.length - displayed.length})` : ""}`,
+    768
+  );
+}
+
+function boundedPrefix(value: string, maxBytes: number): string {
+  let output = "";
+  for (const character of value) {
+    if (Buffer.byteLength(output + character, "utf8") > maxBytes) return output + "…";
+    output += character;
+  }
+  return output;
 }
 
 function bounded(value: string, maxBytes: number): string {

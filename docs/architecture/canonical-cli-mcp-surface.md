@@ -169,6 +169,11 @@ listed in the matrix own implementation gaps.
   explicit authority.
 - Workspace initialization, diagnostics, configuration queries, and profile resolution now share
   bounded application services across CLI and MCP. Interactive initialization remains CLI-only.
+  MCP `doctor` accepts only the optional boolean `environmentQuality`; unknown root selectors and
+  wrong-typed values fail as invalid parameters. Diagnostics are rooted at the server startup
+  working directory, which is reported as `diagnosticBase`, while `configuration.profileDir`
+  reports the resolved profile root. Start the server in another repository to diagnose it; there
+  is no per-call root selector.
 - The old AX page lists MCP tools such as `plan_validate`, `fanout_analyze`, and
   ADR-007 task tools that are not published by `mcp-server.mjs`.
 - `health` delegates to `doctor`, emits a replacement warning, and is scheduled for removal in

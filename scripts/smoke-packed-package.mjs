@@ -449,6 +449,33 @@ async function smokeMcp(binPath, cwd, expectedVersion) {
         }
         const { tools } = await client.listTools();
         if (tools.length === 0) throw new Error("Packed MCP returned no tools");
+        const doctor = tools.find(({ name }) => name === "doctor");
+        const doctorProperties = Object.keys(doctor?.inputSchema?.properties ?? {}).sort();
+        if (
+          !doctor ||
+          doctor.inputSchema?.type !== "object" ||
+          doctor.inputSchema?.additionalProperties !== false ||
+          doctorProperties.length !== 1 ||
+          doctorProperties[0] !== "environmentQuality" ||
+          doctor.inputSchema.properties.environmentQuality?.type !== "boolean" ||
+          doctor.inputSchema.properties.environmentQuality?.default !== false ||
+          ("required" in doctor.inputSchema && doctor.inputSchema.required?.length !== 0)
+        ) {
+          throw new Error("Packed MCP doctor argument schema does not match the strict contract");
+        }
+        let invalidDoctorError;
+        try {
+          await client.callTool({ name: "doctor", arguments: { repoRoot: "private-value" } });
+        } catch (error) {
+          invalidDoctorError = error;
+        }
+        if (
+          invalidDoctorError?.code !== -32602 ||
+          !invalidDoctorError.message.includes("WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID") ||
+          invalidDoctorError.message.includes("private-value")
+        ) {
+          throw new Error("Packed MCP doctor did not reject an unknown root selector safely");
+        }
         const publishedToolNames = new Set(tools.map(({ name }) => name));
         for (const name of requiredAttemptTools) {
           if (!publishedToolNames.has(name))

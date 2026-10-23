@@ -72,6 +72,9 @@ bash lexrunner-launcher.sh
 ```
 
 The server communicates via stdio using the MCP JSON-RPC 2.0 protocol, aligned with LexBrain and LexMap.
+`doctor` diagnoses the server's startup working directory; start the server in the repository you
+intend to inspect. `LEX_PR_PROFILE_DIR` selects its profile root and is not a per-call repository
+override.
 
 ### Environment Configuration
 

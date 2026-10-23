@@ -534,9 +534,9 @@ export class GitHubAPIError extends Error {
 /**
  * Create GitHub API client from environment and config
  */
-export async function createGitHubAPI(): Promise<GitHubAPI | null> {
-  // Try to detect GitHub repository from current directory
-  const repoInfo = await detectGitHubRepository();
+export async function createGitHubAPI(baseDir: string = process.cwd()): Promise<GitHubAPI | null> {
+  // Try to detect GitHub repository from the caller's diagnostic or working directory.
+  const repoInfo = await detectGitHubRepository(baseDir);
   if (!repoInfo) {
     return null;
   }
@@ -551,9 +551,11 @@ export async function createGitHubAPI(): Promise<GitHubAPI | null> {
 /**
  * Detect GitHub repository information from git remote
  */
-async function detectGitHubRepository(): Promise<{ owner: string; repo: string } | null> {
+async function detectGitHubRepository(
+  baseDir: string
+): Promise<{ owner: string; repo: string } | null> {
   try {
-    const git = simpleGit();
+    const git = simpleGit(baseDir);
     const remotes = await git.getRemotes(true);
 
     // Look for origin remote first, then any GitHub remote
