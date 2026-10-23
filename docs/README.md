@@ -194,7 +194,7 @@ New to LexRunner? Start here:
   human publication gate
 - **[LexRunner 1.2.0 release decision](./releases/1.2.0.md)** - Compatibility inventory, semver,
   maturity boundary, issue disposition, and required evidence
-- **[Release and private npm publishing](./release-process.md)** - Scoped package, human npm auth,
+- **[Release and public npm publishing](./release-process.md)** - Scoped package, signed-tag OIDC,
   candidate validation, LexSona boundary, and native Windows consumer proof
 
 ## 📖 Reference

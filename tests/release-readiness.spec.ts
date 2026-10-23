@@ -177,6 +177,12 @@ describe("LexRunner current release readiness", () => {
     ]);
     expect(stableActionUses?.every((uses) => /@[0-9a-f]{40}$/.test(uses))).toBe(true);
     expect(stableReleaseJob.steps?.[0]?.with?.["persist-credentials"]).toBe(false);
+    expect(stableReleaseJob.steps).toContainEqual(
+      expect.objectContaining({
+        name: "Activate qualified package-policy npm",
+        run: "npm install --global npm@11.16.0 --ignore-scripts",
+      })
+    );
     expect(stableReleaseJob.permissions?.["id-token"]).toBe("write");
     expect(stableReleaseJob.permissions?.contents).toBe("write");
     const oidcJobs = Object.entries(workflow.jobs)
@@ -191,6 +197,9 @@ describe("LexRunner current release readiness", () => {
     expect(publishingJobs).toEqual(["stable-release"]);
     expect(releaseWorkflow).not.toContain("NODE_AUTH_TOKEN");
     expect(releaseWorkflow).not.toContain("secrets.NPM_TOKEN");
+    expect(releaseWorkflow).toContain("Verify the public npm registry");
+    expect(releaseWorkflow).not.toContain("Verify the private registry");
+    expect(releaseWorkflow).toContain("<reviewed-release-commit>");
     expect(releaseProcess).toContain("npm trust github @smartergpt/lexrunner --file release.yml");
     expect(releaseProcess).toContain("vX.Y.Z");
     expect(releaseProcess).toContain("runs only for push events");

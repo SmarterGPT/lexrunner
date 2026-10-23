@@ -328,17 +328,28 @@ function main(): void {
 
   // Output next steps
   console.log("📋 Next steps:\n");
-  console.log("1. Review the changes:");
-  console.log("   git diff CHANGELOG.md package.json\n");
-  console.log("2. Commit the changes:");
-  console.log(`   git add CHANGELOG.md package.json`);
-  console.log(`   git commit -m "chore(release): prepare ${nextVersion}"\n`);
-  console.log("3. Create a signed tag:");
-  console.log(`   git tag -s v${nextVersion} -m "Release ${nextVersion}"\n`);
-  console.log("4. Push the changes and tag:");
-  console.log(`   git push origin main`);
+  console.log("1. Curate the changelog and release notes, then review every candidate change:");
+  console.log("   git status --short");
+  console.log(
+    "   git diff -- CHANGELOG.md package.json package-lock.json README.md docs/AX.md docs/releases\n"
+  );
+  console.log("2. Commit the complete candidate on a release branch and open a review PR:");
+  console.log(
+    "   git add -- CHANGELOG.md package.json package-lock.json README.md docs/AX.md docs/releases"
+  );
+  console.log(`   git commit -S -m "chore(release): prepare ${nextVersion}"`);
+  console.log("   git verify-commit HEAD\n");
+  console.log(
+    "3. After that exact signed commit is reviewed, green, merged, and contained in main, tag it:"
+  );
+  console.log(
+    `   git tag -s v${nextVersion} <reviewed-release-commit> -m "Release ${nextVersion}"`
+  );
+  console.log(`   git tag -v v${nextVersion}`);
   console.log(`   git push origin v${nextVersion}\n`);
-  console.log("5. Create a GitHub release from the tag\n");
+  console.log(
+    "4. Wait for the signed-tag workflow to publish through npm OIDC and create the GitHub release\n"
+  );
 }
 
 // Run main function
