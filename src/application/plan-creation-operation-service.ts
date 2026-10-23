@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -19,9 +20,9 @@ import {
   assertPlanRepositoryBinding,
   assertRequestedRepositoryBinding,
   RepositoryBindingError,
+  resolveExecutionRoot,
   type RepositoryBindingObservation,
 } from "./repository-binding.js";
-import { resolveGateRepositoryRoot } from "./gate-candidate-identity.js";
 
 const pathArgument = z.string().min(1).max(4096);
 const boundedLabel = z.string().min(1).max(512);
@@ -168,7 +169,7 @@ export class PlanCreationOperationService {
         });
         repositoryRoot = repository.repositoryRoot;
       } else {
-        repositoryRoot = resolveGateRepositoryRoot(requestedRoot);
+        repositoryRoot = resolveExecutionRoot(requestedRoot, false);
         try {
           repository = assertRequestedRepositoryBinding({ repoRoot: repositoryRoot });
         } catch (error) {
@@ -220,12 +221,7 @@ export class PlanCreationOperationService {
       snapshot: path.join(outDir, "snapshot.md"),
       routingReceipt: path.join(outDir, "routing-receipt.json"),
     };
-    if (!distinctOutputPaths(Object.values(files))) {
-      throw new PlanCreationOperationError(
-        "PLAN_CREATION_ARGUMENTS_INVALID",
-        "Plan, snapshot and routing receipt outputs must use distinct paths"
-      );
-    }
+    assertDistinctOutputPaths(Object.values(files));
 
     if (fromGithub && request.requireGitHubToken) {
       const token = args.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -347,10 +343,55 @@ export function writePlanCreationArtifacts(result: PlanCreationOperationResult):
     const resolved = resolveProfile(profile.root, result.routing.resolvedRepository.root);
     validateWriteOperation(resolved.path, resolved.manifest.role, "write plan artifacts");
   }
+  // Reobserve aliases immediately before the first mutation. A caller may have
+  // created links after planning; never let sequential writes overwrite one
+  // artifact through another physical file.
+  assertDistinctOutputPaths(Object.values(result.files));
   fs.mkdirSync(output, { recursive: true });
-  fs.writeFileSync(result.files.plan, canonicalJSONStringify(result.plan));
-  fs.writeFileSync(result.files.snapshot, result.snapshot);
-  fs.writeFileSync(result.files.routingReceipt, canonicalJSONStringify(result.routing));
+  // mkdir may make a previously missing output path observable, or an
+  // untrusted peer may have populated the directory while it was created.
+  // Recheck after directory creation and immediately before the first write.
+  const destinations = assertDistinctOutputPaths(Object.values(result.files));
+  const artifacts = [
+    { destination: destinations[0]!.writePath, content: canonicalJSONStringify(result.plan) },
+    { destination: destinations[1]!.writePath, content: result.snapshot },
+    {
+      destination: destinations[2]!.writePath,
+      content: canonicalJSONStringify(result.routing),
+    },
+  ];
+  const staged: string[] = [];
+  try {
+    // Stage beside each destination with exclusive creation, then replace the
+    // admitted directory entry. A final-component link introduced after the
+    // second observation is replaced rather than followed into another file.
+    for (const artifact of artifacts) {
+      const temporaryPath = path.join(
+        path.dirname(artifact.destination),
+        `.${path.basename(artifact.destination)}.lexrunner-${randomUUID()}.tmp`
+      );
+      fs.writeFileSync(temporaryPath, artifact.content, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+        flush: true,
+      });
+      staged.push(temporaryPath);
+    }
+    for (let index = 0; index < artifacts.length; index += 1) {
+      fs.renameSync(staged[index]!, artifacts[index]!.destination);
+      staged[index] = "";
+    }
+  } finally {
+    for (const temporaryPath of staged) {
+      if (!temporaryPath) continue;
+      try {
+        fs.unlinkSync(temporaryPath);
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
+      }
+    }
+  }
 }
 
 function isWithin(parent: string, child: string): boolean {
@@ -358,10 +399,90 @@ function isWithin(parent: string, child: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function distinctOutputPaths(paths: string[]): boolean {
-  const normalized = paths.map((value) => {
-    const absolute = path.normalize(path.resolve(value));
-    return process.platform === "win32" ? absolute.toLowerCase() : absolute;
-  });
-  return new Set(normalized).size === normalized.length;
+interface OutputPathObservation {
+  canonicalPath: string;
+  writePath: string;
+  identity?: string;
+}
+
+function assertDistinctOutputPaths(paths: string[]): OutputPathObservation[] {
+  try {
+    const observations = paths.map(observeOutputPath);
+    const canonicalPaths = observations.map(({ canonicalPath }) => canonicalPath);
+    const existingIdentities = observations
+      .map(({ identity }) => identity)
+      .filter((identity): identity is string => identity !== undefined);
+    if (
+      new Set(canonicalPaths).size !== canonicalPaths.length ||
+      new Set(existingIdentities).size !== existingIdentities.length
+    ) {
+      throw new Error("output alias collision");
+    }
+    return observations;
+  } catch {
+    throw new PlanCreationOperationError(
+      "PLAN_CREATION_ARGUMENTS_INVALID",
+      "Plan, snapshot and routing receipt outputs must use distinct physical paths"
+    );
+  }
+}
+
+function observeOutputPath(value: string): OutputPathObservation {
+  const absolute = path.resolve(value);
+  let entry: fs.BigIntStats | undefined;
+  try {
+    entry = fs.lstatSync(absolute, { bigint: true });
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+  if (entry) {
+    // Artifact writes must never follow a link or mutate a file shared with an
+    // external path. Requiring an ordinary single-link file also excludes
+    // directories, devices and other non-file targets.
+    if (entry.isSymbolicLink() || !entry.isFile() || entry.nlink !== 1n) {
+      throw new Error("unsafe output target");
+    }
+    const writePath = fs.realpathSync(absolute);
+    const canonicalPath = normalizePhysicalPath(writePath);
+    const info = fs.statSync(writePath, { bigint: true });
+    if (!info.isFile() || info.nlink !== 1n) {
+      throw new Error("unsafe output target");
+    }
+    return {
+      canonicalPath,
+      writePath,
+      identity: `${info.dev.toString()}:${info.ino.toString()}`,
+    };
+  }
+
+  const remaining: string[] = [];
+  let ancestor = absolute;
+  for (;;) {
+    try {
+      fs.lstatSync(ancestor);
+      break;
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      remaining.unshift(path.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+  const writePath = path.join(fs.realpathSync(ancestor), ...remaining);
+  return { canonicalPath: normalizePhysicalPath(writePath), writePath };
+}
+
+function normalizePhysicalPath(value: string): string {
+  const normalized = path.normalize(path.resolve(value));
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
 }

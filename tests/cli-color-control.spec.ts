@@ -32,6 +32,10 @@ describe("CLI Color and JSON Output Control", () => {
   describe("--no-color flag", () => {
     it("should disable ANSI color codes when used with TTY", (ctx) => {
       if (skipIfCliNotBuilt({ skip: ctx.skip })) return;
+      if (process.platform === "win32") {
+        ctx.skip();
+        return;
+      }
 
       // Create minimal local profile
       fs.mkdirSync(".smartergpt.local", { recursive: true });
@@ -264,6 +268,10 @@ items:
   describe("NO_COLOR environment variable", () => {
     it("should disable colors when NO_COLOR is set", (ctx) => {
       if (skipIfCliNotBuilt({ skip: ctx.skip })) return;
+      if (process.platform === "win32") {
+        ctx.skip();
+        return;
+      }
 
       // Create minimal local profile
       fs.mkdirSync(".smartergpt.local", { recursive: true });

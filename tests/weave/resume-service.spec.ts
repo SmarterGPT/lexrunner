@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +27,83 @@ afterEach(async () => {
 });
 
 describe("persisted merge-weave resume service", () => {
+  it("does not create a missing checkpoint directory during preflight", async () => {
+    const root = await sandbox();
+    const checkpointDir = join(root, ".lexrunner", "checkpoints");
+    const validate = vi.fn(async () => ({ valid: true as const }));
+
+    await expect(
+      resumePersistedWeave({
+        runId: "missing-run",
+        checkpointDir,
+        driver: {
+          validate,
+          observe: async () => ({ state: "pending" }),
+          execute: async () => ({ completed: true }),
+        },
+      })
+    ).resolves.toMatchObject({ ok: false, code: "checkpoint_invalid" });
+
+    expect(validate).not.toHaveBeenCalled();
+    expect(existsSync(checkpointDir)).toBe(false);
+  });
+
+  it("uses legacy driver validation before creating an execution lease", async () => {
+    const checkpointDir = await sandbox();
+    await saveCheckpoint(checkpoint(), { checkpointDir, skipCleanup: true });
+    const lockPath = join(checkpointDir, "run-resume.json.resume.lock");
+    const validate = vi.fn(async () => {
+      expect(existsSync(lockPath)).toBe(false);
+      return { valid: false as const, reason: "legacy driver rejected the checkpoint" };
+    });
+    const driver: WeaveResumeDriver = {
+      validate,
+      observe: async () => ({ state: "pending" }),
+      execute: async () => ({ completed: true }),
+    };
+
+    await expect(
+      resumePersistedWeave({ runId: "run-resume", checkpointDir, driver })
+    ).resolves.toEqual({
+      ok: false,
+      code: "external_state_mismatch",
+      runId: "run-resume",
+      reason: "legacy driver rejected the checkpoint",
+    });
+
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("repeats legacy driver validation after the guarded reload", async () => {
+    const checkpointDir = await sandbox();
+    await saveCheckpoint(checkpoint(), { checkpointDir, skipCleanup: true });
+    const lockPath = join(checkpointDir, "run-resume.json.resume.lock");
+    const lockStates: boolean[] = [];
+    const validate = vi.fn(async () => {
+      lockStates.push(existsSync(lockPath));
+      return { valid: true as const };
+    });
+    const driver: WeaveResumeDriver = {
+      validate,
+      observe: async () => ({ state: "pending" }),
+      execute: async () => ({ completed: true }),
+    };
+
+    await expect(
+      resumePersistedWeave({
+        runId: "run-resume",
+        checkpointDir,
+        driver,
+        maxOperations: 0,
+      })
+    ).resolves.toMatchObject({ ok: true, outcome: "paused" });
+
+    expect(validate).toHaveBeenCalledTimes(2);
+    expect(lockStates).toEqual([false, true]);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
   it("continues gate, merge, and post-check operations and persists every boundary", async () => {
     const checkpointDir = await sandbox();
     await saveCheckpoint(checkpoint(), { checkpointDir, skipCleanup: true });
@@ -74,6 +152,63 @@ describe("persisted merge-weave resume service", () => {
     ).resolves.toMatchObject({ ok: true, outcome: "completed", completed: 3 });
 
     expect(executed).toEqual(["gate:item-a:test", "merge:item-a", "post_check:test"]);
+  });
+
+  it("rejects a local preflight mismatch before creating an execution lease", async () => {
+    const checkpointDir = await sandbox();
+    await saveCheckpoint(checkpoint(), { checkpointDir, skipCleanup: true });
+    const lockPath = join(checkpointDir, "run-resume.json.resume.lock");
+    const validate = vi.fn(async () => ({ valid: true as const }));
+    const preflight = vi.fn(async () => {
+      expect(existsSync(lockPath)).toBe(false);
+      return { valid: false as const, reason: "checkpoint is bound to another repository" };
+    });
+    const driver: WeaveResumeDriver = {
+      preflight,
+      validate,
+      observe: async () => ({ state: "pending" }),
+      execute: async () => ({ completed: true }),
+    };
+
+    await expect(
+      resumePersistedWeave({ runId: "run-resume", checkpointDir, driver })
+    ).resolves.toEqual({
+      ok: false,
+      code: "external_state_mismatch",
+      runId: "run-resume",
+      reason: "checkpoint is bound to another repository",
+    });
+
+    expect(preflight).toHaveBeenCalledTimes(1);
+    expect(validate).not.toHaveBeenCalled();
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("re-reads and revalidates the checkpoint after acquiring the lease", async () => {
+    const checkpointDir = await sandbox();
+    await saveCheckpoint(checkpoint(), { checkpointDir, skipCleanup: true });
+    const lockPath = join(checkpointDir, "run-resume.json.resume.lock");
+    const validate = vi.fn(async () => ({ valid: true as const }));
+    const preflight = vi.fn(async () => {
+      const changed = checkpoint();
+      changed.planHash = "changed-between-preflight-and-lease";
+      await saveCheckpoint(changed, { checkpointDir, skipCleanup: true });
+      return { valid: true as const };
+    });
+    const driver: WeaveResumeDriver = {
+      preflight,
+      validate,
+      observe: async () => ({ state: "pending" }),
+      execute: async () => ({ completed: true }),
+    };
+
+    await expect(
+      resumePersistedWeave({ runId: "run-resume", checkpointDir, driver })
+    ).resolves.toMatchObject({ ok: false, code: "checkpoint_invalid" });
+
+    expect(preflight).toHaveBeenCalledTimes(1);
+    expect(validate).not.toHaveBeenCalled();
+    expect(existsSync(lockPath)).toBe(false);
   });
 
   it("observes a merge completed between side effect and checkpoint write", async () => {

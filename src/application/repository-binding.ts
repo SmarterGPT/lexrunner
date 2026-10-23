@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { resolveGateRepositoryRoot } from "./gate-candidate-identity.js";
@@ -165,26 +165,23 @@ export function assertSingleRepositoryPlan(plan: Pick<Plan, "items">): void {
 }
 
 export function bindPlanGateWorkingDirectories(
-  plan: Pick<Plan, "items">,
+  plan: Pick<Plan, "items" | "gitInputs">,
   requestedRoot: string,
   selection: { onlyItem?: string; onlyGate?: string } = {}
 ): { repositoryRoot: string; workingDirectories: Readonly<Record<string, string>> } {
-  let repositoryRoot: string;
-  try {
-    repositoryRoot = realpathSync(resolveGateRepositoryRoot(requestedRoot));
-  } catch {
-    throw new RepositoryBindingError(
-      "PLAN_REPOSITORY_ROOT_INVALID",
-      "The gate execution worktree is unavailable"
-    );
-  }
+  const requireGitRepository = plan.gitInputs !== undefined;
+  const repositoryRoot = resolveExecutionRoot(requestedRoot, requireGitRepository);
   const workingDirectories: Record<string, string> = Object.create(null);
   for (const item of plan.items) {
     if (selection.onlyItem && item.name !== selection.onlyItem) continue;
     for (const gate of item.gates) {
       if (selection.onlyGate && gate.name !== selection.onlyGate) continue;
       if (gate.runtime && gate.runtime !== "local") continue;
-      const { workingDirectory: directory } = bindLocalGateWorkingDirectory(gate, repositoryRoot);
+      const { workingDirectory: directory } = bindLocalGateWorkingDirectory(gate, repositoryRoot, {
+        requireGitRepository,
+        enforceContainment: true,
+        rootIsCanonical: true,
+      });
       workingDirectories[JSON.stringify([item.name, gate.name])] = directory;
     }
   }
@@ -193,19 +190,25 @@ export function bindPlanGateWorkingDirectories(
 
 export function bindLocalGateWorkingDirectory(
   gate: Pick<Gate, "cwd">,
-  requestedRoot: string
+  requestedRoot: string,
+  options: {
+    requireGitRepository?: boolean;
+    enforceContainment?: boolean;
+    rootIsCanonical?: boolean;
+  } = {}
 ): { repositoryRoot: string; workingDirectory: string } {
   let repositoryRoot: string;
   let workingDirectory: string;
-  let gateRepository: string;
   try {
-    repositoryRoot = realpathSync(resolveGateRepositoryRoot(requestedRoot));
+    repositoryRoot = options.rootIsCanonical
+      ? availableDirectory(requestedRoot)
+      : resolveExecutionRoot(requestedRoot, options.requireGitRepository ?? false);
     const reference = gate.cwd ?? ".";
     if (reference.includes("\0") || Buffer.byteLength(reference, "utf8") > MAX_PATH_BYTES) {
       throw new Error("invalid gate cwd");
     }
     workingDirectory = realpathSync(resolve(repositoryRoot, reference));
-    gateRepository = realpathSync(resolveGateRepositoryRoot(workingDirectory));
+    if (!statSync(workingDirectory).isDirectory()) throw new Error("gate cwd is not a directory");
   } catch {
     throw new RepositoryBindingError(
       "PLAN_REPOSITORY_ROOT_INVALID",
@@ -214,17 +217,75 @@ export function bindLocalGateWorkingDirectory(
   }
   const child = relative(repositoryRoot, workingDirectory);
   if (
-    gateRepository !== repositoryRoot ||
-    child === ".." ||
-    child.startsWith(`..${sep}`) ||
-    isAbsolute(child)
+    options.enforceContainment &&
+    (child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child))
   ) {
     throw new RepositoryBindingError(
       "PLAN_REPOSITORY_MISMATCH",
       "A selected local gate working directory belongs to another repository"
     );
   }
+  if (options.requireGitRepository) {
+    let gateRepository: string;
+    try {
+      gateRepository = realpathSync(resolveGateRepositoryRoot(workingDirectory));
+    } catch {
+      throw new RepositoryBindingError(
+        "PLAN_REPOSITORY_MISMATCH",
+        "A selected local gate working directory belongs to another repository"
+      );
+    }
+    if (gateRepository !== repositoryRoot) {
+      throw new RepositoryBindingError(
+        "PLAN_REPOSITORY_MISMATCH",
+        "A selected local gate working directory belongs to another repository"
+      );
+    }
+  }
   return { repositoryRoot, workingDirectory };
+}
+
+/**
+ * Git-bound plans use the physical worktree root. Configuration-only plans keep
+ * the same anchoring when invoked inside Git, but retain the public raw-gate
+ * contract for ordinary canonical filesystem directories.
+ */
+export function resolveExecutionRoot(requestedRoot: string, requireGitRepository: boolean): string {
+  if (
+    typeof requestedRoot !== "string" ||
+    requestedRoot.trim().length === 0 ||
+    requestedRoot.includes("\0") ||
+    Buffer.byteLength(requestedRoot, "utf8") > MAX_PATH_BYTES
+  ) {
+    throw new RepositoryBindingError(
+      "PLAN_REPOSITORY_ROOT_INVALID",
+      "The gate execution worktree is unavailable"
+    );
+  }
+  try {
+    return realpathSync(resolveGateRepositoryRoot(requestedRoot));
+  } catch {
+    if (requireGitRepository) {
+      throw new RepositoryBindingError(
+        "PLAN_REPOSITORY_ROOT_INVALID",
+        "The gate execution worktree is unavailable"
+      );
+    }
+  }
+  try {
+    return availableDirectory(requestedRoot);
+  } catch {
+    throw new RepositoryBindingError(
+      "PLAN_REPOSITORY_ROOT_INVALID",
+      "The gate execution worktree is unavailable"
+    );
+  }
+}
+
+function availableDirectory(reference: string): string {
+  const directory = realpathSync(resolve(reference));
+  if (!statSync(directory).isDirectory()) throw new Error("not a directory");
+  return directory;
 }
 
 function readRemote(repositoryRoot: string, name: string): string | undefined {

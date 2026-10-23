@@ -25,6 +25,23 @@ export type ResumeExecutionResult =
 
 /** Side-effect adapter used by the one canonical resume application service. */
 export interface WeaveResumeDriver {
+  /**
+   * Read-only local binding check run before the checkpoint execution lease is acquired.
+   * Drivers that can validate their execution root without external acquisition should expose it
+   * here so an invalid invocation cannot create runner state in the selected working directory.
+   */
+  preflight?(
+    checkpoint: Readonly<WeaveCheckpoint>
+  ):
+    | { valid: true }
+    | { valid: false; reason: string }
+    | Promise<{ valid: true } | { valid: false; reason: string }>;
+  /**
+   * Complete validation, repeated while holding the execution lease. For compatibility, drivers
+   * without `preflight` are also validated before lease acquisition and must keep this method
+   * read-only. Drivers whose complete validation performs acquisition must expose its read-only
+   * local subset through `preflight`.
+   */
   validate(
     checkpoint: WeaveCheckpoint
   ): Promise<{ valid: true } | { valid: false; reason: string }>;
@@ -75,6 +92,9 @@ export type ResumeWeaveResult =
  * `in_progress` write and every successful observation/execution is persisted before advancing.
  */
 export async function resumePersistedWeave(input: ResumeWeaveInput): Promise<ResumeWeaveResult> {
+  const preflight = await inspectCheckpoint(input, false);
+  if (!preflight.ok) return preflight.result;
+
   const lease = acquireCheckpointExecutionLease(input.runId, input.checkpointDir);
   if (!lease) {
     return {
@@ -86,28 +106,9 @@ export async function resumePersistedWeave(input: ResumeWeaveInput): Promise<Res
   }
 
   try {
-    let checkpoint: WeaveCheckpoint;
-    try {
-      checkpoint = await loadCheckpoint(input.runId, {
-        checkpointDir: input.checkpointDir,
-        validatePlanHash: false,
-      });
-    } catch (error) {
-      return invalid(input.runId, error instanceof Error ? error.message : String(error));
-    }
-
-    const validation = validateResumeJournal(checkpoint);
-    if (!validation.valid) return invalid(input.runId, validation.reason);
-
-    const external = await input.driver.validate(checkpoint);
-    if (!external.valid) {
-      return {
-        ok: false,
-        code: "external_state_mismatch",
-        runId: input.runId,
-        reason: external.reason,
-      };
-    }
+    const guarded = await inspectCheckpoint(input, true);
+    if (!guarded.ok) return guarded.result;
+    let checkpoint = guarded.checkpoint;
 
     const now = input.now ?? (() => new Date().toISOString());
     const limit = input.maxOperations ?? Number.POSITIVE_INFINITY;
@@ -197,6 +198,57 @@ export async function resumePersistedWeave(input: ResumeWeaveInput): Promise<Res
   } finally {
     lease.release();
   }
+}
+
+type CheckpointInspection =
+  | { ok: true; checkpoint: WeaveCheckpoint }
+  | { ok: false; result: Extract<ResumeWeaveResult, { ok: false }> };
+
+/**
+ * Load and validate without writing. The first pass rejects malformed checkpoints and local
+ * repository/cwd mismatches before lease acquisition. The guarded pass repeats every check from
+ * the persisted file while holding the lease, then performs the driver's external validation.
+ */
+async function inspectCheckpoint(
+  input: ResumeWeaveInput,
+  validateExternal: boolean
+): Promise<CheckpointInspection> {
+  let checkpoint: WeaveCheckpoint;
+  try {
+    checkpoint = await loadCheckpoint(input.runId, {
+      checkpointDir: input.checkpointDir,
+      validatePlanHash: false,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      result: invalid(input.runId, error instanceof Error ? error.message : String(error)),
+    };
+  }
+
+  const validation = validateResumeJournal(checkpoint);
+  if (!validation.valid) {
+    return { ok: false, result: invalid(input.runId, validation.reason) };
+  }
+
+  if (input.driver.preflight) {
+    const local = await input.driver.preflight(checkpoint);
+    if (!local.valid) return { ok: false, result: externalMismatch(input.runId, local.reason) };
+  } else if (!validateExternal) {
+    const legacy = await input.driver.validate(checkpoint);
+    if (!legacy.valid) {
+      return { ok: false, result: externalMismatch(input.runId, legacy.reason) };
+    }
+  }
+
+  if (validateExternal) {
+    const external = await input.driver.validate(checkpoint);
+    if (!external.valid) {
+      return { ok: false, result: externalMismatch(input.runId, external.reason) };
+    }
+  }
+
+  return { ok: true, checkpoint };
 }
 
 export function validateResumeJournal(
@@ -414,6 +466,13 @@ function summary(
 
 function invalid(runId: string, reason: string): Extract<ResumeWeaveResult, { ok: false }> {
   return { ok: false, code: "checkpoint_invalid", runId, reason: bound(reason) };
+}
+
+function externalMismatch(
+  runId: string,
+  reason: string
+): Extract<ResumeWeaveResult, { ok: false }> {
+  return { ok: false, code: "external_state_mismatch", runId, reason: bound(reason) };
 }
 
 function bound(value: string): string {

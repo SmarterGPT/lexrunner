@@ -98,9 +98,9 @@ export class LocalWeaveResumeDriver implements WeaveResumeDriver {
     this.operations = new GitOperations(workingDir);
   }
 
-  async validate(
-    checkpoint: WeaveCheckpoint
-  ): Promise<{ valid: true } | { valid: false; reason: string }> {
+  preflight(
+    checkpoint: Readonly<WeaveCheckpoint>
+  ): { valid: true } | { valid: false; reason: string } {
     try {
       assertSingleRepositoryPlan(checkpoint.plan);
     } catch {
@@ -117,6 +117,14 @@ export class LocalWeaveResumeDriver implements WeaveResumeDriver {
         reason: "checkpoint gate working directories are not bound to this repository",
       };
     }
+    return { valid: true };
+  }
+
+  async validate(
+    checkpoint: WeaveCheckpoint
+  ): Promise<{ valid: true } | { valid: false; reason: string }> {
+    const preflight = this.preflight(checkpoint);
+    if (!preflight.valid) return preflight;
     const journal = checkpoint.metadata?.resume;
     if (!journal) return { valid: false, reason: "resume journal is missing" };
     try {

@@ -47,13 +47,12 @@ import {
   tierMetricsToJSON,
 } from "../tiers/index.js";
 import { createTurnCostTracker } from "../metrics/turncost.js";
-import { resolveGateRepositoryRoot } from "../application/gate-candidate-identity.js";
 import {
   assertPlanRepositoryBinding,
   bindPlanGateWorkingDirectories,
   RepositoryBindingError,
+  resolveExecutionRoot,
 } from "../application/repository-binding.js";
-import { resolveProfile } from "../config/profileResolver.js";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -151,8 +150,9 @@ Common Issues:
       let auditEmitter: AuditEmitter | null = null;
 
       try {
-        const repoRoot = resolveGateRepositoryRoot(
-          path.resolve(process.cwd(), opts.repoRoot ?? ".")
+        const repoRoot = resolveExecutionRoot(
+          path.resolve(process.cwd(), opts.repoRoot ?? "."),
+          false
         );
         const resolvedPlanFile = path.resolve(repoRoot, planFile);
         const artifactDir = path.resolve(repoRoot, opts.artifactDir);
@@ -233,10 +233,10 @@ Common Issues:
         // No profile mutation, receipt write, command, or dry-run result is
         // admitted until the plan and every selected local gate bind to this repo.
         if (!(opts.json || deps.jsonModeActive())) {
-          const profile = resolveProfile(opts.profileDir, repoRoot, {
+          purgeCache(opts.profileDir, opts.keepCache, {
+            baseDir: repoRoot,
             ignoreEnvironment: Boolean(opts.repoRoot && !opts.profileDir),
           });
-          purgeCache(profile.path, opts.keepCache);
         }
         if (impactSelection && !opts.dryRun) {
           impactReceiptPath = writeGateImpactReceipt(impactSelection, artifactDir);

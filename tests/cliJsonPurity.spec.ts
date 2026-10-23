@@ -135,7 +135,9 @@ describe("CLI JSON purity", () => {
           get: async () => ({
             data: {
               default_branch: "main",
-              html_url: "https://github.com/test/test",
+              // The fake API's canonical identity must agree with the locally
+              // observed origin; repository-bound planning rejects mismatches.
+              html_url: "https://github.com/SmarterGPT/lexrunner",
             },
           }),
         },

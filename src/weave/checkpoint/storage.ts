@@ -44,13 +44,14 @@ export function ensureCheckpointDir(checkpointDir?: string): string {
 }
 
 /**
- * Get checkpoint file path for a run ID
+ * Resolve a checkpoint file path without creating filesystem state. Mutating callers must invoke
+ * `ensureCheckpointDir` only after their read-only admission checks succeed.
  */
 export function getCheckpointPath(runId: string, checkpointDir?: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)) {
     throw new Error("Invalid checkpoint run ID");
   }
-  const dir = ensureCheckpointDir(checkpointDir);
+  const dir = checkpointDir || getDefaultCheckpointDir();
   return path.join(dir, `${runId}.json`);
 }
 
@@ -62,6 +63,7 @@ export async function saveCheckpoint(
   options: SaveCheckpointOptions = {}
 ): Promise<void> {
   const checkpointPath = getCheckpointPath(checkpoint.runId, options.checkpointDir);
+  ensureCheckpointDir(options.checkpointDir);
   const json = canonicalJSONStringify(checkpoint);
   if (Buffer.byteLength(json, "utf-8") > MAX_CHECKPOINT_BYTES) {
     throw new Error(`Checkpoint exceeds ${MAX_CHECKPOINT_BYTES} bytes`);
@@ -90,6 +92,7 @@ export function acquireCheckpointExecutionLease(
   checkpointDir?: string
 ): CheckpointExecutionLease | null {
   const checkpointPath = getCheckpointPath(runId, checkpointDir);
+  ensureCheckpointDir(checkpointDir);
   const lockPath = `${checkpointPath}.resume.lock`;
   let descriptor: number;
   try {
@@ -182,7 +185,7 @@ export async function loadCheckpoint(
 export async function listCheckpoints(
   options: ListCheckpointsOptions = {}
 ): Promise<CheckpointListEntry[]> {
-  const dir = ensureCheckpointDir(options.checkpointDir);
+  const dir = options.checkpointDir || getDefaultCheckpointDir();
 
   if (!fs.existsSync(dir)) {
     return [];

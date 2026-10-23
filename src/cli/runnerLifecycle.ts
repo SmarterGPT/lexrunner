@@ -97,8 +97,14 @@ export async function closeFileLogger(): Promise<void> {
 /**
  * Purge cache if needed and display result
  */
-export function purgeCache(profileDir?: string, keepCache?: boolean): void {
-  const profile = resolveProfile(profileDir);
+export function purgeCache(
+  profileDir?: string,
+  keepCache?: boolean,
+  resolution: { baseDir?: string; ignoreEnvironment?: boolean } = {}
+): void {
+  const profile = resolveProfile(profileDir, resolution.baseDir, {
+    ignoreEnvironment: resolution.ignoreEnvironment,
+  });
 
   const result = purgeCacheIfNeeded({
     profileDir: profile.path,

@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +34,39 @@ afterEach(() => {
 });
 
 describe("repository-bound plan creation", () => {
+  it("keeps configuration-only plan creation available in a canonical non-Git directory", async () => {
+    const root = fixtureRoot();
+    const profileRoot = join(root, ".smartergpt");
+    mkdirSync(profileRoot, { recursive: true });
+    writeFileSync(
+      join(profileRoot, "stack.yml"),
+      [
+        "version: 1",
+        "target: main",
+        "items:",
+        "  - id: local",
+        "    branch: feature/local",
+        "    deps: []",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    const createClient = vi.fn();
+
+    const operation = await new PlanCreationOperationService(createClient as any).run({
+      startupDir: root,
+      args: {},
+    });
+
+    expect(createClient).not.toHaveBeenCalled();
+    expect(operation.routing).toMatchObject({
+      resolvedRepository: { root },
+      discovery: { mode: "configuration" },
+      gate: { cwd: ".", repositoryRoot: root },
+    });
+    expect(operation.plan.items.map(({ name }) => name)).toEqual(["local"]);
+  });
+
   it("uses the explicit worktree, query, profile and output without inheriting startup scope", async () => {
     const root = fixtureRoot();
     const startup = repository(join(root, "startup"), "SmarterGPT", "control");
@@ -75,6 +117,18 @@ describe("repository-bound plan creation", () => {
     expect(existsSync(operation.files.plan)).toBe(true);
     expect(existsSync(operation.files.snapshot)).toBe(true);
     expect(existsSync(operation.files.routingReceipt)).toBe(true);
+
+    // Staging-and-replace must retain the historical overwrite contract on
+    // Windows as well as POSIX without following a caller-controlled link.
+    for (const file of Object.values(operation.files)) writeFileSync(file, "stale", "utf8");
+    writePlanCreationArtifacts(operation);
+    expect(JSON.parse(readFileSync(operation.files.plan, "utf8"))).toMatchObject({
+      schemaVersion: operation.plan.schemaVersion,
+    });
+    expect(readFileSync(operation.files.snapshot, "utf8")).toBe(operation.snapshot);
+    expect(JSON.parse(readFileSync(operation.files.routingReceipt, "utf8"))).toMatchObject({
+      contract: "lexrunner-plan-routing-v1",
+    });
   });
 
   it("rejects a requested repository mismatch before client creation or writes", async () => {
@@ -185,6 +239,100 @@ describe("repository-bound plan creation", () => {
       expect(existsSync(join(target, planFile))).toBe(false);
     }
   );
+
+  it("rejects preexisting hard-linked output aliases before discovery or writes", async () => {
+    const root = fixtureRoot();
+    const target = repository(join(root, "target"), "SmarterGPT", "lex");
+    const profileRoot = profile(target, "is:pr is:open");
+    const planFile = join(profileRoot, "runner", "plan.json");
+    const snapshotFile = join(profileRoot, "runner", "snapshot.md");
+    writeFileSync(planFile, "unchanged", "utf8");
+    linkSync(planFile, snapshotFile);
+    const createClient = vi.fn();
+
+    await expect(
+      new PlanCreationOperationService(createClient as any).run({
+        startupDir: target,
+        args: { fromGithub: true },
+      })
+    ).rejects.toMatchObject({ code: "PLAN_CREATION_ARGUMENTS_INVALID" });
+    expect(createClient).not.toHaveBeenCalled();
+    expect(readFileSync(planFile, "utf8")).toBe("unchanged");
+    expect(readFileSync(snapshotFile, "utf8")).toBe("unchanged");
+  });
+
+  it("rejects a single output hard-linked to an external file before discovery or writes", async () => {
+    const root = fixtureRoot();
+    const target = repository(join(root, "target"), "SmarterGPT", "lex");
+    const profileRoot = profile(target, "is:pr is:open");
+    const planFile = join(profileRoot, "runner", "plan.json");
+    const external = join(root, "external-hardlink-target.json");
+    writeFileSync(external, "external-unchanged", "utf8");
+    linkSync(external, planFile);
+    const createClient = vi.fn();
+
+    await expect(
+      new PlanCreationOperationService(createClient as any).run({
+        startupDir: target,
+        args: { fromGithub: true },
+      })
+    ).rejects.toMatchObject({ code: "PLAN_CREATION_ARGUMENTS_INVALID" });
+    expect(createClient).not.toHaveBeenCalled();
+    expect(readFileSync(external, "utf8")).toBe("external-unchanged");
+    expect(existsSync(join(profileRoot, "runner", "snapshot.md"))).toBe(false);
+    expect(existsSync(join(profileRoot, "runner", "routing-receipt.json"))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a single output symlinked to an external file before discovery or writes",
+    async () => {
+      const root = fixtureRoot();
+      const target = repository(join(root, "target"), "SmarterGPT", "lex");
+      const profileRoot = profile(target, "is:pr is:open");
+      const planFile = join(profileRoot, "runner", "plan.json");
+      const external = join(root, "external-symlink-target.json");
+      writeFileSync(external, "external-unchanged", "utf8");
+      symlinkSync(external, planFile, "file");
+      const createClient = vi.fn();
+
+      await expect(
+        new PlanCreationOperationService(createClient as any).run({
+          startupDir: target,
+          args: { fromGithub: true },
+        })
+      ).rejects.toMatchObject({ code: "PLAN_CREATION_ARGUMENTS_INVALID" });
+      expect(createClient).not.toHaveBeenCalled();
+      expect(readFileSync(external, "utf8")).toBe("external-unchanged");
+      expect(existsSync(join(profileRoot, "runner", "snapshot.md"))).toBe(false);
+      expect(existsSync(join(profileRoot, "runner", "routing-receipt.json"))).toBe(false);
+    }
+  );
+
+  it("rechecks symlink aliases before the first artifact write", async () => {
+    const root = fixtureRoot();
+    const target = repository(join(root, "target"), "SmarterGPT", "lex");
+    profile(target, "is:pr is:open");
+    const operation = await new PlanCreationOperationService(
+      vi.fn().mockResolvedValue(githubClient(vi.fn().mockResolvedValue([pullRequest()]))) as any
+    ).run({
+      startupDir: target,
+      args: { fromGithub: true },
+    });
+    writeFileSync(operation.files.plan, "unchanged", "utf8");
+    const alias = join(root, "output-alias");
+    symlinkSync(
+      operation.routing.output.root,
+      alias,
+      process.platform === "win32" ? "junction" : "dir"
+    );
+    operation.files.snapshot = join(alias, "plan.json");
+
+    expect(() => writePlanCreationArtifacts(operation)).toThrowError(
+      expect.objectContaining({ code: "PLAN_CREATION_ARGUMENTS_INVALID" })
+    );
+    expect(readFileSync(operation.files.plan, "utf8")).toBe("unchanged");
+    expect(existsSync(operation.files.routingReceipt)).toBe(false);
+  });
 
   it("rejects raw gate execution on a different repository before artifacts or commands", async () => {
     const root = fixtureRoot();

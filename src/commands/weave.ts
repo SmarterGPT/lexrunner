@@ -250,9 +250,8 @@ Subcommands:
           console.log(`   Target: ${plan.target || "default branch"}`);
           console.log("");
           console.log("Next steps:");
-          console.log(`  1. Review: lex-pr plan-review ${opts.output}`);
-          console.log(`  2. Dry-run: lex-pr weave apply --plan ${opts.output} --dry-run`);
-          console.log(`  3. Execute: lex-pr weave apply --plan ${opts.output} --execute\n`);
+          for (const step of weavePlanNextSteps(operation.files.plan)) console.log(step);
+          console.log("");
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -361,6 +360,14 @@ Subcommands:
 
   // weave checkpoints - Checkpoint management
   registerCheckpointCommands(weave, { jsonModeActive: deps.jsonModeActive });
+}
+
+export function weavePlanNextSteps(planFile: string): string[] {
+  return [
+    `  1. Review: lex-pr plan-review ${planFile}`,
+    `  2. Dry-run: lex-pr weave apply --plan ${planFile} --dry-run`,
+    `  3. Execute: lex-pr weave apply --plan ${planFile} --execute`,
+  ];
 }
 
 /** Shared canonical CLI adapter used by `weave apply` and its `merge` compatibility alias. */
