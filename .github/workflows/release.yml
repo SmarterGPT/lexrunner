@@ -223,6 +223,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
+      - name: Activate qualified package-policy npm
+        run: npm install --global npm@11.16.0 --ignore-scripts
+
       - name: Install dependencies
         run: npm ci
 
@@ -337,12 +340,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ github.event.inputs.release_type }}" == "stable" ]; then
-            echo "1. Run \`npm run release:prepare\` locally" >> $GITHUB_STEP_SUMMARY
-            echo "2. Review and commit changes" >> $GITHUB_STEP_SUMMARY
-            echo "3. Create signed tag: \`git tag -s vX.Y.Z -m 'Release X.Y.Z'\`" >> $GITHUB_STEP_SUMMARY
-            echo "4. Push tag: \`git push origin vX.Y.Z\`" >> $GITHUB_STEP_SUMMARY
-            echo "5. The signed-tag workflow validates and publishes through npm trusted publishing" >> $GITHUB_STEP_SUMMARY
-            echo "6. Verify the private registry and native Windows consumer" >> $GITHUB_STEP_SUMMARY
+            echo "1. Run \`corepack npm@11.16.0 run release:prepare\` on a release branch" >> $GITHUB_STEP_SUMMARY
+            echo "2. Curate the release notes, sign the complete commit, and open a review PR" >> $GITHUB_STEP_SUMMARY
+            echo "3. Require green checks and verify that exact reviewed commit is contained in main" >> $GITHUB_STEP_SUMMARY
+            echo "4. Tag that commit: \`git tag -s vX.Y.Z <reviewed-release-commit> -m 'Release X.Y.Z'\`" >> $GITHUB_STEP_SUMMARY
+            echo "5. Push tag: \`git push origin vX.Y.Z\`" >> $GITHUB_STEP_SUMMARY
+            echo "6. The signed-tag workflow validates and publishes through npm trusted publishing" >> $GITHUB_STEP_SUMMARY
+            echo "7. Verify the public npm registry and a clean native Windows consumer" >> $GITHUB_STEP_SUMMARY
           else
             echo "Canary candidates are validated on main branch pushes; npm publication remains a separate authorized step" >> $GITHUB_STEP_SUMMARY
           fi

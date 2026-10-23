@@ -194,7 +194,7 @@ New to LexRunner? Start here:
   human publication gate
 - **[LexRunner 1.2.0 release decision](./releases/1.2.0.md)** - Compatibility inventory, semver,
   maturity boundary, issue disposition, and required evidence
-- **[Release and private npm publishing](./release-process.md)** - Scoped package, human npm auth,
+- **[Release and public npm publishing](./release-process.md)** - Scoped package, signed-tag OIDC,
   candidate validation, LexSona boundary, and native Windows consumer proof
 
 ## 📖 Reference
@@ -263,16 +263,16 @@ Help others by sharing:
 
 ### Downloads
 
-- **[Latest Release](https://github.com/Guffawaffle/LexRunner/releases/latest)**
+- **[Latest Release](https://github.com/SmarterGPT/lexrunner/releases/latest)**
 - **[Example Configurations](../examples/)**
 - **[Sample Fixtures](../tests/fixtures/)**
 
 ### External Links
 
-- **[GitHub Repository](https://github.com/Guffawaffle/LexRunner)**
-- **[Issue Tracker](https://github.com/Guffawaffle/LexRunner/issues)**
-- **[Discussions](https://github.com/Guffawaffle/LexRunner/discussions)**
-- **[npm Package](https://www.npmjs.com/package/lexrunner)**
+- **[GitHub Repository](https://github.com/SmarterGPT/lexrunner)**
+- **[Issue Tracker](https://github.com/SmarterGPT/lexrunner/issues)**
+- **[Discussions](https://github.com/SmarterGPT/lexrunner/discussions)**
+- **[npm Package](https://www.npmjs.com/package/@smartergpt/lexrunner)**
 
 ## 📝 Document Index
 

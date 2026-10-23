@@ -4,8 +4,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    // Emit JSON reporter alongside default for AX-compliant output (ADR-009)
-    reporters: ["default", ["json", { outputFile: "test-results.json" }]],
+    // Emit JSON reporter alongside default for AX-compliant output (ADR-009).
+    // Keep the destination global so --outputFile can select an isolated report.
+    reporters: ["default", "json"],
+    outputFile: { json: "test-results.json" },
     exclude: [
       "**/node_modules/**",
       "**/dist/**",
