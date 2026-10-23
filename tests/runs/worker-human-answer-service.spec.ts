@@ -1,5 +1,4 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import Database from "better-sqlite3-multiple-ciphers";
 import { afterEach, describe, expect, it } from "vitest";
 import { humanAnswerFixture } from "../store/worker-human-answer-fixture.js";
 import {
@@ -298,29 +297,14 @@ describe.each(["memory", "sqlite"] as const)("host-authenticated worker answers 
                   ...JSON.parse('{"__proto__":{"changed":true}}'),
                 },
               };
-        // Controlled legacy/corrupt-row fixture only. The current SQLite JSON
-        // serializer drops this special key, so inject exact bytes to exercise
-        // the answer boundary against a stored context that actually changed.
-        if (boundary === "special-key-context" && kind === "sqlite") {
-          const db = new Database(f.path);
-          try {
-            db.prepare("UPDATE run_coordination SET stateJson = ? WHERE runId = ?").run(
-              JSON.stringify(changed),
-              "run"
-            );
-          } finally {
-            db.close();
-          }
-        } else {
-          await f.store.compareAndSetRunState({
-            ...f.controller,
-            expectedRevision: record.revision,
-            mutationId: "change",
-            now: f.time,
-            state: changed,
-            event: { type: "changed", payload: {} },
-          });
-        }
+        await f.store.compareAndSetRunState({
+          ...f.controller,
+          expectedRevision: record.revision,
+          mutationId: "change",
+          now: f.time,
+          state: changed,
+          event: { type: "changed", payload: {} },
+        });
       }
       expect(
         await f.service.admitWorkerAnswer({

@@ -1,4 +1,5 @@
 import { canonicalJSONStringify } from "../../util/canonicalJson.js";
+import { coordinationJSONStringify } from "../coordination-json.js";
 import { computeCanonicalHash } from "../../schemas/task-contract.js";
 import { evaluateStrictAgentWorkFanIn } from "../../agent-work-fanin-policy.js";
 import {
@@ -2427,7 +2428,7 @@ export class InMemoryWorkspaceLifecycleStore
       input.expectedRunRevision,
       () => {
         const key = mutationKey(input.runId, input.mutationId);
-        const fingerprint = canonicalJSONStringify(input as unknown as JsonRecord);
+        const fingerprint = coordinationJSONStringify(input as unknown as JsonRecord);
         if (
           this.workerMutations.has(key) ||
           this.receiptMutations.has(key) ||
