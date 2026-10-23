@@ -17,13 +17,8 @@ import type {
   RunCoordinationEvent,
   RunCoordinationRecord,
 } from "../coordination-store.js";
-import { canonicalJSONStringify } from "../../util/canonicalJson.js";
-import {
-  calculateExpiry,
-  cloneJsonValue,
-  credentialFailureReason,
-  parseInstant,
-} from "../coordination-store.js";
+import { coordinationJSONStringify } from "../coordination-json.js";
+import { calculateExpiry, credentialFailureReason, parseInstant } from "../coordination-store.js";
 
 const INLINE_COORDINATION_MIGRATION = `
   CREATE TABLE IF NOT EXISTS run_coordination (
@@ -499,6 +494,6 @@ export class SqliteCoordinationStore implements CoordinationStore {
   }
 
   private serializeState(state: JsonValue): string {
-    return canonicalJSONStringify(cloneJsonValue(state));
+    return coordinationJSONStringify(state);
   }
 }

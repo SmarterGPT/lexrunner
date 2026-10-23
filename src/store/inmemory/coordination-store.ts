@@ -12,7 +12,7 @@ import type {
   RunCoordinationRecord,
   RunCoordinationEvent,
 } from "../coordination-store.js";
-import { canonicalJSONStringify } from "../../util/canonicalJson.js";
+import { coordinationJSONStringify } from "../coordination-json.js";
 import {
   calculateExpiry,
   cloneJsonValue,
@@ -165,7 +165,8 @@ export class InMemoryCoordinationStore implements CoordinationStore {
     if (priorEvent) {
       if (
         !sameEventInput(priorEvent, input.event) ||
-        canonicalJSONStringify(priorEvent.resultingState) !== canonicalJSONStringify(input.state) ||
+        coordinationJSONStringify(priorEvent.resultingState) !==
+          coordinationJSONStringify(input.state) ||
         priorEvent.expectedRevision !== input.expectedRevision ||
         priorEvent.controllerId !== input.controllerId ||
         priorEvent.leaseId !== input.leaseId ||
@@ -316,6 +317,6 @@ function sameEventInput(
 ): boolean {
   return (
     event.type === input.type &&
-    canonicalJSONStringify(event.payload) === canonicalJSONStringify(input.payload)
+    coordinationJSONStringify(event.payload) === coordinationJSONStringify(input.payload)
   );
 }
