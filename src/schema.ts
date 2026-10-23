@@ -202,8 +202,14 @@ export const Gate = z
     runtime: z.enum(["local", "container", "ci-service"]).default("local"),
     // Container spec (only used when runtime is "container")
     container: ContainerSpec.optional(),
-    // Expected artifact paths (for output collection)
-    artifacts: z.array(z.string()).default([]),
+    // Expected exact artifact paths (for output collection); patterns are never expanded.
+    artifacts: z
+      .array(
+        z
+          .string()
+          .describe("Exact literal artifact path; glob, brace, and extglob syntax is unsupported")
+      )
+      .default([]),
     // Optional input data for gates that require structured inputs (validated against gate-specific schemas)
     input: z.record(z.string(), z.unknown()).optional(),
     // Exact per-gate timeout. Overrides the operation default after hostility adjustment.

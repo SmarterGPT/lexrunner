@@ -8,6 +8,10 @@ import type { Plan } from "../schema.js";
 import { loadPlan } from "../schema.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import {
+  artifactDeclarationErrorMessage,
+  findUnsupportedArtifactDeclaration,
+} from "../gates/artifact-declarations.js";
+import {
   captureGateCandidateIdentity,
   resolveGateRepositoryRoot,
   sameGateCandidate,
@@ -79,7 +83,8 @@ export class GateExecutionServiceError extends Error {
       | "GATE_CANDIDATE_ROOT_INVALID"
       | "GATE_WORKING_DIRECTORY_INVALID"
       | "GATE_WORKING_DIRECTORY_CONFLICT"
-      | "GATE_CANDIDATE_CHANGED",
+      | "GATE_CANDIDATE_CHANGED"
+      | "GATE_ARTIFACT_DECLARATION_UNSUPPORTED",
     message: string
   ) {
     super(message);
@@ -107,6 +112,13 @@ export class GateExecutionService {
     const validatedInput = { ...input, plan };
     assertGateSelectionExists(validatedInput);
     assertGateSelectionBounded(validatedInput);
+    const unsupportedArtifact = findUnsupportedArtifactDeclaration(validatedInput);
+    if (unsupportedArtifact) {
+      throw new GateExecutionServiceError(
+        "GATE_ARTIFACT_DECLARATION_UNSUPPORTED",
+        artifactDeclarationErrorMessage(unsupportedArtifact, "Gate")
+      );
+    }
     const binding = bindGateDirectories(
       validatedInput,
       input.repoRoot === undefined ? process.cwd() : input.repoRoot

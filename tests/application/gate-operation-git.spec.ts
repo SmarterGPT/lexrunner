@@ -4,13 +4,14 @@ import {
   linkSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -734,6 +735,70 @@ describe("native artifact-backed gate operations", () => {
       code: "GATE_OPERATION_INPUT_UNSUPPORTED",
     });
     expect(markerLines(fixture)).toEqual([]);
+  }, 30_000);
+
+  it.each([
+    "artifacts/run/**/receipt.json",
+    "reports/*.json",
+    "reports/?.json",
+    "reports/[ab].json",
+    "reports/{a,b}.json",
+    "reports/@(a).json",
+    "reports/+(a).json",
+    "reports/!(a).json",
+    "",
+    "reports/invalid\0name.json",
+  ])(
+    "refuses unsupported selected artifact declaration %j before admission",
+    async (declaration) => {
+      const fixture = nativeFixture();
+      const plan = JSON.parse(readFileSync(fixture.planFile, "utf8"));
+      plan.items[0].gates[0].artifacts = [declaration];
+      writeFileSync(fixture.planFile, JSON.stringify(plan));
+
+      const error = await service.start(fixture.input).catch((problem: unknown) => problem);
+      expect(error).toMatchObject({
+        code: "GATE_OPERATION_ARTIFACT_DECLARATION_UNSUPPORTED",
+      });
+      expect(String((error as Error).message)).toContain(
+        'item "first", gate "probe", artifacts[0]'
+      );
+      expect(markerLines(fixture)).toEqual([]);
+      expect(
+        readdirSync(fixture.artifacts).filter((name) => name.startsWith("gate-operation-"))
+      ).toEqual([]);
+    }
+  );
+
+  it("does not let an invalid unselected artifact declaration block selected work", async () => {
+    const fixture = nativeFixture({ later: true });
+    const plan = JSON.parse(readFileSync(fixture.planFile, "utf8"));
+    plan.items[0].gates[0].artifacts = ["reports/**/*.json"];
+    writeFileSync(fixture.planFile, JSON.stringify(plan));
+    fixture.input.onlyItem = "later";
+
+    const operation = await started(fixture);
+    expect(await terminal(operation)).toMatchObject({
+      state: "completed",
+      outcome: "fail",
+      result: { items: [{ name: "later", status: "blocked", gates: [] }] },
+    });
+    expect(markerLines(fixture)).toEqual([]);
+  }, 30_000);
+
+  it("collects and verifies an exact relative artifact path", async () => {
+    const fixture = nativeFixture({ artifact: true });
+    const plan = JSON.parse(readFileSync(fixture.planFile, "utf8"));
+    plan.items[0].gates[0].artifacts = [relative(fixture.a, fixture.markers + ".json")];
+    writeFileSync(fixture.planFile, JSON.stringify(plan));
+
+    const operation = await started(fixture);
+    expect(await terminal(operation)).toMatchObject({ state: "completed", outcome: "pass" });
+    expect(service.status({ ...operation, verifyArtifacts: true })).toMatchObject({
+      state: "completed",
+      outcome: "pass",
+      artifactVerification: { status: "complete", authority: "unverified" },
+    });
   }, 30_000);
 
   it("rejects oversized and nonregular operation descriptors before decoding or root acquisition", () => {

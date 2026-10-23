@@ -33,6 +33,10 @@ import {
   assertGateSelectionExists,
   type BoundedGateRunResult,
 } from "./gate-execution-service.js";
+import {
+  artifactDeclarationErrorMessage,
+  isUnsupportedArtifactDeclaration,
+} from "../gates/artifact-declarations.js";
 import { loadGateEvidence } from "./gate-evidence-service.js";
 import { PlanArtifactService } from "./plan-artifact-service.js";
 import type { RetainedGateEvidenceReport } from "./retained-gate-evidence.js";
@@ -293,6 +297,21 @@ export class GateOperationService {
           fail(
             "GATE_OPERATION_INPUT_UNSUPPORTED",
             "Durable operations require command gates without pre-execution input validators"
+          );
+        }
+        const declarationIndex = gate.artifacts.findIndex(isUnsupportedArtifactDeclaration);
+        if (declarationIndex !== -1) {
+          fail(
+            "GATE_OPERATION_ARTIFACT_DECLARATION_UNSUPPORTED",
+            artifactDeclarationErrorMessage(
+              {
+                itemName: item.name,
+                gateName: gate.name,
+                declarationIndex,
+                declaration: gate.artifacts[declarationIndex]!,
+              },
+              "Durable gate"
+            )
           );
         }
       }

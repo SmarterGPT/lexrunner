@@ -3,6 +3,7 @@ import type {
   ControllerLease,
   ControllerLeaseCredential,
   CoordinationStore,
+  JsonValue,
 } from "../../src/store/coordination-store.js";
 
 export interface CoordinationStoreHarness {
@@ -35,6 +36,12 @@ function mutation(mutationId: string, phase: string) {
     mutationId,
     event: { type: "phase_changed", payload: { phase } },
   };
+}
+
+function expectOwnProtoVersion(value: JsonValue, expected: number): void {
+  const metadata = (value as Record<string, JsonValue>).metadata as Record<string, JsonValue>;
+  expect(Object.hasOwn(metadata, "__proto__")).toBe(true);
+  expect(metadata["__proto__"]).toEqual({ version: expected });
 }
 
 export function runCoordinationStoreBehaviorTests(factory: CoordinationStoreHarnessFactory): void {
@@ -158,6 +165,71 @@ export function runCoordinationStoreBehaviorTests(factory: CoordinationStoreHarn
       expect(retry.lease).toEqual(first.lease);
       expect(retry.record.state).toEqual({ phase: "assigned" });
       expect(retry.record.revision).toBe(0);
+    });
+
+    it("preserves own __proto__ keys in state, events, and mutation replay identity", async () => {
+      const initialState = JSON.parse(
+        '{"phase":"initial","metadata":{"__proto__":{"version":1}}}'
+      ) as JsonValue;
+      const acquired = await harness.primary.acquireControllerLease({
+        runId: "special-json-keys",
+        controllerId: "controller",
+        leaseId: "lease",
+        now: T0,
+        ttlMs: 10_000,
+        initialState,
+      });
+      expect(acquired.acquired).toBe(true);
+      if (!acquired.acquired) return;
+      expectOwnProtoVersion(acquired.record.state, 1);
+      expectOwnProtoVersion(
+        (await harness.secondary.getRunCoordination("special-json-keys"))!.state,
+        1
+      );
+
+      const state = JSON.parse(
+        '{"phase":"next","metadata":{"__proto__":{"version":2}}}'
+      ) as JsonValue;
+      const payload = JSON.parse(
+        '{"kind":"changed","metadata":{"__proto__":{"version":20}}}'
+      ) as JsonValue;
+      const input = {
+        ...credential(acquired.lease),
+        expectedRevision: 0,
+        mutationId: "special-json-mutation",
+        state,
+        event: { type: "special_json_changed", payload },
+        now: T1,
+      };
+      const first = await harness.primary.compareAndSetRunState(input);
+      expect(first).toMatchObject({ updated: true, idempotentReplay: false });
+      if (!first.updated) return;
+      expectOwnProtoVersion(first.record.state, 2);
+      expectOwnProtoVersion(first.event.payload, 20);
+      expectOwnProtoVersion(first.event.resultingState, 2);
+
+      const events = await harness.secondary.listRunCoordinationEvents("special-json-keys");
+      expect(events).toHaveLength(1);
+      expectOwnProtoVersion(events[0]!.payload, 20);
+      expectOwnProtoVersion(events[0]!.resultingState, 2);
+      const retry = await harness.secondary.compareAndSetRunState(input);
+      expect(retry).toMatchObject({ updated: true, idempotentReplay: true });
+
+      const changedState = JSON.parse(
+        '{"phase":"next","metadata":{"__proto__":{"version":3}}}'
+      ) as JsonValue;
+      await expect(
+        harness.primary.compareAndSetRunState({ ...input, state: changedState })
+      ).resolves.toMatchObject({ updated: false, reason: "mutation_conflict" });
+      const changedPayload = JSON.parse(
+        '{"kind":"changed","metadata":{"__proto__":{"version":21}}}'
+      ) as JsonValue;
+      await expect(
+        harness.primary.compareAndSetRunState({
+          ...input,
+          event: { ...input.event, payload: changedPayload },
+        })
+      ).resolves.toMatchObject({ updated: false, reason: "mutation_conflict" });
     });
 
     it("renews only for the current lease owner and does not change its fence", async () => {
