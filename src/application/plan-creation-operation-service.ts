@@ -405,6 +405,7 @@ interface OutputPathObservation {
 }
 
 interface DirectoryIdentity {
+  canonicalPath: string;
   device: string;
   inode: string;
 }
@@ -423,10 +424,17 @@ const missing = (error) => error && typeof error === "object" && error.code === 
 const identity = () => {
   const value = fs.statSync(".", { bigint: true });
   if (!value.isDirectory()) throw new Error("invalid output directory");
-  return { device: value.dev.toString(), inode: value.ino.toString() };
+  const resolved = path.normalize(path.resolve(fs.realpathSync(".")));
+  return {
+    canonicalPath: process.platform === "win32" ? resolved.toLowerCase() : resolved,
+    device: value.dev.toString(),
+    inode: value.ino.toString(),
+  };
 };
 const sameIdentity = (left, right) =>
-  left.device === right.device && left.inode === right.inode;
+  left.canonicalPath === right.canonicalPath &&
+  left.device === right.device &&
+  left.inode === right.inode;
 try {
   const payload = JSON.parse(fs.readFileSync(0, "utf8"));
   if (!sameIdentity(identity(), payload.identity) || !Array.isArray(payload.artifacts)) {
@@ -526,7 +534,11 @@ function observeDirectoryIdentity(value: string): DirectoryIdentity {
   try {
     const info = fs.statSync(value, { bigint: true });
     if (!info.isDirectory()) throw invalidPhysicalOutput();
-    return { device: info.dev.toString(), inode: info.ino.toString() };
+    return {
+      canonicalPath: normalizePhysicalPath(fs.realpathSync(value)),
+      device: info.dev.toString(),
+      inode: info.ino.toString(),
+    };
   } catch (error) {
     if (error instanceof PlanCreationOperationError) throw error;
     throw invalidPhysicalOutput();
@@ -534,7 +546,11 @@ function observeDirectoryIdentity(value: string): DirectoryIdentity {
 }
 
 function sameDirectoryIdentity(left: DirectoryIdentity, right: DirectoryIdentity): boolean {
-  return left.device === right.device && left.inode === right.inode;
+  return (
+    left.canonicalPath === right.canonicalPath &&
+    left.device === right.device &&
+    left.inode === right.inode
+  );
 }
 
 function assertPhysicalContainment(parent: string, child: string): void {
