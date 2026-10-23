@@ -263,16 +263,16 @@ Help others by sharing:
 
 ### Downloads
 
-- **[Latest Release](https://github.com/Guffawaffle/LexRunner/releases/latest)**
+- **[Latest Release](https://github.com/SmarterGPT/lexrunner/releases/latest)**
 - **[Example Configurations](../examples/)**
 - **[Sample Fixtures](../tests/fixtures/)**
 
 ### External Links
 
-- **[GitHub Repository](https://github.com/Guffawaffle/LexRunner)**
-- **[Issue Tracker](https://github.com/Guffawaffle/LexRunner/issues)**
-- **[Discussions](https://github.com/Guffawaffle/LexRunner/discussions)**
-- **[npm Package](https://www.npmjs.com/package/lexrunner)**
+- **[GitHub Repository](https://github.com/SmarterGPT/lexrunner)**
+- **[Issue Tracker](https://github.com/SmarterGPT/lexrunner/issues)**
+- **[Discussions](https://github.com/SmarterGPT/lexrunner/discussions)**
+- **[npm Package](https://www.npmjs.com/package/@smartergpt/lexrunner)**
 
 ## 📝 Document Index
 

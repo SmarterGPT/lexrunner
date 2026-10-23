@@ -204,6 +204,11 @@ describe("LexRunner current release readiness", () => {
     expect(releaseProcess).toContain("vX.Y.Z");
     expect(releaseProcess).toContain("runs only for push events");
     expect(releaseDriftCheck).toContain("v${version}");
+    expect(releaseDriftCheck).toContain("<reviewed-release-commit>");
+    expect(releaseDriftCheck).toContain("git merge-base --is-ancestor");
+    expect(releaseDriftCheck).not.toContain(
+      'git tag -s "${expectedTag}" -m "Release ${expectedTag}"'
+    );
   });
 });
 

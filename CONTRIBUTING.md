@@ -319,7 +319,8 @@ After `npm run build && npm run format`, the tree should be clean (`git diff --e
 
 ## Releasing
 
-LexRunner follows the same release discipline as Lex. See [Lex RELEASE.md](https://github.com/Guffawaffle/lex/blob/main/RELEASE.md) for the full process.
+LexRunner uses its own signed-tag/OIDC release path. See
+[Release and public npm publishing](docs/release-process.md) for the normative process.
 
 ### Version Alignment Check
 
@@ -331,24 +332,15 @@ npm run check:release-drift
 
 ### Quick Release Checklist
 
-1. **Bump version** in `package.json`
-2. **Update CHANGELOG.md** with changes
-3. **Run gates**: `npm run build && npm run typecheck && npm test`
-4. **Commit**: `git commit -am "chore: bump version to X.Y.Z"`
-5. **Tag**: `git tag -s "vX.Y.Z" -m "Release vX.Y.Z"`
-6. **Push**: `git push origin main "vX.Y.Z"`
-7. **Create GitHub release**: `gh release create vX.Y.Z --verify-tag --notes "See CHANGELOG.md"`
-
-### Catch-Up Release (One-Time)
-
-If `npm run check:release-drift` reports that tag v0.5.0 exists but no GitHub release, create it:
-
-```bash
-gh release create v0.5.0 \
-  --title "v0.5.0: Initial Release" \
-  --notes "Initial public release. See CHANGELOG.md for details." \
-  --verify-tag
-```
+1. Create a release branch from fresh `main` and run
+   `corepack npm@11.16.0 run release:prepare`.
+2. Curate `CHANGELOG.md` and the versioned release notes, then run the complete release gates.
+3. Create one signed release commit, open a PR, and require independent exact-head review and green CI.
+4. After merge, verify that exact reviewed commit is contained in `origin/main`.
+5. Create and verify `vX.Y.Z` as a signed tag pointing to that reviewed commit, then push only the tag.
+6. Let the stable-tag workflow publish through npm OIDC and create the GitHub release.
+7. Verify the public npm record and a clean native Windows consumer. Do not publish or create the
+   release manually from a local shell.
 
 ---
 

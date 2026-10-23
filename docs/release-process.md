@@ -64,7 +64,7 @@ public read access grants no publication authority.
 ```bash
 git status --short
 corepack npm@11.16.0 run release:prepare
-git diff -- CHANGELOG.md package.json package-lock.json README.md docs/AX.md
+git diff -- CHANGELOG.md package.json package-lock.json README.md docs/AX.md docs/releases
 corepack npm@11.16.0 run docs:surface
 corepack npm@11.16.0 run build
 corepack npm@11.16.0 test

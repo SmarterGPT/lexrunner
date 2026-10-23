@@ -88,8 +88,16 @@ function main() {
       console.log("  (none matching release version patterns)");
     }
 
-    console.log(`\nTo fix, create the missing tag:`);
-    console.log(`  git tag -s "${expectedTag}" -m "Release ${expectedTag}"`);
+    console.log(
+      `\nDo not tag ambient HEAD. Identify the exact independently reviewed, signed release commit first:`
+    );
+    console.log(`  git fetch origin main --tags`);
+    console.log(`  git verify-commit <reviewed-release-commit>`);
+    console.log(`  git merge-base --is-ancestor <reviewed-release-commit> origin/main`);
+    console.log(
+      `  git tag -s "${expectedTag}" <reviewed-release-commit> -m "Release ${expectedTag}"`
+    );
+    console.log(`  git tag -v "${expectedTag}"`);
     console.log(`  git push origin "${expectedTag}"`);
 
     process.exit(1);
