@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -348,13 +348,13 @@ export function writePlanCreationArtifacts(result: PlanCreationOperationResult):
   if (!samePhysicalPath(output, observedOutput)) {
     throw invalidPhysicalOutput();
   }
-  const resolved = resolveProfile(profile.root, result.routing.resolvedRepository.root);
-  const physicalProfileRoot = resolvePhysicalDirectoryCandidate(resolved.path);
+  const physicalProfileRoot = resolvePhysicalDirectoryCandidate(profile.root);
   const outputIsWithinProfile = isWithin(physicalProfileRoot, observedOutput);
   if (result.routing.output.source === "profile-default") {
     assertPhysicalContainment(physicalProfileRoot, observedOutput);
   }
   if (outputIsWithinProfile) {
+    const resolved = resolveProfile(profile.root, result.routing.resolvedRepository.root);
     validateWriteOperation(resolved.path, resolved.manifest.role, "write plan artifacts");
   }
   // Reobserve aliases immediately before the first mutation. A caller may have
@@ -369,6 +369,7 @@ export function writePlanCreationArtifacts(result: PlanCreationOperationResult):
   if (!samePhysicalPath(output, reobservedOutput)) {
     throw invalidPhysicalOutput();
   }
+  const outputIdentity = observeDirectoryIdentity(output);
   const destinations = assertOutputFilesWithinRoot(
     output,
     assertDistinctOutputPaths(Object.values(result.files))
@@ -381,38 +382,15 @@ export function writePlanCreationArtifacts(result: PlanCreationOperationResult):
       content: canonicalJSONStringify(result.routing),
     },
   ];
-  const staged: string[] = [];
-  try {
-    // Stage beside each destination with exclusive creation, then replace the
-    // admitted directory entry. A final-component link introduced after the
-    // second observation is replaced rather than followed into another file.
-    for (const artifact of artifacts) {
-      const temporaryPath = path.join(
-        path.dirname(artifact.destination),
-        `.${path.basename(artifact.destination)}.lexrunner-${randomUUID()}.tmp`
-      );
-      fs.writeFileSync(temporaryPath, artifact.content, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-        flush: true,
-      });
-      staged.push(temporaryPath);
-    }
-    for (let index = 0; index < artifacts.length; index += 1) {
-      fs.renameSync(staged[index]!, artifacts[index]!.destination);
-      staged[index] = "";
-    }
-  } finally {
-    for (const temporaryPath of staged) {
-      if (!temporaryPath) continue;
-      try {
-        fs.unlinkSync(temporaryPath);
-      } catch (error) {
-        if (!isMissingPathError(error)) throw error;
-      }
-    }
+  writeArtifactsFromPinnedDirectory(output, outputIdentity, artifacts);
+  const finalOutput = resolvePhysicalDirectoryCandidate(output);
+  if (
+    !samePhysicalPath(output, finalOutput) ||
+    !sameDirectoryIdentity(outputIdentity, observeDirectoryIdentity(output))
+  ) {
+    throw invalidPhysicalOutput();
   }
+  assertOutputFilesWithinRoot(output, assertDistinctOutputPaths(Object.values(result.files)));
 }
 
 function isWithin(parent: string, child: string): boolean {
@@ -424,6 +402,139 @@ interface OutputPathObservation {
   canonicalPath: string;
   writePath: string;
   identity?: string;
+}
+
+interface DirectoryIdentity {
+  device: string;
+  inode: string;
+}
+
+interface PinnedArtifact {
+  destination: string;
+  content: string;
+}
+
+const PINNED_ARTIFACT_WRITER_SOURCE = String.raw`
+"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+const { randomUUID } = require("node:crypto");
+const missing = (error) => error && typeof error === "object" && error.code === "ENOENT";
+const identity = () => {
+  const value = fs.statSync(".", { bigint: true });
+  if (!value.isDirectory()) throw new Error("invalid output directory");
+  return { device: value.dev.toString(), inode: value.ino.toString() };
+};
+const sameIdentity = (left, right) =>
+  left.device === right.device && left.inode === right.inode;
+try {
+  const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+  if (!sameIdentity(identity(), payload.identity) || !Array.isArray(payload.artifacts)) {
+    throw new Error("output directory identity changed");
+  }
+  const names = new Set();
+  for (const artifact of payload.artifacts) {
+    if (
+      !artifact ||
+      typeof artifact.name !== "string" ||
+      typeof artifact.content !== "string" ||
+      artifact.name === "." ||
+      artifact.name === ".." ||
+      path.basename(artifact.name) !== artifact.name ||
+      names.has(artifact.name)
+    ) {
+      throw new Error("invalid artifact");
+    }
+    names.add(artifact.name);
+    let entry;
+    try {
+      entry = fs.lstatSync(artifact.name, { bigint: true });
+    } catch (error) {
+      if (!missing(error)) throw error;
+    }
+    if (entry && (entry.isSymbolicLink() || !entry.isFile() || entry.nlink !== 1n)) {
+      throw new Error("unsafe output target");
+    }
+  }
+  const staged = [];
+  try {
+    for (const artifact of payload.artifacts) {
+      const temporary = "." + artifact.name + ".lexrunner-" + randomUUID() + ".tmp";
+      fs.writeFileSync(temporary, artifact.content, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+        flush: true,
+      });
+      staged.push(temporary);
+    }
+    if (!sameIdentity(identity(), payload.identity)) {
+      throw new Error("output directory identity changed");
+    }
+    for (let index = 0; index < payload.artifacts.length; index += 1) {
+      fs.renameSync(staged[index], payload.artifacts[index].name);
+      staged[index] = "";
+    }
+  } finally {
+    for (const temporary of staged) {
+      if (!temporary) continue;
+      try {
+        fs.unlinkSync(temporary);
+      } catch (error) {
+        if (!missing(error)) throw error;
+      }
+    }
+  }
+  if (!sameIdentity(identity(), payload.identity)) {
+    throw new Error("output directory identity changed");
+  }
+} catch {
+  process.exitCode = 71;
+}
+`;
+
+function writeArtifactsFromPinnedDirectory(
+  output: string,
+  identity: DirectoryIdentity,
+  artifacts: PinnedArtifact[]
+): void {
+  const payload = JSON.stringify({
+    identity,
+    artifacts: artifacts.map(({ destination, content }) => ({
+      name: path.basename(destination),
+      content,
+    })),
+  });
+  const completed = spawnSync(process.execPath, ["--eval", PINNED_ARTIFACT_WRITER_SOURCE], {
+    cwd: output,
+    input: payload,
+    encoding: "utf8",
+    // The helper needs only the absolute Node executable and built-ins. An
+    // empty environment prevents NODE_OPTIONS preloads, coverage writers and
+    // other caller-controlled startup hooks from crossing this boundary.
+    env: {},
+    timeout: 60_000,
+    maxBuffer: 64 * 1024,
+    windowsHide: true,
+  });
+  if (completed.error || completed.signal || completed.status !== 0) {
+    throw invalidPhysicalOutput();
+  }
+}
+
+function observeDirectoryIdentity(value: string): DirectoryIdentity {
+  try {
+    const info = fs.statSync(value, { bigint: true });
+    if (!info.isDirectory()) throw invalidPhysicalOutput();
+    return { device: info.dev.toString(), inode: info.ino.toString() };
+  } catch (error) {
+    if (error instanceof PlanCreationOperationError) throw error;
+    throw invalidPhysicalOutput();
+  }
+}
+
+function sameDirectoryIdentity(left: DirectoryIdentity, right: DirectoryIdentity): boolean {
+  return left.device === right.device && left.inode === right.inode;
 }
 
 function assertPhysicalContainment(parent: string, child: string): void {

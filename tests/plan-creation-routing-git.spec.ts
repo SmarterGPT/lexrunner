@@ -67,6 +67,37 @@ describe("repository-bound plan creation", () => {
     expect(operation.plan.items.map(({ name }) => name)).toEqual(["local"]);
   });
 
+  it("writes an explicit external output for a manifestless legacy profile", async () => {
+    const root = fixtureRoot();
+    const profileRoot = join(root, ".smartergpt");
+    const output = join(root, ".artifacts");
+    mkdirSync(profileRoot, { recursive: true });
+    writeFileSync(
+      join(profileRoot, "stack.yml"),
+      [
+        "version: 1",
+        "target: main",
+        "items:",
+        "  - id: local",
+        "    branch: feature/local",
+        "    deps: []",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    const operation = await new PlanCreationOperationService(vi.fn() as any).run({
+      startupDir: root,
+      args: { outDir: output },
+    });
+
+    writePlanCreationArtifacts(operation);
+
+    expect(operation.routing.output.root).toBe(output);
+    expect(existsSync(join(output, "plan.json"))).toBe(true);
+    expect(existsSync(join(output, "snapshot.md"))).toBe(true);
+    expect(existsSync(join(output, "routing-receipt.json"))).toBe(true);
+  });
+
   it("uses the explicit worktree, query, profile and output without inheriting startup scope", async () => {
     const root = fixtureRoot();
     const startup = repository(join(root, "startup"), "SmarterGPT", "control");
