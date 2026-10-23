@@ -69,6 +69,15 @@ describe("PlanArtifactService", () => {
     expect(service.resolve({ workingDir: root, profileDir: profile }).source).toBe(
       "profile-runner"
     );
+    expect(() =>
+      service.resolve({
+        workingDir: root,
+        profileDir: profile,
+        allowProfileFallback: false,
+      })
+    ).toThrowError(
+      expect.objectContaining<Partial<PlanArtifactServiceError>>({ code: "PLAN_NOT_FOUND" })
+    );
   });
 
   it("computes a path-independent canonical identity across JSON formatting", async () => {

@@ -126,8 +126,11 @@ const ScopeConfig = z
  * Returns normalized configuration with stable ordering
  */
 export function loadInputs(baseDir: string = "."): InputConfig {
-  const smartergptDir = path.join(baseDir, ".smartergpt");
+  return loadInputsFromProfile(path.join(baseDir, ".smartergpt"));
+}
 
+/** Load inputs from an already-resolved profile directory. */
+export function loadInputsFromProfile(smartergptDir: string): InputConfig {
   // Try configuration files in precedence order
   const configFiles = ["stack.yml", "scope.yml", "deps.yml"];
 
@@ -266,8 +269,18 @@ export function detectGitHubMode(baseDir: string = "."): {
     target?: string;
   };
 } {
-  const smartergptDir = path.join(baseDir, ".smartergpt");
+  return detectGitHubModeFromProfile(path.join(baseDir, ".smartergpt"));
+}
 
+/** Detect GitHub discovery from an already-resolved profile directory. */
+export function detectGitHubModeFromProfile(smartergptDir: string): {
+  shouldUseGitHub: boolean;
+  scopeConfig?: {
+    query?: string;
+    labels?: string[];
+    target?: string;
+  };
+} {
   // Check stack.yml with path resolution
   const stackResolved = resolveConfigPath(smartergptDir, "stack.yml");
 

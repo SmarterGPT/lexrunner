@@ -99,6 +99,11 @@ export interface ResolvePlanArtifactInput {
   workingDir?: string;
   profileDir?: string;
   scope?: PlanArtifactScope_v1;
+  /**
+   * Preserve the legacy profile runner fallback by default. Explicit repository
+   * routing disables it so ambient profile state cannot supply a foreign plan.
+   */
+  allowProfileFallback?: boolean;
 }
 
 /**
@@ -151,16 +156,18 @@ export class PlanArtifactService {
       return readArtifact(repositoryPlan, "repository-root", this.#hooks, undefined, scope);
     }
 
-    let profilePlan: string | undefined;
-    try {
-      const profile = resolveProfile(input.profileDir, workingDir);
-      profilePlan = path.join(profile.path, "runner", "plan.json");
-    } catch {
-      // A profile is only the backward-compatible final fallback. Keep failure
-      // diagnostics about the plan reference bounded and independent of host paths.
-    }
-    if (profilePlan && pathEntryExists(profilePlan)) {
-      return readArtifact(profilePlan, "profile-runner", this.#hooks, undefined, scope);
+    if (input.allowProfileFallback !== false) {
+      let profilePlan: string | undefined;
+      try {
+        const profile = resolveProfile(input.profileDir, workingDir);
+        profilePlan = path.join(profile.path, "runner", "plan.json");
+      } catch {
+        // A profile is only the backward-compatible final fallback. Keep failure
+        // diagnostics about the plan reference bounded and independent of host paths.
+      }
+      if (profilePlan && pathEntryExists(profilePlan)) {
+        return readArtifact(profilePlan, "profile-runner", this.#hooks, undefined, scope);
+      }
     }
 
     throw new PlanArtifactServiceError(

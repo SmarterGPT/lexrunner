@@ -21,6 +21,7 @@ import {
   writeGateEvidenceManifest,
   type GateEvidenceArtifactReference,
 } from "./gate-evidence-service.js";
+import { assertPlanRepositoryBinding } from "./repository-binding.js";
 
 const MAX_ITEMS = 256;
 const MAX_GATES_PER_ITEM = 64;
@@ -84,6 +85,7 @@ export class GateExecutionServiceError extends Error {
       | "GATE_WORKING_DIRECTORY_INVALID"
       | "GATE_WORKING_DIRECTORY_CONFLICT"
       | "GATE_CANDIDATE_CHANGED"
+      | "GATE_REPOSITORY_MISMATCH"
       | "GATE_ARTIFACT_DECLARATION_UNSUPPORTED",
     message: string
   ) {
@@ -117,6 +119,17 @@ export class GateExecutionService {
       throw new GateExecutionServiceError(
         "GATE_ARTIFACT_DECLARATION_UNSUPPORTED",
         artifactDeclarationErrorMessage(unsupportedArtifact, "Gate")
+      );
+    }
+    try {
+      assertPlanRepositoryBinding(
+        plan,
+        input.repoRoot === undefined ? process.cwd() : input.repoRoot
+      );
+    } catch {
+      throw new GateExecutionServiceError(
+        "GATE_REPOSITORY_MISMATCH",
+        "The plan repository is not bound to this gate execution worktree"
       );
     }
     const binding = bindGateDirectories(

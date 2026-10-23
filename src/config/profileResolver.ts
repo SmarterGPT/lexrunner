@@ -41,7 +41,8 @@ export interface ResolvedProfile {
  */
 export function resolveProfile(
   profileDirFlag?: string,
-  baseDir: string = process.cwd()
+  baseDir: string = process.cwd(),
+  options: { ignoreEnvironment?: boolean } = {}
 ): ResolvedProfile {
   let profilePath: string | undefined;
   let source: string;
@@ -55,7 +56,9 @@ export function resolveProfile(
   }
   // Precedence 2: LEX_PR_PROFILE_DIR environment variable (with LEXRUNNER_PROFILE_DIR alias)
   else {
-    const envProfileDir = getEnvWithAlias("LEX_PR_PROFILE_DIR", "LEXRUNNER_PROFILE_DIR");
+    const envProfileDir = options.ignoreEnvironment
+      ? undefined
+      : getEnvWithAlias("LEX_PR_PROFILE_DIR", "LEXRUNNER_PROFILE_DIR");
     if (envProfileDir) {
       profilePath = path.isAbsolute(envProfileDir)
         ? envProfileDir

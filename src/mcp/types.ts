@@ -32,16 +32,11 @@ export function getMCPEnvironment(): MCPEnvironment {
 /**
  * Single repository configuration for multi-repo discovery
  */
-export const RepoTarget = z.object({
-  owner: z.string(),
-  repo: z.string(),
-  priority: z.number().optional().default(1),
-});
-export type RepoTarget = z.infer<typeof RepoTarget>;
-
 export const PlanCreateArgs = z.object({
   json: z.boolean().optional(),
-  outDir: z.string().optional(),
+  outDir: z.string().min(1).max(4096).optional(),
+  repoRoot: z.string().min(1).max(4096).optional(),
+  profileDir: z.string().min(1).max(4096).optional(),
   // GitHub auto-discovery options
   fromGithub: z.boolean().optional(),
   query: z.string().optional(),
@@ -52,8 +47,6 @@ export const PlanCreateArgs = z.object({
   // Single repo mode (backward compatible)
   owner: z.string().optional(),
   repo: z.string().optional(),
-  // Multi-repo mode (issue #677)
-  repos: z.array(RepoTarget).optional(),
   requiredGates: z.array(z.string()).optional(),
   maxWorkers: z.number().optional(),
   target: z.string().optional(),
@@ -98,6 +91,8 @@ export type ProfileResolveArgs = z.infer<typeof ProfileResolveArgs>;
 export interface PlanCreateResult {
   plan: object;
   outDir: string;
+  routing: import("../application/plan-creation-operation-service.js").PlanRoutingReceipt;
+  files: import("../application/plan-creation-operation-service.js").PlanCreationOperationResult["files"];
 }
 
 export interface GatesRunResult {

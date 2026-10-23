@@ -218,6 +218,7 @@ function createStandardGate(gateName: string, pr: PullRequestDetails): Gate {
   const baseGate: Gate = {
     name: gateName,
     run: getStandardGateCommand(gateName),
+    cwd: ".",
     env: {
       PR_NUMBER: pr.number.toString(),
       PR_BRANCH: pr.head.ref,

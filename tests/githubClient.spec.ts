@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { GitHubClientImpl } from "../src/github/client.js";
+import { describe, it, expect, vi } from "vitest";
+import { buildRepositoryBoundPullRequestQuery, GitHubClientImpl } from "../src/github/client.js";
 
 function makeFakePR(n: number) {
   return {
@@ -19,6 +19,91 @@ function makeFakePR(n: number) {
 }
 
 describe("GitHubClientImpl (pagination & discovery)", () => {
+  it("executes an explicit query through repository-bound PR search", async () => {
+    const search = vi.fn();
+    const get = vi.fn(({ pull_number }) => ({ data: makeFakePR(pull_number) }));
+    const paginate = vi.fn(async (method: unknown, params: { q?: string }) => {
+      expect(method).toBe(search);
+      expect(params.q).toBe("is:pr is:open head:codex/release repo:Owner/Repo base:main");
+      return [{ number: 821 }];
+    });
+    const fakeOctokit = {
+      rest: {
+        pulls: { list: vi.fn(), get },
+        search: { issuesAndPullRequests: search },
+        repos: {
+          get: vi.fn(() => ({
+            data: {
+              owner: { login: "Owner" },
+              name: "Repo",
+              default_branch: "main",
+              html_url: "https://github.com/Owner/Repo",
+            },
+          })),
+        },
+      },
+      paginate,
+    };
+    const client = new GitHubClientImpl({
+      owner: "owner",
+      repo: "repo",
+      octokit: fakeOctokit as any,
+    });
+
+    const prs = await client.listOpenPRs({
+      query: "is:pr is:open head:codex/release",
+      base: "main",
+    });
+
+    expect(prs.map(({ number }) => number)).toEqual([821]);
+    expect(get).toHaveBeenCalledWith({ owner: "Owner", repo: "Repo", pull_number: 821 });
+  });
+
+  it.each([
+    "repo:other/repo is:pr",
+    "org:other is:pr",
+    "user:other is:pr",
+    "type:issue",
+    'repo:"other/repo" is:pr',
+    "org:'other' is:pr",
+    'type:"issue"',
+    'is:"closed"',
+    'base:"other"',
+    "is:issue",
+    "is:pr OR is:issue",
+    "(repo:other/repo)",
+    "((org:other))",
+    "(base:other)",
+    "(is:issue)",
+    "(is:pr OR is:issue)",
+    "is:pr is:closed",
+    "is:pr base:other",
+  ])("rejects unsafe or conflicting query %s", (query) => {
+    expect(() =>
+      buildRepositoryBoundPullRequestQuery({
+        query,
+        owner: "Owner",
+        repo: "Repo",
+        base: "main",
+        state: "open",
+      })
+    ).toThrow();
+  });
+
+  it.each(["bad owner", "repo:escape", "main repo:other/repo", 'main" repo:other/repo'])(
+    "rejects unsafe repository or target interpolation %s",
+    (value) => {
+      expect(() =>
+        buildRepositoryBoundPullRequestQuery({
+          owner: value === "bad owner" ? value : "Owner",
+          repo: value === "repo:escape" ? value : "Repo",
+          base: value.startsWith("main") ? value : "main",
+          state: "open",
+        })
+      ).toThrow();
+    }
+  );
+
   it("aggregates paginated PRs via paginate", async () => {
     // Create fake octokit with paginate that returns two pages
     const prsPage1 = Array.from({ length: 100 }, (_, i) => makeFakePR(i + 1));

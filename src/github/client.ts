@@ -31,6 +31,110 @@ export type {
 };
 export { GitHubAPIError, GitHubRateLimitError, GitHubAuthError };
 
+export function buildRepositoryBoundPullRequestQuery(input: {
+  query?: string;
+  owner: string;
+  repo: string;
+  base?: string;
+  state?: "open" | "closed" | "all";
+}): string {
+  const query = input.query?.trim() ?? "";
+  if (
+    !/^[A-Za-z0-9_.-]{1,255}$/u.test(input.owner) ||
+    !/^[A-Za-z0-9_.-]{1,255}$/u.test(input.repo)
+  ) {
+    throw new GitHubAPIError("GitHub repository identity is invalid");
+  }
+  if (
+    input.base !== undefined &&
+    (Buffer.byteLength(input.base, "utf8") > 512 ||
+      !/^[^\s"'\\:]+$/u.test(input.base) ||
+      input.base.includes("..") ||
+      input.base.includes("@{"))
+  ) {
+    throw new GitHubAPIError("GitHub target branch is unsafe for repository-bound search");
+  }
+  if (Buffer.byteLength(query, "utf8") > 4096) {
+    throw new GitHubAPIError("GitHub PR query exceeds the 4096-byte limit");
+  }
+  const tokens = unquotedSearchTokens(query);
+  if (tokens.some((token) => token.toUpperCase() === "OR")) {
+    throw new GitHubAPIError("GitHub PR query cannot contain an unquoted OR expression");
+  }
+  if (tokens.some((token) => /^(?:repo|org|user|type):/iu.test(token))) {
+    throw new GitHubAPIError(
+      "GitHub PR query cannot override repository, organization, user, or result type"
+    );
+  }
+  if (tokens.some((token) => /^is:issue$/iu.test(token))) {
+    throw new GitHubAPIError("GitHub PR query cannot select issues");
+  }
+
+  const requestedState = input.state ?? "open";
+  const stateTokens = tokens
+    .filter((token) => /^is:(?:open|closed|merged)$/iu.test(token))
+    .map((token) => token.slice(3).toLowerCase());
+  if (
+    requestedState !== "all" &&
+    stateTokens.some(
+      (state) => state !== requestedState && !(requestedState === "closed" && state === "merged")
+    )
+  ) {
+    throw new GitHubAPIError("GitHub PR query state conflicts with the requested state");
+  }
+
+  const baseTokens = tokens
+    .filter((token) => /^base:/iu.test(token))
+    .map((token) => token.slice(5));
+  if (input.base && baseTokens.some((base) => base.toLowerCase() !== input.base!.toLowerCase())) {
+    throw new GitHubAPIError("GitHub PR query base conflicts with the requested target branch");
+  }
+
+  const qualifiers = [query];
+  qualifiers.push(`repo:${input.owner}/${input.repo}`);
+  if (!tokens.some((token) => /^is:pr$/iu.test(token))) qualifiers.push("is:pr");
+  if (
+    requestedState !== "all" &&
+    !tokens.some((token) => /^is:(?:open|closed|merged)$/iu.test(token))
+  ) {
+    qualifiers.push(`is:${requestedState}`);
+  }
+  if (input.base && baseTokens.length === 0) qualifiers.push(`base:${input.base}`);
+  return qualifiers.filter(Boolean).join(" ");
+}
+
+function unquotedSearchTokens(query: string): string[] {
+  const tokens: string[] = [];
+  let token = "";
+  let quote: '"' | "'" | undefined;
+  let hasUnquotedCharacters = false;
+  const flush = () => {
+    if (token && hasUnquotedCharacters) tokens.push(token);
+    token = "";
+    hasUnquotedCharacters = false;
+  };
+  for (const character of query) {
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else token += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (/\s/u.test(character) || character === "(" || character === ")") {
+      flush();
+      continue;
+    }
+    token += character;
+    hasUnquotedCharacters = true;
+  }
+  if (quote) throw new GitHubAPIError("GitHub PR query contains an unterminated quote");
+  flush();
+  return tokens;
+}
+
 export interface GitHubClient {
   listOpenPRs(options?: PRQueryOptions): Promise<PullRequest[]>;
   getPRDetails(number: number): Promise<PullRequestDetails>;
@@ -189,6 +293,17 @@ export class GitHubClientImpl implements GitHubClient {
   }
 
   async listOpenPRs(options: PRQueryOptions = {}): Promise<PullRequest[]> {
+    if (options.query) {
+      // Reject scope-broadening syntax before repository normalization performs
+      // the first API request.
+      buildRepositoryBoundPullRequestQuery({
+        query: options.query,
+        owner: this.owner,
+        repo: this.repo,
+        base: options.base,
+        state: options.state ?? "open",
+      });
+    }
     // Normalize repository name before making API calls
     await this.normalizeRepositoryName();
 
@@ -205,6 +320,54 @@ export class GitHubClientImpl implements GitHubClient {
 
       if (options.base) params.base = options.base;
       if (options.head) params.head = options.head;
+
+      if (options.query) {
+        const q = buildRepositoryBoundPullRequestQuery({
+          query: options.query,
+          owner: this.owner,
+          repo: this.repo,
+          base: options.base,
+          state: options.state ?? "open",
+        });
+        const searchParams: any = {
+          q,
+          per_page: options.per_page || 30,
+          page: options.page ?? 1,
+          ...(options.sort === "created" || options.sort === "updated"
+            ? { sort: options.sort }
+            : {}),
+          ...(options.direction ? { order: options.direction } : {}),
+        };
+        const search = (this.octokit as any).rest.search?.issuesAndPullRequests;
+        if (typeof search !== "function") {
+          throw new GitHubAPIError("GitHub search is unavailable for the requested PR query");
+        }
+        const searchItems =
+          typeof (this.octokit as any).paginate === "function"
+            ? await (this.octokit as any).paginate(search, searchParams)
+            : ((await search(searchParams)).data.items ?? []);
+        const numbers = [
+          ...new Set<number>(
+            searchItems
+              .map((item: any) => item.number)
+              .filter((number: unknown): number is number => Number.isInteger(number))
+          ),
+        ];
+        const pullResponses = await Promise.all(
+          numbers.map((pull_number) =>
+            this.octokit.rest.pulls.get({ owner: this.owner, repo: this.repo, pull_number })
+          )
+        );
+        let prs = pullResponses.map(({ data }) => data);
+        if (options.labels && options.labels.length > 0) {
+          prs = prs.filter((pr: any) =>
+            options.labels!.some((label: string) =>
+              pr.labels.some((prLabel: any) => prLabel.name === label)
+            )
+          );
+        }
+        return prs.map(this.transformPR);
+      }
 
       // Use octokit.paginate to follow pagination automatically if available
       let allPRs: any[];

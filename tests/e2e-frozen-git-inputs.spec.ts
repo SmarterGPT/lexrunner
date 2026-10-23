@@ -128,6 +128,43 @@ describe("frozen generated Git inputs (local repositories, simulated GitHub meta
     expect(await git(f.working, "rev-parse", "HEAD^2")).toBe(f.source);
   }, 30_000);
 
+  it("rejects a resumed gate outside the repository before creating its integration branch", async () => {
+    const f = await fixture();
+    const foreign = join(f.root, "foreign-repository");
+    await mkdir(foreign);
+    await git(foreign, "init", "--quiet");
+    const invalidPlan = structuredClone(f.plan);
+    invalidPlan.items[0]!.gates[0]!.cwd = foreign;
+    const originalHead = await git(f.working, "rev-parse", "HEAD");
+    const originalAcquiredRefs = await git(
+      f.working,
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/lexrunner"
+    );
+    await expect(
+      createLocalResumeCheckpoint({ plan: invalidPlan, workingDir: f.working })
+    ).rejects.toMatchObject({ code: "PLAN_REPOSITORY_MISMATCH" });
+    expect(await git(f.working, "rev-parse", "HEAD")).toBe(originalHead);
+    expect(await git(f.working, "for-each-ref", "--format=%(refname)", "refs/lexrunner")).toBe(
+      originalAcquiredRefs
+    );
+
+    const checkpoint = await createLocalResumeCheckpoint({ plan: f.plan, workingDir: f.working });
+    checkpoint.plan.items[0]!.gates[0]!.cwd = foreign;
+    const driver = new LocalWeaveResumeDriver(f.working);
+    const integrationBranch = checkpoint.metadata!.resume!.repository.integrationBranch;
+
+    await expect(driver.validate(checkpoint)).resolves.toMatchObject({
+      valid: false,
+      reason: expect.stringContaining("not bound"),
+    });
+    await expect(
+      driver.execute(checkpoint.metadata!.resume!.operations[0]!, checkpoint)
+    ).resolves.toMatchObject({ completed: false, reason: expect.stringContaining("not bound") });
+    expect(await git(f.working, "branch", "--list", integrationBranch)).toBe("");
+  }, 30_000);
+
   it.each(["source", "target"])(
     "rejects moved %s refs without changing expected commits",
     async (which) => {

@@ -24,6 +24,15 @@ describe("published plan artifact parity", () => {
     const env = { LEX_PR_PROFILE_DIR: join(root, "profile"), ALLOW_MUTATIONS: "false" };
 
     const inventory = await invokeMcp(root, env, "tools/list");
+    const planCreateTool = inventory.result.tools.find(
+      (candidate: { name: string }) => candidate.name === "plan.create"
+    );
+    expect(planCreateTool.description).toContain("GITHUB_TOKEN");
+    expect(planCreateTool.inputSchema.properties).toMatchObject({
+      repoRoot: { type: "string", minLength: 1, maxLength: 4096 },
+      profileDir: { type: "string", minLength: 1, maxLength: 4096 },
+    });
+    expect(planCreateTool.inputSchema.properties.repos).toBeUndefined();
     for (const name of ["status", "merge-order", "gates.run", "merge.apply"]) {
       const tool = inventory.result.tools.find(
         (candidate: { name: string }) => candidate.name === name
@@ -114,6 +123,110 @@ describe("published plan artifact parity", () => {
       digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
   }, 15_000);
+
+  it("creates configuration plans through the shared non-authorizing routing contract", async () => {
+    const root = await fixtureRepository();
+    const response = await invokeMcp(
+      root,
+      { LEX_PR_PROFILE_DIR: join(root, "profile"), ALLOW_MUTATIONS: "false" },
+      "tools/call",
+      {
+        name: "plan.create",
+        arguments: { outDir: join(root, "generated") },
+      }
+    );
+    expect(response.error).toBeUndefined();
+    const result = JSON.parse(response.result.content[0].text);
+    expect(result).toMatchObject({
+      contract: "bounded-ax-v1",
+      routing: {
+        contract: "lexrunner-plan-routing-v1",
+        authority: "unverified",
+        authorizesExecution: false,
+        authorizesMerge: false,
+        resolvedRepository: { root },
+        profile: { root: join(root, "profile"), precedence: "environment-or-local" },
+        output: { root: join(root, "generated"), source: "explicit" },
+        gate: { cwd: ".", repositoryRoot: root },
+      },
+      files: {
+        plan: join(root, "generated", "plan.json"),
+        snapshot: join(root, "generated", "snapshot.md"),
+        routingReceipt: join(root, "generated", "routing-receipt.json"),
+      },
+    });
+  });
+
+  it("resolves a relative gate plan from the explicit repository root", async () => {
+    const startup = await fixtureRepository();
+    const target = await fixtureRepository();
+    await writeFile(
+      join(target, "plan.json"),
+      `${JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          target: "main",
+          items: [
+            {
+              name: "target-only",
+              deps: [],
+              gates: [
+                {
+                  name: "target-gate",
+                  run: 'node -e "process.exit(0)"',
+                  cwd: ".",
+                  env: {},
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    const response = await invokeMcp(
+      startup,
+      { LEX_PR_PROFILE_DIR: join(startup, "profile"), ALLOW_MUTATIONS: "false" },
+      "tools/call",
+      {
+        name: "gates.run",
+        arguments: {
+          repoRoot: target,
+          planFile: "plan.json",
+          onlyItem: "target-only",
+          outDir: "target-gates",
+        },
+      }
+    );
+    expect(response.error).toBeUndefined();
+    expect(JSON.parse(response.result.content[0].text)).toMatchObject({
+      items: [{ name: "target-only", status: "pass" }],
+      allGreen: true,
+    });
+  });
+
+  it("maps bounded plan routing failures to invalid MCP parameters", async () => {
+    const root = await fixtureRepository();
+    const response = await invokeMcp(
+      root,
+      { LEX_PR_PROFILE_DIR: join(root, "profile"), ALLOW_MUTATIONS: "false" },
+      "tools/call",
+      {
+        name: "plan.create",
+        arguments: { owner: "SmarterGPT" },
+      }
+    );
+
+    expect(response.error.code).toBe(-32602);
+    expect(JSON.parse(response.error.message)).toMatchObject({
+      code: "PLAN_CREATION_ARGUMENTS_INVALID",
+      context: { tool: "plan.create" },
+    });
+    expect(Buffer.byteLength(response.error.message, "utf8")).toBeLessThan(4_096);
+  });
 
   it("returns stable privacy-safe errors for bad explicit published references", async () => {
     const root = await fixtureRepository();

@@ -20,6 +20,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Fixed
 
+- Plan creation now binds explicit repository, profile, query, output and gate
+  routing across CLI and both MCP adapters. Cross-repository mismatches and
+  unsafe search qualifiers fail before GitHub access or artifact writes; gate
+  execution rejects plans bound to a different worktree. Routing receipts remain
+  non-authorizing and report only the discovery query actually executed.
+- Local gate cwd is confined to the selected physical worktree in service, raw,
+  and persisted-resume execution. Unsupported multi-repository plans fail closed
+  before apply/checkpoint/resume mutation, and colliding plan companion outputs
+  are rejected before network access or writes.
+- Explicit MCP gate roots no longer import ambient profile plans, invalid candidate
+  roots map to invalid parameters, grouped search qualifiers remain confined, and
+  CLI dry-run/cache/audit plus resume paths bind the repository before side effects.
 - Evidence status accepts an explicit repository root from a non-Git MCP startup
   folder, while retaining candidate/hash validation and unverified merge authority.
 - CI package qualification activates the exact npm runtime required by its policy

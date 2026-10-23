@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { FrozenGitInputError } from "../git/frozen-inputs.js";
 import { computeMergeOrder } from "../mergeOrder.js";
 import type { Plan } from "../schema.js";
+import { assertSingleRepositoryPlan } from "./repository-binding.js";
 import {
   createLocalResumeCheckpoint,
   LocalWeaveResumeDriver,
@@ -16,7 +17,11 @@ const MAX_LABEL_BYTES = 512;
 const MAX_RESULT_BYTES = 256 * 1024;
 
 export type MergeApplicationFailureCode =
-  "MERGE_MUTATION_DENIED" | "MERGE_STALE_INPUT" | "MERGE_CONFLICT" | "MERGE_APPLICATION_FAILED";
+  | "MERGE_MUTATION_DENIED"
+  | "MERGE_STALE_INPUT"
+  | "MERGE_CONFLICT"
+  | "MERGE_MULTI_REPO_UNSUPPORTED"
+  | "MERGE_APPLICATION_FAILED";
 
 export class MergeApplicationServiceError extends Error {
   constructor(
@@ -73,6 +78,14 @@ export class MergeApplicationService {
     dryRun: boolean;
     mutationAuthorized: boolean;
   }): Promise<{ summary: BoundedMergeApplicationResult; execution?: MergeApplicationExecution }> {
+    try {
+      assertSingleRepositoryPlan(input.plan);
+    } catch {
+      throw new MergeApplicationServiceError(
+        "MERGE_MULTI_REPO_UNSUPPORTED",
+        "Multi-repository plans cannot be applied in a single repository worktree"
+      );
+    }
     const levels = computeMergeOrder(input.plan);
     assertBounded(input.plan, levels);
     if (input.dryRun) {

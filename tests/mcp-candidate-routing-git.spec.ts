@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -166,6 +166,48 @@ describe.each(["source", "published"] as const)("%s MCP candidate binding", (sur
     } finally {
       await client.close();
     }
+  }, 30_000);
+
+  it("does not import an ambient profile plan for an explicit repository root", async () => {
+    const f = fixture();
+    const profile = join(f.root, "private-profile", "runner");
+    const marker = join(f.artifacts, "ambient-profile-must-not-run.marker");
+    mkdirSync(profile, { recursive: true });
+    writeFileSync(join(f.root, "private-profile", "profile.yml"), "role: local\n");
+    const ambient = routingPlan();
+    ambient.items[0]!.gates[0]!.run = `node -e "require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')"`;
+    writeFileSync(join(profile, "plan.json"), JSON.stringify(ambient));
+    const client = await connectedClient(f, surface);
+    let failure: unknown;
+    try {
+      await client.callTool({ name: tool, arguments: { repoRoot: f.a, outDir: f.artifacts } });
+    } catch (error) {
+      failure = error;
+    } finally {
+      await client.close();
+    }
+    expect(failure).toMatchObject({ code: -32602 });
+    expect(String(failure)).toContain("PLAN_NOT_FOUND");
+    expect(existsSync(marker)).toBe(false);
+    expect(containsManifest(f.artifacts)).toBe(false);
+  }, 30_000);
+
+  it("maps an unavailable explicit repository root to invalid parameters", async () => {
+    const f = fixture();
+    const client = await connectedClient(f, surface);
+    let failure: unknown;
+    try {
+      await client.callTool({
+        name: tool,
+        arguments: { repoRoot: join(f.root, "missing"), outDir: f.artifacts },
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      await client.close();
+    }
+    expect(failure).toMatchObject({ code: -32602 });
+    expect(String(failure)).toContain("GATE_CANDIDATE_ROOT_INVALID");
   }, 30_000);
 
   it("refuses unavailable roots and conflicting gate candidates before gate output or manifests", async () => {

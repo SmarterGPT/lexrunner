@@ -65,6 +65,11 @@ import {
   artifactDeclarationErrorMessage,
   findUnsupportedArtifactDeclaration,
 } from "./gates/artifact-declarations.js";
+import {
+  assertPlanRepositoryBinding,
+  bindLocalGateWorkingDirectory,
+  bindPlanGateWorkingDirectories,
+} from "./application/repository-binding.js";
 
 export interface LocalGateShellInvocation {
   command: "bash" | "pwsh";
@@ -118,6 +123,16 @@ export async function executeGate(
   shouldCancel?: () => boolean
 ): Promise<GateResult> {
   if (shouldCancel?.()) return cancelledGateAdmission(gate.name);
+  let boundRepoRoot = repoRoot;
+  let boundWorkingDirectory = resolvedWorkingDirectory;
+  if (!gate.runtime || gate.runtime === "local") {
+    const binding = bindLocalGateWorkingDirectory(
+      gate,
+      repoRoot || resolvedWorkingDirectory || process.cwd()
+    );
+    boundRepoRoot = binding.repositoryRoot;
+    boundWorkingDirectory = binding.workingDirectory;
+  }
   // Validate gate input before execution (unless explicitly skipped)
   if (!skipValidation && gate.input) {
     try {
@@ -164,10 +179,10 @@ export async function executeGate(
       artifactDir,
       attempt,
       timeoutMs,
-      repoRoot,
+      boundRepoRoot,
       itemName,
       candidateDigest,
-      resolvedWorkingDirectory,
+      boundWorkingDirectory,
       shouldCancel
     );
     if (result.attempts === 0 && shouldCancel?.()) {
@@ -431,10 +446,12 @@ async function executeLocalGate(
   resolvedWorkingDirectory?: string,
   shouldCancel?: () => boolean
 ): Promise<GateResult> {
-  // Use gate.cwd if specified, otherwise fall back to repoRoot (captured at execution start).
-  // If neither is available, use process.cwd() as a last resort fallback.
+  // Relative gate cwd is always anchored to the selected repository. Treating
+  // "." as process cwd lets a generated cross-repository gate escape its binding.
+  const repositoryDirectory = path.resolve(repoRoot || process.cwd());
   const workingDirectory = path.resolve(
-    resolvedWorkingDirectory ?? (gate.cwd || repoRoot || process.cwd())
+    resolvedWorkingDirectory ??
+      (gate.cwd === undefined ? repositoryDirectory : path.resolve(repositoryDirectory, gate.cwd))
   );
   const gateArtifactDirectory = path.join(artifactDir, artifactIdentitySegment(gate.name));
   const environment = sanitizedGateEnvironment(gate.env);
@@ -1206,8 +1223,18 @@ export async function executeGatesWithPolicy(
     throw new Error(artifactDeclarationErrorMessage(unsupportedArtifact, "Gate"));
   }
 
-  // Capture repository root once at the start of execution
-  const workingDir = repoRoot || process.cwd();
+  // Capture and confine the physical repository and every selected local cwd
+  // before creating artifacts or admitting commands.
+  const binding = bindPlanGateWorkingDirectories(plan, repoRoot || process.cwd(), {
+    onlyItem: options?.onlyItem,
+    onlyGate: options?.onlyGate,
+  });
+  const workingDir = binding.repositoryRoot;
+  assertPlanRepositoryBinding(plan, workingDir);
+  const executionOptions = {
+    ...options,
+    resolvedGateWorkingDirectories: binding.workingDirectories,
+  };
 
   // Wave 3 Governance: Hostility → Gate Timeout Adjustment
   // Best-effort: if the environment check fails, fall back to the provided timeout.
@@ -1338,7 +1365,7 @@ export async function executeGatesWithPolicy(
                 effectiveTimeoutMs,
                 skipValidation,
                 workingDir,
-                options
+                executionOptions
               );
               if (options?.shouldCancel?.()) {
                 executionState.blockNode(node, []);
