@@ -61,6 +61,10 @@ import {
   type DeclaredArtifactBaseline,
   type GateArtifactFileIdentity,
 } from "./gates/execution-receipt.js";
+import {
+  artifactDeclarationErrorMessage,
+  findUnsupportedArtifactDeclaration,
+} from "./gates/artifact-declarations.js";
 
 export interface LocalGateShellInvocation {
   command: "bash" | "pwsh";
@@ -1193,6 +1197,15 @@ export async function executeGatesWithPolicy(
     shouldCancel?: () => boolean;
   }
 ): Promise<void> {
+  const unsupportedArtifact = findUnsupportedArtifactDeclaration({
+    plan,
+    onlyItem: options?.onlyItem,
+    onlyGate: options?.onlyGate,
+  });
+  if (unsupportedArtifact) {
+    throw new Error(artifactDeclarationErrorMessage(unsupportedArtifact, "Gate"));
+  }
+
   // Capture repository root once at the start of execution
   const workingDir = repoRoot || process.cwd();
 

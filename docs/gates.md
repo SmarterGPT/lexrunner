@@ -43,7 +43,12 @@ heartbeat publications. A stale snapshot still reports unknown worker freshness.
 
 Durable operations support local command gates with execution receipts. Container,
 CI-service, the special `vuln` gate and pre-execution `input` validators are refused
-before launch. The artifact filesystem must support atomic rename and hard links
+before launch. Artifact declarations are exact literal paths, resolved from the gate's
+execution directory unless absolute. Empty paths, NUL bytes, glob metacharacters
+(`*`, `?`, `[...]`), brace syntax (`{...}`), and extglob syntax (`@(...)`, `+(...)`,
+`!(...)`) are unsupported; durable start refuses them before creating an operation or
+launching a command. LexRunner does not expand wildcard traversal. The artifact
+filesystem must support atomic rename and hard links
 for complete, exclusive record publication. An incomplete admission is retained
 for inspection and never automatically relaunched. The ordinary
 portable execution contract does not establish protected native custody or merge
@@ -61,7 +66,7 @@ Gates in lexrunner execute commands to verify code quality, run tests, perform s
 - Environment variables (`env`)
 - Input validation schema (`input`)
 - Runtime configuration (local, container, or CI service)
-- Artifact collection paths
+- Exact literal artifact collection paths (one file per declaration; no glob expansion)
 
 ## Gate Input Validation
 
