@@ -211,17 +211,22 @@ export class PlanCreationOperationService {
       });
     }
     const planFile = args.planFile ? path.resolve(repositoryRoot, args.planFile) : undefined;
-    const outDir = planFile
+    const requestedOutDir = planFile
       ? path.dirname(planFile)
       : args.outDir
         ? path.resolve(repositoryRoot, args.outDir)
         : path.join(resolvedProfile.path, "runner");
+    const outDir = resolvePhysicalDirectoryCandidate(requestedOutDir);
+    const physicalProfileRoot = resolvePhysicalDirectoryCandidate(resolvedProfile.path);
+    if ((!args.planFile && !args.outDir) || isWithin(resolvedProfile.path, requestedOutDir)) {
+      assertPhysicalContainment(physicalProfileRoot, outDir);
+    }
     const files = {
-      plan: planFile ?? path.join(outDir, "plan.json"),
+      plan: path.join(outDir, planFile ? path.basename(planFile) : "plan.json"),
       snapshot: path.join(outDir, "snapshot.md"),
       routingReceipt: path.join(outDir, "routing-receipt.json"),
     };
-    assertDistinctOutputPaths(Object.values(files));
+    assertOutputFilesWithinRoot(outDir, assertDistinctOutputPaths(Object.values(files)));
 
     if (fromGithub && request.requireGitHubToken) {
       const token = args.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -338,20 +343,36 @@ export class PlanCreationOperationService {
 
 export function writePlanCreationArtifacts(result: PlanCreationOperationResult): void {
   const profile = result.routing.profile;
-  const output = result.routing.output.root;
-  if (isWithin(profile.root, output)) {
-    const resolved = resolveProfile(profile.root, result.routing.resolvedRepository.root);
+  const output = path.resolve(result.routing.output.root);
+  const observedOutput = resolvePhysicalDirectoryCandidate(output);
+  if (!samePhysicalPath(output, observedOutput)) {
+    throw invalidPhysicalOutput();
+  }
+  const resolved = resolveProfile(profile.root, result.routing.resolvedRepository.root);
+  const physicalProfileRoot = resolvePhysicalDirectoryCandidate(resolved.path);
+  const outputIsWithinProfile = isWithin(physicalProfileRoot, observedOutput);
+  if (result.routing.output.source === "profile-default") {
+    assertPhysicalContainment(physicalProfileRoot, observedOutput);
+  }
+  if (outputIsWithinProfile) {
     validateWriteOperation(resolved.path, resolved.manifest.role, "write plan artifacts");
   }
   // Reobserve aliases immediately before the first mutation. A caller may have
   // created links after planning; never let sequential writes overwrite one
   // artifact through another physical file.
-  assertDistinctOutputPaths(Object.values(result.files));
+  assertOutputFilesWithinRoot(output, assertDistinctOutputPaths(Object.values(result.files)));
   fs.mkdirSync(output, { recursive: true });
   // mkdir may make a previously missing output path observable, or an
   // untrusted peer may have populated the directory while it was created.
   // Recheck after directory creation and immediately before the first write.
-  const destinations = assertDistinctOutputPaths(Object.values(result.files));
+  const reobservedOutput = resolvePhysicalDirectoryCandidate(output);
+  if (!samePhysicalPath(output, reobservedOutput)) {
+    throw invalidPhysicalOutput();
+  }
+  const destinations = assertOutputFilesWithinRoot(
+    output,
+    assertDistinctOutputPaths(Object.values(result.files))
+  );
   const artifacts = [
     { destination: destinations[0]!.writePath, content: canonicalJSONStringify(result.plan) },
     { destination: destinations[1]!.writePath, content: result.snapshot },
@@ -403,6 +424,32 @@ interface OutputPathObservation {
   canonicalPath: string;
   writePath: string;
   identity?: string;
+}
+
+function assertPhysicalContainment(parent: string, child: string): void {
+  if (!isWithin(parent, child)) throw invalidPhysicalOutput();
+}
+
+function assertOutputFilesWithinRoot(
+  outputRoot: string,
+  observations: OutputPathObservation[]
+): OutputPathObservation[] {
+  const canonicalRoot = normalizePhysicalPath(outputRoot);
+  if (
+    observations.some(
+      ({ writePath }) => normalizePhysicalPath(path.dirname(writePath)) !== canonicalRoot
+    )
+  ) {
+    throw invalidPhysicalOutput();
+  }
+  return observations;
+}
+
+function invalidPhysicalOutput(): PlanCreationOperationError {
+  return new PlanCreationOperationError(
+    "PLAN_CREATION_ARGUMENTS_INVALID",
+    "Plan artifact outputs must remain within the reported physical output root"
+  );
 }
 
 function assertDistinctOutputPaths(paths: string[]): OutputPathObservation[] {
@@ -471,6 +518,36 @@ function observeOutputPath(value: string): OutputPathObservation {
   }
   const writePath = path.join(fs.realpathSync(ancestor), ...remaining);
   return { canonicalPath: normalizePhysicalPath(writePath), writePath };
+}
+
+function resolvePhysicalDirectoryCandidate(value: string): string {
+  const absolute = path.resolve(value);
+  const remaining: string[] = [];
+  let ancestor = absolute;
+  for (;;) {
+    try {
+      fs.lstatSync(ancestor);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw invalidPhysicalOutput();
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw invalidPhysicalOutput();
+      remaining.unshift(path.basename(ancestor));
+      ancestor = parent;
+      continue;
+    }
+    try {
+      const physicalAncestor = fs.realpathSync(ancestor);
+      if (!fs.statSync(physicalAncestor).isDirectory()) throw invalidPhysicalOutput();
+      return path.join(physicalAncestor, ...remaining);
+    } catch (error) {
+      if (error instanceof PlanCreationOperationError) throw error;
+      throw invalidPhysicalOutput();
+    }
+  }
+}
+
+function samePhysicalPath(left: string, right: string): boolean {
+  return normalizePhysicalPath(left) === normalizePhysicalPath(right);
 }
 
 function normalizePhysicalPath(value: string): string {

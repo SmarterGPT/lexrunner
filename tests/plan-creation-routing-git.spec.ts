@@ -283,6 +283,84 @@ describe("repository-bound plan creation", () => {
     expect(existsSync(join(profileRoot, "runner", "routing-receipt.json"))).toBe(false);
   });
 
+  it("rejects a profile output directory redirected outside its physical boundary", async () => {
+    const root = fixtureRoot();
+    const profileRoot = join(root, ".smartergpt.local");
+    const external = join(root, "external");
+    mkdirSync(profileRoot, { recursive: true });
+    mkdirSync(external, { recursive: true });
+    writeFileSync(join(profileRoot, "profile.yml"), "role: local\n", "utf8");
+    writeFileSync(
+      join(profileRoot, "stack.yml"),
+      [
+        "version: 1",
+        "target: main",
+        "items:",
+        "  - id: local",
+        "    branch: feature/local",
+        "    deps: []",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    symlinkSync(
+      external,
+      join(profileRoot, "runner"),
+      process.platform === "win32" ? "junction" : "dir"
+    );
+    const createClient = vi.fn();
+
+    await expect(
+      new PlanCreationOperationService(createClient as any).run({
+        startupDir: root,
+        args: { profileDir: profileRoot },
+      })
+    ).rejects.toMatchObject({ code: "PLAN_CREATION_ARGUMENTS_INVALID" });
+    expect(createClient).not.toHaveBeenCalled();
+    expect(readFileSync(join(profileRoot, "stack.yml"), "utf8")).toContain("feature/local");
+    expect(existsSync(join(external, "plan.json"))).toBe(false);
+    expect(existsSync(join(external, "snapshot.md"))).toBe(false);
+    expect(existsSync(join(external, "routing-receipt.json"))).toBe(false);
+  });
+
+  it("rechecks a missing output directory before artifact writes", async () => {
+    const root = fixtureRoot();
+    const profileRoot = join(root, ".smartergpt.local");
+    const external = join(root, "external");
+    mkdirSync(profileRoot, { recursive: true });
+    mkdirSync(external, { recursive: true });
+    writeFileSync(join(profileRoot, "profile.yml"), "role: local\n", "utf8");
+    writeFileSync(
+      join(profileRoot, "stack.yml"),
+      [
+        "version: 1",
+        "target: main",
+        "items:",
+        "  - id: local",
+        "    branch: feature/local",
+        "    deps: []",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    const operation = await new PlanCreationOperationService(vi.fn() as any).run({
+      startupDir: root,
+      args: { profileDir: profileRoot },
+    });
+    symlinkSync(
+      external,
+      operation.routing.output.root,
+      process.platform === "win32" ? "junction" : "dir"
+    );
+
+    expect(() => writePlanCreationArtifacts(operation)).toThrowError(
+      expect.objectContaining({ code: "PLAN_CREATION_ARGUMENTS_INVALID" })
+    );
+    expect(existsSync(join(external, "plan.json"))).toBe(false);
+    expect(existsSync(join(external, "snapshot.md"))).toBe(false);
+    expect(existsSync(join(external, "routing-receipt.json"))).toBe(false);
+  });
+
   it.skipIf(process.platform === "win32")(
     "rejects a single output symlinked to an external file before discovery or writes",
     async () => {
