@@ -43,7 +43,7 @@ The packaging job:
 2. checks every `bin`, `types`, and `exports` target against the dry-run tarball;
 3. rejects npm-normalized metadata drift, including removable `bin` paths and non-canonical
    repository URLs;
-4. rejects paths outside the allowlist, more than 120 files, or more than 7 MB
+4. rejects paths outside the allowlist, more than 120 files, or more than 7.1 MB
    unpacked;
 5. installs the real tarball into a clean consumer with its own explicit strict
    script policy and refreshed registry metadata; and
@@ -61,7 +61,7 @@ See [local adoption and installation boundaries](../local-dogfood-install.md).
 
 The separate `release:publish:check` gate runs npm's own publication dry-run and fails on metadata
 normalization warnings. For a clean signed tag it prints the final command but never publishes;
-the authenticated human release owner retains that authority.
+only the verified stable-tag GitHub workflow receives OIDC authority to execute that command.
 
 The audited baseline before this boundary was 1,340 files, 3,243,620 bytes
 packed, and 13,837,669 bytes unpacked. The initial bounded artifact is 90 files,

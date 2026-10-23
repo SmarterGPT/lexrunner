@@ -1,5 +1,22 @@
 # Evidence verification
 
+## Isolate Vitest JSON evidence
+
+The default Vitest run still writes `test-results.json` for CI. Independent
+reviews and concurrent isolated runs must select a unique report path instead of
+sharing that file. Create the destination directory first, then run the native
+Vitest entry point with both reporters and a per-invocation output:
+
+```powershell
+New-Item -ItemType Directory -Force artifacts/review/<execution-id> | Out-Null
+node node_modules/vitest/vitest.mjs run tests/<scope>.spec.ts --maxWorkers=1 --reporter=default --reporter=json --outputFile=artifacts/review/<execution-id>/vitest.json
+```
+
+Bind retained evidence to the exact command, working directory, commit and
+execution identity. The selected path overrides the configured default without
+editing source. Never infer gate success from `test-results.json` or another
+report if a parallel or later execution may have overwritten its identity.
+
 ## Compact JSON digest
 
 The package root exports the existing compact JSON digest helper and an explicit

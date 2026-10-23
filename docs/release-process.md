@@ -63,24 +63,27 @@ public read access grants no publication authority.
 
 ```bash
 git status --short
-npm run release:prepare
-git diff -- CHANGELOG.md package.json package-lock.json README.md docs/AX.md
-npm run docs:surface
-npm run build
-npm test
+corepack npm@11.16.0 run release:prepare
+git diff -- CHANGELOG.md package.json package-lock.json README.md docs/AX.md docs/releases
+corepack npm@11.16.0 run docs:surface
+corepack npm@11.16.0 run build
+corepack npm@11.16.0 test
 ```
 
 Review the version, changelog, generated documentation, and package contents. The release owner
 then signs the release commit with primary fingerprint
-`65C94BA03E88F53D365C36CF7145A1CE635B1902`. Merge that exact commit into `main`, create a signed tag
-whose version exactly matches `package.json`, and push the tag:
+`65C94BA03E88F53D365C36CF7145A1CE635B1902`. Open a release PR and require independent review and
+green checks for that exact commit. After the reviewed commit is merged and confirmed to be contained
+in `main`, create a signed tag whose version exactly matches `package.json` and points to that reviewed
+commit; do not tag the generated merge commit instead:
 
 ```bash
-git add CHANGELOG.md package.json package-lock.json README.md docs/AX.md
+git add -- CHANGELOG.md package.json package-lock.json README.md docs/AX.md docs/releases
 git commit -S -m "chore(release): prepare X.Y.Z"
 git verify-commit HEAD
-# Merge the reviewed commit into main before tagging it.
-git tag -s vX.Y.Z -m "Release X.Y.Z"
+# Merge the reviewed commit into main and verify its exact SHA is an ancestor first.
+git merge-base --is-ancestor <reviewed-release-commit> origin/main
+git tag -s vX.Y.Z <reviewed-release-commit> -m "Release X.Y.Z"
 git tag -v vX.Y.Z
 git push origin vX.Y.Z
 ```
@@ -96,8 +99,9 @@ SHAs. It then executes:
 npm publish --access public --tag latest --json
 ```
 
-The npm CLI obtains a short-lived OIDC credential for this workflow; no `NODE_AUTH_TOKEN` or npm
-secret is configured. If npm accepts the package, the job creates the GitHub release. The
+The stable job first activates the repository-qualified npm 11.16.0 runtime, then obtains a
+short-lived OIDC credential for publication; no `NODE_AUTH_TOKEN` or npm secret is configured. If
+npm accepts the package, the job creates the GitHub release. The
 pre-publication gate itself remains dry-run-only and may be replayed locally:
 
 ```bash

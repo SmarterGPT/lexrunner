@@ -258,12 +258,15 @@ Initial release.
 
     // Check for next steps
     expect(output).toContain("Next steps:");
-    expect(output).toContain("Review the changes");
-    expect(output).toContain("git diff CHANGELOG.md package.json");
-    expect(output).toContain("Commit the changes");
-    expect(output).toContain("Create a signed tag");
+    expect(output).toContain("review every candidate change");
+    expect(output).toContain("git diff -- CHANGELOG.md package.json package-lock.json");
+    expect(output).toContain("open a review PR");
+    expect(output).toContain("git commit -S");
+    expect(output).toContain("contained in main");
     expect(output).toContain("git tag -s v1.1.0");
     expect(output).toContain("git push origin v1.1.0");
-    expect(output).toContain("Push the changes and tag");
+    expect(output).toContain("signed-tag workflow");
+    expect(output).not.toContain("git push origin main");
+    expect(output).not.toContain("Create a GitHub release from the tag");
   });
 });
