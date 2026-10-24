@@ -378,7 +378,7 @@ function createServer(options?: McpServerOptions): Server {
                   properties: {
                     owner: { type: "string" },
                     repo: { type: "string" },
-                    priority: { type: "integer" },
+                    priority: { type: "number" },
                   },
                   required: ["owner", "repo"],
                 },

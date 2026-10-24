@@ -66,12 +66,12 @@ describe("MCP Contract Tests", () => {
       const multiRepoArgs = PlanCreateArgs.parse({
         fromGithub: true,
         repos: [
-          { owner: "org", repo: "primary", priority: 2 },
+          { owner: "org", repo: "primary", priority: 1.5 },
           { owner: "org", repo: "secondary" },
         ],
       });
       expect(multiRepoArgs.repos).toEqual([
-        { owner: "org", repo: "primary", priority: 2 },
+        { owner: "org", repo: "primary", priority: 1.5 },
         { owner: "org", repo: "secondary", priority: 1 },
       ]);
 

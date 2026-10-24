@@ -53,7 +53,7 @@ export const PlanCreationOperationArgsSchema = z
           .object({
             owner: repositoryName,
             repo: repositoryName,
-            priority: z.number().int().optional(),
+            priority: z.number().optional(),
           })
           .strict()
       )
@@ -413,20 +413,19 @@ export function writePlanCreationArtifacts(result: PlanCreationOperationResult):
   // Reobserve aliases immediately before the first mutation. A caller may have
   // created links after planning; never let sequential writes overwrite one
   // artifact through another physical file.
-  assertOutputFilesWithinRoot(output, assertDistinctOutputPaths(Object.values(result.files)));
-  fs.mkdirSync(output, { recursive: true });
-  // mkdir may make a previously missing output path observable, or an
-  // untrusted peer may have populated the directory while it was created.
-  // Recheck after directory creation and immediately before the first write.
-  const reobservedOutput = resolvePhysicalDirectoryCandidate(output);
-  if (!samePhysicalPath(output, reobservedOutput)) {
-    throw invalidPhysicalOutput();
-  }
-  const outputIdentity = observeDirectoryIdentity(output);
   const destinations = assertOutputFilesWithinRoot(
     output,
     assertDistinctOutputPaths(Object.values(result.files))
   );
+  // Do not create a missing directory from the parent process. The isolated
+  // writer pins the nearest existing ancestor first, then creates and enters
+  // each remaining component relatively before it writes any artifact.
+  const route = observePinnedDirectoryRoute(output);
+  if (
+    !samePhysicalPath(path.join(route.identity.canonicalPath, ...route.components), observedOutput)
+  ) {
+    throw invalidPhysicalOutput();
+  }
   const artifacts = [
     { destination: destinations[0]!.writePath, content: canonicalJSONStringify(result.plan) },
     { destination: destinations[1]!.writePath, content: result.snapshot },
@@ -435,7 +434,7 @@ export function writePlanCreationArtifacts(result: PlanCreationOperationResult):
       content: canonicalJSONStringify(result.routing),
     },
   ];
-  writeArtifactsFromPinnedDirectory(output, outputIdentity, artifacts);
+  const outputIdentity = writeArtifactsFromPinnedDirectory(route, artifacts);
   const finalOutput = resolvePhysicalDirectoryCandidate(output);
   if (
     !samePhysicalPath(output, finalOutput) ||
@@ -463,6 +462,12 @@ interface DirectoryIdentity {
   inode: string;
 }
 
+interface PinnedDirectoryRoute {
+  ancestor: string;
+  identity: DirectoryIdentity;
+  components: string[];
+}
+
 interface PinnedArtifact {
   destination: string;
   content: string;
@@ -474,12 +479,16 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const missing = (error) => error && typeof error === "object" && error.code === "ENOENT";
+const alreadyExists = (error) => error && typeof error === "object" && error.code === "EEXIST";
+const normalize = (value) => {
+  const resolved = path.normalize(path.resolve(value));
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+};
 const identity = () => {
   const value = fs.statSync(".", { bigint: true });
   if (!value.isDirectory()) throw new Error("invalid output directory");
-  const resolved = path.normalize(path.resolve(fs.realpathSync(".")));
   return {
-    canonicalPath: process.platform === "win32" ? resolved.toLowerCase() : resolved,
+    canonicalPath: normalize(fs.realpathSync(".")),
     device: value.dev.toString(),
     inode: value.ino.toString(),
   };
@@ -490,8 +499,39 @@ const sameIdentity = (left, right) =>
   left.inode === right.inode;
 try {
   const payload = JSON.parse(fs.readFileSync(0, "utf8"));
-  if (!sameIdentity(identity(), payload.identity) || !Array.isArray(payload.artifacts)) {
+  let currentIdentity = identity();
+  if (
+    !sameIdentity(currentIdentity, payload.identity) ||
+    !Array.isArray(payload.components) ||
+    !Array.isArray(payload.artifacts)
+  ) {
     throw new Error("output directory identity changed");
+  }
+  for (const component of payload.components) {
+    if (
+      typeof component !== "string" ||
+      component === "." ||
+      component === ".." ||
+      path.basename(component) !== component
+    ) {
+      throw new Error("invalid output route");
+    }
+    try {
+      fs.mkdirSync(component);
+    } catch (error) {
+      if (!alreadyExists(error)) throw error;
+    }
+    const entry = fs.lstatSync(component, { bigint: true });
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error("unsafe output route");
+    }
+    const expectedCanonicalPath = normalize(path.join(currentIdentity.canonicalPath, component));
+    process.chdir(component);
+    const nextIdentity = identity();
+    if (nextIdentity.canonicalPath !== expectedCanonicalPath) {
+      throw new Error("output route changed");
+    }
+    currentIdentity = nextIdentity;
   }
   const names = new Set();
   for (const artifact of payload.artifacts) {
@@ -529,7 +569,7 @@ try {
       });
       staged.push(temporary);
     }
-    if (!sameIdentity(identity(), payload.identity)) {
+    if (!sameIdentity(identity(), currentIdentity)) {
       throw new Error("output directory identity changed");
     }
     for (let index = 0; index < payload.artifacts.length; index += 1) {
@@ -546,28 +586,30 @@ try {
       }
     }
   }
-  if (!sameIdentity(identity(), payload.identity)) {
+  const finalIdentity = identity();
+  if (!sameIdentity(finalIdentity, currentIdentity)) {
     throw new Error("output directory identity changed");
   }
+  process.stdout.write(JSON.stringify(finalIdentity));
 } catch {
   process.exitCode = 71;
 }
 `;
 
 function writeArtifactsFromPinnedDirectory(
-  output: string,
-  identity: DirectoryIdentity,
+  route: PinnedDirectoryRoute,
   artifacts: PinnedArtifact[]
-): void {
+): DirectoryIdentity {
   const payload = JSON.stringify({
-    identity,
+    identity: route.identity,
+    components: route.components,
     artifacts: artifacts.map(({ destination, content }) => ({
       name: path.basename(destination),
       content,
     })),
   });
   const completed = spawnSync(process.execPath, ["--eval", PINNED_ARTIFACT_WRITER_SOURCE], {
-    cwd: output,
+    cwd: route.ancestor,
     input: payload,
     encoding: "utf8",
     // The helper needs only the absolute Node executable and built-ins. An
@@ -580,6 +622,56 @@ function writeArtifactsFromPinnedDirectory(
   });
   if (completed.error || completed.signal || completed.status !== 0) {
     throw invalidPhysicalOutput();
+  }
+  try {
+    const returned = JSON.parse(completed.stdout) as Partial<DirectoryIdentity>;
+    if (
+      typeof returned.canonicalPath !== "string" ||
+      returned.canonicalPath !== normalizePhysicalPath(returned.canonicalPath) ||
+      typeof returned.device !== "string" ||
+      typeof returned.inode !== "string"
+    ) {
+      throw new Error("invalid output identity");
+    }
+    return {
+      canonicalPath: returned.canonicalPath,
+      device: returned.device,
+      inode: returned.inode,
+    };
+  } catch {
+    throw invalidPhysicalOutput();
+  }
+}
+
+function observePinnedDirectoryRoute(value: string): PinnedDirectoryRoute {
+  const absolute = path.resolve(value);
+  const components: string[] = [];
+  let ancestor = absolute;
+  for (;;) {
+    let entry: fs.BigIntStats;
+    try {
+      entry = fs.lstatSync(ancestor, { bigint: true });
+    } catch (error) {
+      if (!isMissingPathError(error)) throw invalidPhysicalOutput();
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw invalidPhysicalOutput();
+      components.unshift(path.basename(ancestor));
+      ancestor = parent;
+      continue;
+    }
+    try {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) throw invalidPhysicalOutput();
+      const physicalAncestor = fs.realpathSync(ancestor);
+      if (!samePhysicalPath(ancestor, physicalAncestor)) throw invalidPhysicalOutput();
+      return {
+        ancestor: physicalAncestor,
+        identity: observeDirectoryIdentity(physicalAncestor),
+        components,
+      };
+    } catch (error) {
+      if (error instanceof PlanCreationOperationError) throw error;
+      throw invalidPhysicalOutput();
+    }
   }
 }
 

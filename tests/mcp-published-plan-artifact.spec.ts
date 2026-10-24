@@ -35,7 +35,10 @@ describe("published plan artifact parity", () => {
     expect(planCreateTool.inputSchema.properties.repos).toMatchObject({
       type: "array",
       maxItems: 32,
-      items: { required: ["owner", "repo"] },
+      items: {
+        required: ["owner", "repo"],
+        properties: { priority: { type: "number" } },
+      },
     });
     for (const name of ["status", "merge-order", "gates.run", "merge.apply"]) {
       const tool = inventory.result.tools.find(

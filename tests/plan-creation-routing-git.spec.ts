@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -13,6 +14,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const childProcessHooks = vi.hoisted(() => ({
+  beforeSpawn: undefined as (() => void) | undefined,
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawnSync: (...args: Parameters<typeof actual.spawnSync>) => {
+      const hook = childProcessHooks.beforeSpawn;
+      childProcessHooks.beforeSpawn = undefined;
+      hook?.();
+      return actual.spawnSync(...args);
+    },
+  };
+});
 
 import {
   PlanCreationOperationService,
@@ -29,6 +47,7 @@ const originalProfile = process.env.LEX_PR_PROFILE_DIR;
 
 afterEach(() => {
   vi.restoreAllMocks();
+  childProcessHooks.beforeSpawn = undefined;
   if (originalProfile === undefined) delete process.env.LEX_PR_PROFILE_DIR;
   else process.env.LEX_PR_PROFILE_DIR = originalProfile;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -176,7 +195,7 @@ describe("repository-bound plan creation", () => {
     writeFileSync(join(profileRoot, "profile.yml"), "role: local\n", "utf8");
     writeFileSync(join(profileRoot, "stack.yml"), "version: 1\ntarget: main\nitems: []\n", "utf8");
     const repositories = [
-      { owner: "SmarterGPT", repo: "lex", priority: 1 },
+      { owner: "SmarterGPT", repo: "lex", priority: 0.5 },
       { owner: "SmarterGPT", repo: "lexrunner", priority: 2 },
     ];
     const plan = {
@@ -469,6 +488,34 @@ describe("repository-bound plan creation", () => {
     expect(existsSync(join(external, "plan.json"))).toBe(false);
     expect(existsSync(join(external, "snapshot.md"))).toBe(false);
     expect(existsSync(join(external, "routing-receipt.json"))).toBe(false);
+  });
+
+  it("does not create through an ancestor swapped after route admission", async () => {
+    const root = fixtureRoot();
+    const profileRoot = join(root, ".smartergpt.local");
+    const displacedProfile = join(root, "displaced-profile");
+    const external = join(root, "external");
+    mkdirSync(profileRoot, { recursive: true });
+    mkdirSync(external, { recursive: true });
+    writeFileSync(join(profileRoot, "profile.yml"), "role: local\n", "utf8");
+    writeFileSync(join(profileRoot, "stack.yml"), "version: 1\ntarget: main\nitems: []\n", "utf8");
+    writeFileSync(join(external, "sentinel.txt"), "unchanged", "utf8");
+    const operation = await new PlanCreationOperationService(vi.fn() as any).run({
+      startupDir: root,
+      args: { profileDir: profileRoot },
+    });
+
+    childProcessHooks.beforeSpawn = () => {
+      renameSync(profileRoot, displacedProfile);
+      symlinkSync(external, profileRoot, process.platform === "win32" ? "junction" : "dir");
+    };
+
+    expect(() => writePlanCreationArtifacts(operation)).toThrowError(
+      expect.objectContaining({ code: "PLAN_CREATION_ARGUMENTS_INVALID" })
+    );
+    expect(readFileSync(join(external, "sentinel.txt"), "utf8")).toBe("unchanged");
+    expect(existsSync(join(external, "runner"))).toBe(false);
+    expect(existsSync(join(displacedProfile, "runner"))).toBe(false);
   });
 
   it.skipIf(process.platform === "win32")(

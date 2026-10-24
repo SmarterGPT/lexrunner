@@ -75,7 +75,10 @@ describe("SDK MCP plan artifact parity", () => {
       expect(planCreateTool?.inputSchema.properties.repos).toMatchObject({
         type: "array",
         maxItems: 32,
-        items: { required: ["owner", "repo"] },
+        items: {
+          required: ["owner", "repo"],
+          properties: { priority: { type: "number" } },
+        },
       });
       for (const name of ["weave_status", "merge_order", "gates_run", "merge_apply"]) {
         const tool = inventory.tools.find((candidate) => candidate.name === name);
