@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   canWriteToProfile,
+  isWriteProtectionError,
   resolveProfile,
   ProfileResolverError,
   logProfileMessage,
@@ -237,6 +238,21 @@ describe("Profile Resolver", () => {
   });
 
   describe("Write Authority", () => {
+    it("classifies subclasses as write-protection failures", () => {
+      class RetainedWriteProtectionError extends WriteProtectionError {
+        constructor(message: string) {
+          super(message);
+          this.name = "RetainedWriteProtectionError";
+        }
+      }
+
+      expect(isWriteProtectionError(new WriteProtectionError("protected"))).toBe(true);
+      expect(
+        isWriteProtectionError(new RetainedWriteProtectionError("protected and retained"))
+      ).toBe(true);
+      expect(isWriteProtectionError(new Error("unrelated"))).toBe(false);
+    });
+
     it.each([
       ["array", ["example"]],
       ["object", { name: "example" }],

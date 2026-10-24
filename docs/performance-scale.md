@@ -31,6 +31,10 @@ This document describes the high-performance execution capabilities implemented 
 
 **Configuration**:
 
+This is a non-executable historical policy fragment, not a current Plan document.
+
+<!-- lexrunner-non-executable-plan:performance-resource-policy-fragment -->
+
 ```yaml
 policy:
   performance:
@@ -119,6 +123,12 @@ interface PerformanceConfig {
 
 ### Example Plan Configuration
 
+The following is a historical performance-policy sketch, not an executable Plan. The strict Plan
+schema does not accept `schemaVersion: "v1"`, `policy.performance`, or omitted item definitions;
+use supported `maxWorkers` and gate/runtime controls in a validated Plan instead.
+
+<!-- lexrunner-non-executable-plan:performance-scale-policy-sketch -->
+
 ```yaml
 schemaVersion: "v1"
 target: main
@@ -140,6 +150,10 @@ items:
 
 #### Small Scale (< 20 PRs)
 
+This is a scale-specific Plan policy fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:performance-small-policy-fragment -->
+
 ```yaml
 policy:
   maxWorkers: 2
@@ -149,6 +163,10 @@ policy:
 ```
 
 #### Medium Scale (20-50 PRs)
+
+This is a scale-specific Plan policy fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:performance-medium-policy-fragment -->
 
 ```yaml
 policy:
@@ -160,6 +178,10 @@ policy:
 
 #### Large Scale (50-100 PRs)
 
+This is a scale-specific Plan policy fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:performance-large-policy-fragment -->
+
 ```yaml
 policy:
   maxWorkers: 8
@@ -169,6 +191,10 @@ policy:
 ```
 
 #### Very Large Scale (100+ PRs)
+
+This is a scale-specific Plan policy fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:performance-xlarge-policy-fragment -->
 
 ```yaml
 policy:
@@ -317,6 +343,10 @@ Expected metrics:
 
 ### High Memory Usage
 
+This troubleshooting object is a Plan policy fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:performance-high-memory-policy-fragment -->
+
 ```yaml
 # Reduce workers and batch size
 policy:
@@ -328,6 +358,10 @@ policy:
 ```
 
 ### Slow Execution
+
+This troubleshooting object is a Plan policy fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:performance-slow-execution-policy-fragment -->
 
 ```yaml
 # Increase workers and disable throttling if memory is not an issue

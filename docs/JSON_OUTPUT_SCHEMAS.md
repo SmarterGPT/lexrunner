@@ -153,6 +153,10 @@ Shows current execution status and merge eligibility.
 
 **Success:**
 
+The nested `plan` object is a status summary, not an executable Plan document.
+
+<!-- lexrunner-non-executable-plan:json-output-status-plan-summary -->
+
 ```json
 {
   "plan": {

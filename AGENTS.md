@@ -119,6 +119,8 @@ should remain stable even as implementation details evolve.
 
 #### Policy Examples (Non-Normative)
 
+<!-- lexrunner-non-executable-plan:agents-policy-fragment -->
+
 ```yaml
 requiredGates: ["lint", "type", "unit"]
 optionalGates: ["e2e"]

@@ -2,7 +2,8 @@
 
 /**
  * MCP server adapter for lexrunner
- * Exposes read-only tools for plan creation, gate execution, and merge operations
+ * Exposes bounded tools for plans, gates, queries, and protected merge operations.
+ * ALLOW_MUTATIONS gates only declared protected mutations; it does not make the server read-only.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -117,6 +118,7 @@ import { getGlobalMetricsCollector, METRIC_DEFINITIONS } from "../metrics/export
 import {
   type AXError,
   mcpToolError,
+  workflowGuideArgumentsError,
   planNotFoundError,
   writeProtectionError,
   githubApiError,
@@ -2648,23 +2650,11 @@ async function handleWorkflowGuide(
   diagnosticBase: string
 ): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
-    // Validate phase is a valid WorkflowPhase
-    const validPhases: WorkflowPhase[] = [
-      "initial",
-      "post-plan-creation",
-      "post-gates-run",
-      "pre-merge",
-      "post-merge",
-      "error-recovery",
-    ];
-
-    const phase = args.phase as WorkflowPhase;
-    if (!validPhases.includes(phase)) {
-      throw new McpError(
-        ErrorCode.InvalidParams,
-        `Invalid workflow phase: ${args.phase}. Valid phases: ${validPhases.join(", ")}`
-      );
+    const parsedArgs = WorkflowGuideArgs.safeParse(args);
+    if (!parsedArgs.success) {
+      throwMcpAXError(ErrorCode.InvalidParams, workflowGuideArgumentsError());
     }
+    const phase = parsedArgs.data.phase as WorkflowPhase;
 
     let guide: WorkflowGuide;
     if (phase === "initial") {

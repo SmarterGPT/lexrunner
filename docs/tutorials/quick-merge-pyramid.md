@@ -291,6 +291,10 @@ Depends-On: #43, #44
 
 **In `stack.yml`**, use explicit deps:
 
+This is a legacy stack dependency fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:quick-merge-pyramid-stack-fragment -->
+
 ```yaml
 items:
   - id: api-endpoints

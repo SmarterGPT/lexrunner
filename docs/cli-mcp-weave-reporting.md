@@ -54,6 +54,11 @@ interface IntegrationMatrix {
 
 ### Example Matrix
 
+This is an illustrative `IntegrationMatrix` projection, not a Plan input. Its nested `plan` and
+`execution` summaries are not accepted by the Plan schema.
+
+<!-- lexrunner-non-executable-plan:integration-matrix-projection -->
+
 ```json
 {
   "schemaVersion": "1.0.0",

@@ -1,52 +1,58 @@
-# MCP/CLI Parity Matrix
+# MCP/CLI Parity Guide
 
-**Status:** Complete  
-**Issue:** AX-004  
+**Status:** Bounded selected-operation guide
+**Issue:** AX-004
 **AX Principle:** Structured Over Conversational
 
-This document provides a comprehensive parity matrix showing which LexRunner operations are available via both CLI and MCP surfaces, along with flag mapping and output format guarantees.
+This document explains selected CLI/MCP mappings and shared contracts. It is not the published
+tool inventory. The generated inventory in [README.mcp.md](../README.mcp.md#published-tool-inventory)
+and its checked source, [cli-mcp-surface.json](architecture/cli-mcp-surface.json), are authoritative
+for which tools currently exist. `npm run docs:surface:check` verifies that inventory against the
+published `tools/list` surface in `mcp-server.mjs`.
 
 ## Parity Matrix
 
 ### Core Operations
 
-| Operation     | CLI                         | MCP                                | Notes                                                  |
-| ------------- | --------------------------- | ---------------------------------- | ------------------------------------------------------ |
-| plan create   | ✅ `lexrunner weave plan`   | ✅ `plan.create`                   | Shared repository-bound routing, discovery and receipt |
-| plan validate | ✅ `lex-pr schema validate` | ✅ `plan.create` (with validation) | MCP validates during creation                          |
-| gates run     | ✅ `lex-pr execute`         | ✅ `gates.run`                     | MCP accepts external planFile or internal state        |
-| merge apply   | ✅ `lex-pr merge`           | ✅ `merge.apply`                   | MCP enforces ALLOW_MUTATIONS for safety                |
-| health check  | ✅ `lex-pr doctor`          | ✅ `health` / `doctor`             | MCP has `health` tool, CLI uses `doctor`               |
-| discover PRs  | ✅ `lex-pr discover`        | ✅ `discover`                      | Both support GitHub PR discovery                       |
-| status check  | ✅ `lex-pr status`          | ✅ `status`                        | Show execution status and merge eligibility            |
-| merge order   | ✅ `lex-pr merge-order`     | ✅ `merge-order`                   | Compute dependency levels using Kahn's algorithm       |
-| config show   | ✅ `lex-pr config show`     | ✅ `config.show`                   | Display configuration with precedence chain            |
+<!-- lexrunner-mcp-parity-tools:start -->
+
+| Operation     | CLI                              | MCP                    | Notes                                                                                      |
+| ------------- | -------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------ |
+| plan create   | ✅ `lexrunner weave plan`        | ✅ `plan.create`       | Shared repository-bound routing, discovery and receipt                                     |
+| plan validate | ✅ `lexrunner schema validate`   | —                      | Standalone schema validation is CLI-only; `plan.create` validates only the Plan it creates |
+| gates run     | ✅ `lexrunner gate run`          | ✅ `gates.run`         | Shared `GateExecutionService`                                                              |
+| merge apply   | ✅ `lexrunner weave apply`       | ✅ `merge.apply`       | Non-dry-run MCP use also requires `ALLOW_MUTATIONS=true`                                   |
+| health check  | ✅ `lexrunner workspace doctor`  | ✅ `doctor` / `health` | `health` is a deprecated compatibility tool                                                |
+| discover PRs  | ✅ `lexrunner weave discover`    | ✅ `discover`          | Shared `DiscoveryQueryService`                                                             |
+| status check  | ✅ `lexrunner weave status`      | ✅ `status`            | Shared `IntegrationStatusQueryService`                                                     |
+| merge order   | ✅ `lexrunner weave merge-order` | ✅ `merge-order`       | Shared `MergeOrderQueryService`                                                            |
+| config show   | ✅ `lexrunner config show`       | ✅ `config.show`       | Shared bounded configuration query                                                         |
 
 ### Configuration Operations
 
-| Operation       | CLI                    | MCP                  | Notes                                         |
-| --------------- | ---------------------- | -------------------- | --------------------------------------------- |
-| init workspace  | ✅ `lex-pr init`       | ❌ CLI-only          | Interactive wizard requiring user input       |
-| init local      | ✅ `lex-pr init-local` | ✅ `local.init`      | Auto-detected project configuration           |
-| profile resolve | ❌ Internal            | ✅ `profile.resolve` | MCP-only: Internal profile resolution exposed |
+| Operation       | CLI                                             | MCP                  | Notes                                                                     |
+| --------------- | ----------------------------------------------- | -------------------- | ------------------------------------------------------------------------- |
+| init workspace  | ✅ `lexrunner workspace init --non-interactive` | ✅ `local.init`      | Shared deterministic non-interactive local-overlay path                   |
+| profile resolve | ✅ `lexrunner config show` (overlap)            | ✅ `profile.resolve` | MCP returns the bounded resolved profile; CLI exposes broader config data |
 
-### Senior Dev Executor Tools
+<!-- lexrunner-mcp-parity-tools:end -->
 
-| Operation       | CLI                                    | MCP                             | Notes                                          |
-| --------------- | -------------------------------------- | ------------------------------- | ---------------------------------------------- |
-| prepare context | ✅ `lex-pr senior-dev prepare-context` | ✅ `senior-dev.prepare-context` | Gather deterministic artifacts for code review |
-| recall context  | ✅ `lex-pr senior-dev recall-context`  | ✅ `senior-dev.recall-context`  | Recall relevant Frames from Lex memory         |
-| capture frame   | ✅ `lex-pr senior-dev capture-frame`   | ✅ `senior-dev.capture-frame`   | Capture review session as a Frame              |
-| list modes      | ✅ `lex-pr senior-dev modes`           | ✅ `senior-dev.modes`           | List available executor modes                  |
+### Internal CLI Surfaces
 
-### Run Management Operations
+The legacy senior-dev command group is classified `internal-only` in the checked surface. It has
+no published MCP tools and is intentionally omitted from the parity table. Internal command
+presence must not be read as package or MCP support.
 
-| Operation      | CLI         | MCP                          | Notes                                    |
-| -------------- | ----------- | ---------------------------- | ---------------------------------------- |
-| start run      | ❌ MCP-only | ✅ `lexrunner.startRun`      | Start a new procedure run                |
-| get status     | ❌ MCP-only | ✅ `lexrunner.getStatus`     | Get current run state and next actions   |
-| list runs      | ❌ MCP-only | ✅ `lexrunner.listRuns`      | List runs with optional filtering        |
-| list artifacts | ❌ MCP-only | ✅ `lexrunner.listArtifacts` | Inspect artifacts and receipts for a run |
+### Deprecated Integration-Record Adapters
+
+These MCP-only compatibility tools operate on frozen integration records. They are not ADR-010
+Run/Attempt orchestration authority and are scheduled for removal in 3.0.0.
+
+| Operation                 | MCP                       | Replacement                                                                |
+| ------------------------- | ------------------------- | -------------------------------------------------------------------------- |
+| create integration record | `lexrunner.startRun`      | `plan.create`, `gates.run`, or `merge.apply`; `start_attempt` for Attempts |
+| read integration status   | `lexrunner.getStatus`     | `status`; `get_attempt_status` for Attempts                                |
+| list artifact metadata    | `lexrunner.listArtifacts` | Artifact references from the operation that created them                   |
 
 ---
 
@@ -54,29 +60,31 @@ This document provides a comprehensive parity matrix showing which LexRunner ope
 
 ### CLI Flag → MCP Parameter Mapping
 
-| CLI Flag                   | MCP Parameter            | Description                                             |
-| -------------------------- | ------------------------ | ------------------------------------------------------- |
-| `--json`                   | N/A (always JSON)        | JSON output mode - MCP always returns JSON              |
-| `--dry-run`                | `dryRun: true`           | Simulate operations without making changes              |
-| `--plan <file>`            | `planFile`               | Path to plan.json file                                  |
-| `--out <dir>`              | `outDir`                 | Output directory for artifacts                          |
-| `--from-github`            | `fromGithub: true`       | Auto-discover PRs from GitHub API                       |
-| `--query <query>`          | `query`                  | GitHub search query                                     |
-| `--labels <labels>`        | `labels: ["..."]`        | Filter PRs by labels (CLI: comma-separated, MCP: array) |
-| `--include-drafts`         | `includeDrafts: true`    | Include draft PRs in the plan                           |
-| `--exclude-prs <numbers>`  | `excludePRs: [...]`      | Exclude specific PRs by number                          |
-| `--github-token <token>`   | `githubToken`            | GitHub API token                                        |
-| `--owner <owner>`          | `owner`                  | GitHub repository owner                                 |
-| `--repo <repo>`            | `repo`                   | GitHub repository name                                  |
-| `--required-gates <gates>` | `requiredGates: ["..."]` | List of required gates                                  |
-| `--max-workers <n>`        | `maxWorkers`             | Maximum parallel workers                                |
-| `--target <branch>`        | `target`                 | Target branch for merging PRs                           |
-| `--force`                  | `force: true`            | Apply the command's documented existing-state behavior  |
-| `--only-item <item>`       | `onlyItem`               | Run gates for specific item only                        |
-| `--only-gate <gate>`       | `onlyGate`               | Run specific gate only                                  |
-| `--repo-root <dir>`        | `repoRoot`               | Explicit physical Git repository candidate root         |
-| `--profile-dir <dir>`      | `profileDir`             | Profile directory override                              |
-| `--include-metrics`        | `includeMetrics: true`   | Include detailed metrics in response                    |
+| CLI Flag                                 | MCP Parameter              | Description                                                   |
+| ---------------------------------------- | -------------------------- | ------------------------------------------------------------- |
+| `--json`                                 | N/A (always JSON)          | JSON output mode - MCP always returns JSON                    |
+| `--dry-run`                              | `dryRun: true`             | Simulate operations without making changes                    |
+| `--plan <file>`                          | `planFile`                 | Path to plan.json file                                        |
+| `weave plan --output <file>`             | `outDir`                   | CLI selects the Plan file; MCP selects its artifact directory |
+| `--from-github`                          | `fromGithub: true`         | Auto-discover PRs from GitHub API                             |
+| `--query <query>`                        | `query`                    | GitHub search query                                           |
+| `--labels <labels...>`                   | `labels: ["..."]`          | Filter PRs by labels (CLI: variadic values, MCP: array)       |
+| `--include-drafts`                       | `includeDrafts: true`      | Include draft PRs in the plan                                 |
+| `--exclude-prs <numbers...>`             | `excludePRs: [...]`        | Exclude specific PRs by number                                |
+| `--owner <owner>`                        | `owner`                    | GitHub repository owner                                       |
+| `--repo <repo>`                          | `repo`                     | GitHub repository name                                        |
+| `--target <branch>`                      | `target`                   | Target branch for merging PRs                                 |
+| `--force`                                | `force: true`              | Apply the command's documented existing-state behavior        |
+| `--only-item <item>`                     | `onlyItem`                 | Run gates for specific item only                              |
+| `--only-gate <gate>`                     | `onlyGate`                 | Run specific gate only                                        |
+| `--repo-root <dir>`                      | `repoRoot`                 | Explicit physical Git repository candidate root               |
+| `--profile-dir <dir>`                    | `profileDir`               | Profile directory override                                    |
+| `workspace doctor --environment-quality` | `environmentQuality: true` | Run the optional environment-quality assessment               |
+
+The published MCP `plan.create` schema also accepts `githubToken`, `requiredGates`, and
+`maxWorkers`. Canonical `weave plan` intentionally has no equivalent flags: CLI authentication uses
+the supported environment, and that route currently supplies its fixed required gates and worker
+limit. Similar-looking options on the deprecated top-level `plan` alias are not canonical parity.
 
 ### Example Mappings
 
@@ -84,7 +92,7 @@ This document provides a comprehensive parity matrix showing which LexRunner ope
 
 ```bash
 # CLI
-lexrunner weave plan --from-github --repo-root /worktrees/repo --owner org --repo repo --query "is:pr is:open head:release" --output plan.json
+lexrunner weave plan --from-github --repo-root /worktrees/repo --owner org --repo repo --query "is:pr is:open head:release" --output artifacts/plan/plan.json
 
 # MCP
 { "name": "plan.create", "arguments": { "fromGithub": true, "repoRoot": "/worktrees/repo", "owner": "org", "repo": "repo", "query": "is:pr is:open head:release", "outDir": "artifacts/plan" } }
@@ -93,7 +101,7 @@ lexrunner weave plan --from-github --repo-root /worktrees/repo --owner org --rep
 Both adapters call `PlanCreationOperationService`. Relative profiles and outputs anchor to the
 selected physical Git root. Explicit repository identity must match its local `origin` remote
 before API access or writes. Both MCP adapters require a GitHub token for GitHub-mode creation;
-the CLI retains unauthenticated public discovery. Each non-JSON creation writes
+the CLI retains unauthenticated public discovery. Each creation writes
 `routing-receipt.json`; that receipt is explicitly non-authorizing. See
 [repository-bound plan creation](plan-routing.md).
 
@@ -126,66 +134,64 @@ lex-pr merge --dry-run --json
 
 ## Output Format Guarantees
 
-Both CLI (`--json`) and MCP surfaces produce **semantically identical JSON** for equivalent operations:
+For mappings owned by the same application service, equivalent inputs are expected to produce the
+same bounded domain result. CLI JSON envelopes and MCP transport envelopes are not byte-identical,
+and a table entry is not evidence that either operation ran.
 
-### Same Schema
+### Selected shared domain projections
 
-All parity operations return the same JSON structure:
+For the selected mappings below, the shared service exposes these domain fields. CLI and MCP
+transport envelopes remain distinct, and each row is bounded by its operation-specific tests:
 
-| Operation                     | Output Schema                                                                    |
-| ----------------------------- | -------------------------------------------------------------------------------- |
-| `plan` / `plan.create`        | `{ "schemaVersion": "1.0.0", "target": "...", "items": [...], "policy": {...} }` |
-| `execute` / `gates.run`       | `{ "items": [...], "allGreen": boolean }`                                        |
-| `discover` / `discover`       | `{ "pullRequests": [...], "total": N, "authenticated": boolean, "user": "..." }` |
-| `status` / `status`           | `{ "plan": {...}, "mergeSummary": {...} }`                                       |
-| `doctor` / `doctor`           | `{ "hasErrors": boolean, "issues": [...], "suggestions": [...], ... }`           |
-| `merge-order` / `merge-order` | `{ "levels": [[...]], "totalItems": N, "maxParallelism": N }`                    |
-| `config show` / `config.show` | `{ "config": {...}, "provenance": {...}, "sources": [...] }`                     |
+| Operation                     | Output Schema                                                                       |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| `plan` / `plan.create`        | `{ "schemaVersion": "1.0.1", "target": "...", "items": [...], "policy": {...} }`    |
+| `execute` / `gates.run`       | `{ "items": [...], "allGreen": boolean }`                                           |
+| `discover` / `discover`       | `{ "pullRequests": [...], "total": N, "authenticated": boolean, "user": "..." }`    |
+| `status` / `status`           | `{ "plan": {...}, "mergeSummary": {...} }`                                          |
+| `doctor` / `doctor`           | `{ "hasErrors": boolean, "issues": [...], "suggestions": [...], ... }`              |
+| `merge-order` / `merge-order` | `{ "levels": [[...]], "totalItems": N, "maxParallelism": N }`                       |
+| `config show` / `config.show` | `{ "contract": "bounded-ax-v1", "precedenceChain": [...], "configuration": [...] }` |
 
-### Same Fields
+### Corresponding domain fields
 
-Both surfaces include identical fields in their responses:
+Shared service projections include the corresponding domain fields where applicable:
 
 - **Plan items**: `name`, `deps`, `gates`
 - **Gate results**: `name`, `status`, `exitCode`, `duration`
 - **PR data**: `number`, `title`, `sha`, `author`, `labels`
-- **Error data**: `error`, `code`, `message`, `details`
+- **AXError data**: `code`, `message`, `nextActions`, optional `context`
 
-### Same Error Shapes (AXError)
+### AXError domain fields
 
 Error responses follow the AXError contract:
 
 ```typescript
 interface AXError {
-  error: true;
-  code: string; // e.g., "ECYCLE", "ESCHEMA", "ENOTFOUND"
-  message: string; // Human-readable description
-  details?: {
-    // Context-specific details
-    path?: string[]; // For cycle errors
-    cyclePath?: string[];
-    affectedPRs?: string[];
-  };
+  code: string;
+  message: string;
+  nextActions: string[];
+  context?: Record<string, unknown>;
 }
 ```
 
-| Error Type       | CLI Exit Code | MCP Error Code            |
-| ---------------- | ------------- | ------------------------- |
-| Success          | 0             | No error                  |
-| System error     | 1             | -32603 (Internal)         |
-| Validation error | 2             | -32602 (Invalid params)   |
-| Not found        | 1             | -32601 (Method not found) |
+Transport adapters wrap this domain error differently. CLI exit status is command-specific; MCP
+uses JSON-RPC protocol codes such as invalid parameters or internal error while retaining the
+domain code in the AXError payload. JSON-RPC method-not-found is only for an unknown protocol
+method/tool—it is not the automatic mapping for a domain object that was not found. Consult the
+operation's checked adapter tests rather than inferring one universal transport table.
 
 ### Deterministic Output
 
-Both surfaces guarantee deterministic JSON output:
+Where a contract promises a deterministic projection, its checked invariants include:
 
 1. **Stable key ordering**: Keys sorted alphabetically at all levels
 2. **Consistent formatting**: 2-space indentation, no trailing whitespace
 3. **Sorted arrays**: Dependencies, items, errors sorted by name/path
 4. **Cross-platform consistency**: Same inputs produce identical outputs
 
-All JSON output uses `canonicalJSONStringify()` for determinism.
+The relevant JSON adapters use `canonicalJSONStringify()` where canonical ordering is part of the
+contract; do not infer that every human or protocol envelope is byte-identical.
 
 ---
 
@@ -217,7 +223,7 @@ lex-pr plan --from-github --labels "ready-to-merge" --target main --json
 }
 ```
 
-**Output (both):**
+**Shared Plan domain projection (transport wrappers omitted):**
 
 <!-- lexrunner-plan-example:mcp-plan-output -->
 
@@ -231,6 +237,7 @@ lex-pr plan --from-github --labels "ready-to-merge" --target main --json
       "deps": [],
       "gates": [
         { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" },
         { "name": "test", "run": "npm test" }
       ]
     }
@@ -281,7 +288,7 @@ lex-pr discover --json
 }
 ```
 
-**Output (both):**
+**Shared discovery domain projection (transport wrappers omitted):**
 
 ```json
 {
@@ -322,7 +329,7 @@ lex-pr doctor --json
 }
 ```
 
-**Output (both):**
+**Shared diagnostics domain projection (transport wrappers omitted):**
 
 ```json
 {
@@ -364,7 +371,7 @@ lex-pr merge-order plan.json --json
 }
 ```
 
-**Output (both):**
+**Shared merge-order domain projection (transport wrappers omitted):**
 
 ```json
 {
@@ -382,30 +389,24 @@ lex-pr merge-order plan.json --json
 
 These commands are intentionally CLI-only due to their interactive or local-only nature:
 
-| Command          | Reason                                  |
-| ---------------- | --------------------------------------- |
-| `init`           | Interactive wizard requiring user input |
-| `bootstrap`      | Local filesystem bootstrap              |
-| `view`           | Interactive TUI requiring terminal      |
-| `plan-review`    | Interactive review with prompts         |
-| `completion`     | Shell-specific completion scripts       |
-| `retry`          | Requires local execution state          |
-| `query`          | Interactive query interface             |
-| `plan-diff`      | Local file comparison                   |
-| `idea`           | Interactive ideation workflow           |
-| `create-project` | Interactive project creation            |
+| Command                        | Reason                                                                |
+| ------------------------------ | --------------------------------------------------------------------- |
+| `workspace init` (interactive) | Prompt-driven human workflow; MCP maps only the non-interactive route |
+| `bootstrap`                    | Local filesystem bootstrap                                            |
+| `view`                         | Interactive TUI requiring terminal                                    |
+| `plan-review`                  | Interactive review with prompts                                       |
+| `completion`                   | Shell-specific completion scripts                                     |
+| `retry`                        | Requires local execution state                                        |
+| `query`                        | Interactive query interface                                           |
+| `plan-diff`                    | Local file comparison                                                 |
+| `idea`                         | Interactive ideation workflow                                         |
+| `create-project`               | Interactive project creation                                          |
 
 ### MCP-Only Tools
 
-These tools are intentionally MCP-only for orchestration purposes:
-
-| Tool                      | Reason                                      |
-| ------------------------- | ------------------------------------------- |
-| `lexrunner.startRun`      | Run lifecycle management for agents         |
-| `lexrunner.getStatus`     | Agent status queries                        |
-| `lexrunner.listRuns`      | Run enumeration for orchestration           |
-| `lexrunner.listArtifacts` | Artifact inspection for agents              |
-| `profile.resolve`         | Internal resolution exposed for MCP clients |
+`workflow.guide` is the intentional canonical MCP-only exception for agent guidance. The three
+legacy `lexrunner` compatibility tools listed above are deprecated adapters, not orchestration
+authority. Consult the generated inventory for the complete current surface.
 
 ---
 
@@ -414,8 +415,10 @@ These tools are intentionally MCP-only for orchestration purposes:
 To verify parity between CLI and MCP:
 
 ```bash
-# Run parity tests
-npm test -- --grep "mcp-parity"
+# Run current workspace/config and operation parity tests
+npx vitest run tests/architecture/cli-mcp-surface.spec.ts \
+  tests/mcp-workspace-config-parity.spec.ts \
+  tests/mcp-published-merge-application.spec.ts
 
 # Manual verification
 # CLI

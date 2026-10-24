@@ -72,6 +72,8 @@ The generated `plan.json` has this general structure. This is an abridged, non-e
 the ellipsis omits gates, and current GitHub-generated plans use Schema `1.0.1` with complete
 `gitInputs` bindings as shown in [Frozen Git inputs](../../docs/frozen-git-inputs.md).
 
+<!-- lexrunner-non-executable-plan:github-generated-plan-abridged -->
+
 ```json
 {
   "schemaVersion": "1.0.1",

@@ -95,6 +95,8 @@ instead bind PR refs and commit IDs in `gitInputs`; see [Frozen Git inputs](./fr
 Control parallel execution with `policy.maxWorkers`. This is a policy fragment, not a complete
 executable plan:
 
+<!-- lexrunner-non-executable-plan:merge-weave-policy-fragment -->
+
 ```json
 {
   "policy": {
@@ -131,6 +133,11 @@ lex-pr execute --plan ./plan.json --artifact-dir ./artifacts --json
 | `--max-workers <n>`    | Override `policy.maxWorkers`        | From plan                  |
 
 ### Sample JSON Output (Success)
+
+This is an execution-result envelope whose nested `plan` value is only a summary; it is not an
+executable Plan document.
+
+<!-- lexrunner-non-executable-plan:merge-weave-execute-success-output -->
 
 ```json
 {
@@ -176,6 +183,11 @@ lex-pr execute --plan ./plan.json --artifact-dir ./artifacts --json
 ```
 
 ### Sample JSON Output (Failure)
+
+This is an execution-result envelope whose nested `plan` value is only a summary; it is not an
+executable Plan document.
+
+<!-- lexrunner-non-executable-plan:merge-weave-execute-failure-output -->
 
 ```json
 {
@@ -753,7 +765,10 @@ jobs:
 
 ## Reference Links
 
-- **Example Plan**: [`merge-weave-plan.json`](../merge-weave-plan.json) - Real-world plan file from this repository
+- **Historical graph fixture (not a current Plan)**:
+  [`merge-weave-plan.json`](../merge-weave-plan.json) uses the retired `nodes` / `dependsOn` shape
+  and is rejected by the current strict Plan schema. Use the validated examples earlier in this
+  guide instead.
 - **Plan Schema**: [Plan Schema Documentation](./schemas.md#plan-schema-srcschemats) - Full schema reference for plan.json
 - **State Machine**: [Merge-Weave State Machine](./merge-weave-state-machine.md) - Execution state transitions and resume capability
 - **Advanced CLI**: [Advanced CLI Features](./advanced-cli.md) - Advanced merge-weave options and automation

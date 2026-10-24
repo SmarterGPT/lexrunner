@@ -104,7 +104,10 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
   // Check if configuration already exists (only if directory and manifest exist)
   if (fs.existsSync(profileDir) && fs.existsSync(path.join(profileDir, "profile.yml"))) {
     try {
-      const bootstrap = bootstrapWorkspace(baseDir, options.profileDir);
+      // Bind preflight to the exact target selected above. Passing the raw option
+      // here would let LEX_PR_PROFILE_DIR redirect only this check while writes
+      // still target the default .smartergpt.local directory.
+      const bootstrap = bootstrapWorkspace(baseDir, profileDir);
       if (bootstrap.hasConfiguration && !options.force) {
         return {
           success: false,
@@ -116,7 +119,7 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
       // If bootstrap fails, we'll create from scratch (might be missing files)
       if (!options.force && !options.jsonMode) {
         logProfileMessage(
-          `Profile directory exists but is incomplete. Use --force to complete it.`
+          `Profile directory exists; initialization will preserve authored files and fill missing workspace files.`
         );
       }
     }
@@ -198,13 +201,15 @@ description: Auto-generated workspace for local development
   if (!options.jsonMode) {
     console.log(`\n✅ Workspace initialized successfully!\n`);
     console.log(`📂 Profile directory: ${profileDir}`);
-    console.log(`\n📝 Created files:`);
-    console.log(`   - intent.md (project goals and scope)`);
-    console.log(`   - scope.yml (PR discovery rules)`);
-    console.log(`   - deps.yml (dependency relationships)`);
-    console.log(`   - gates.yml (quality gates configuration)`);
-    console.log(`   - pull-request-template.md (PR template with dependency syntax)`);
-    console.log(`   - runner/ (working artifacts directory)`);
+    console.log(`\n📝 Workspace files after initialization:`);
+    console.log(`   - intent.md (project goals and scope; created or preserved)`);
+    console.log(`   - scope.yml (PR discovery rules; created or preserved)`);
+    console.log(`   - deps.yml (dependency relationships; created or preserved)`);
+    console.log(`   - gates.yml (quality gates configuration; created or preserved)`);
+    console.log(
+      `   - pull-request-template.md (PR template with dependency syntax; created or preserved)`
+    );
+    console.log(`   - runner/ (working artifacts directory; created or preserved)`);
 
     console.log(`\n📚 Next steps:`);
     console.log(`   1. Edit ${profileDir}/intent.md to describe your project`);

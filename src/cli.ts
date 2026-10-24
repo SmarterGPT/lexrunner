@@ -1463,7 +1463,9 @@ export {
   IntegrationRecordCompatibilityError,
   IntegrationRecordCompatibilityService,
 } from "./application/integration-record-compatibility-service.js";
-export { mcpToolError, writeProtectionError } from "./errors/index.js";
+export { mcpToolError, workflowGuideArgumentsError, writeProtectionError } from "./errors/index.js";
+export { isWriteProtectionError, WriteProtectionError } from "./config/profileResolver.js";
+export { WorkflowGuideArgs } from "./mcp/types.js";
 
 // LPR-037: Workflow guidance exports for MCP
 export { createWorkflowGuide } from "./mcp/workflow/state-machine.js";

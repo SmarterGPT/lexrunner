@@ -100,12 +100,20 @@ describe("current documentation", () => {
 
   it("keeps the MCP README on the generated published tool surface", async () => {
     const readme = await read("README.mcp.md");
+    const launcher = await read("mcp-server.mjs");
+    const sourceAdapter = await read("src/mcp/server.ts");
+    const environmentGuide = await read("docs/environment-variables.md");
 
     expect(readme).toContain("<!-- BEGIN GENERATED MCP TOOL INVENTORY -->");
     expect(readme).toContain("<!-- END GENERATED MCP TOOL INVENTORY -->");
     expect(readme).toContain("checked against the published `tools/list` surface");
     expect(readme).toContain("`ALLOW_MUTATIONS=false`");
     expect(readme).toMatch(/does \*\*not\*\*\s+turn the server into a read-only sandbox/);
+    expect(launcher).toContain("[lexrunner] Protected mutations:");
+    expect(launcher).not.toContain("disabled (read-only)");
+    expect(sourceAdapter).not.toContain("Exposes read-only tools");
+    expect(environmentGuide).toContain("this is not a read-only sandbox");
+    expect(environmentGuide).not.toContain("All operations are read-only");
 
     for (const unpublishedName of [
       "plan_validate",
@@ -120,6 +128,65 @@ describe("current documentation", () => {
       expect(readme, `README.mcp.md advertises absent tool ${unpublishedName}`).not.toContain(
         unpublishedName
       );
+    }
+  });
+
+  it("keeps both selected MCP/CLI mapping guides bounded to published tools", async () => {
+    const surface = JSON.parse(await read("docs/architecture/cli-mcp-surface.json")) as {
+      mcp: { canonical: string[]; deprecated: Array<{ tool: string }> };
+    };
+    const publishedTools = new Set([
+      ...surface.mcp.canonical,
+      ...surface.mcp.deprecated.map(({ tool }) => tool),
+    ]);
+    for (const path of ["docs/MCP-CLI-PARITY.md", "docs/MCP-PARITY.md"]) {
+      const parity = await read(path);
+      const selectedTables = parity.match(
+        /<!-- lexrunner-mcp-parity-tools:start -->([\s\S]*?)<!-- lexrunner-mcp-parity-tools:end -->/u
+      );
+
+      expect(selectedTables, `${path} lacks its checked selected-tool tables`).not.toBeNull();
+      expect(parity, `${path} claims to be the complete inventory`).toMatch(
+        /is not the\s+published\s+tool inventory/u
+      );
+      expect(parity).toContain("README.mcp.md");
+      expect(parity).toContain("cli-mcp-surface.json");
+      expect(parity).toContain("workspace init --non-interactive");
+      expect(parity).toContain('"schemaVersion": "1.0.1"');
+
+      for (const staleClaim of [
+        "**Status:** Complete",
+        "✅ Full",
+        "Both return:",
+        "same JSON structure",
+        "senior-dev.",
+        "lexrunner.listRuns",
+        "tests/mcp-parity.spec.ts",
+        "-32601 (Method not found)",
+      ]) {
+        expect(parity, `${path} contains stale parity claim ${staleClaim}`).not.toContain(
+          staleClaim
+        );
+      }
+
+      for (const line of selectedTables?.[1].split(/\r?\n/u) ?? []) {
+        if (!line.trimStart().startsWith("|")) continue;
+        const cells = line.split("|");
+        const mcpCell = cells[3] ?? "";
+        for (const match of mcpCell.matchAll(/`([^`]+)`/gu)) {
+          expect(
+            publishedTools,
+            `${path} selected table advertises unpublished tool ${match[1]}`
+          ).toContain(match[1]);
+        }
+      }
+
+      for (const match of parity.matchAll(/`(lexrunner\.[^`]+)`/gu)) {
+        expect(
+          publishedTools,
+          `${path} advertises unpublished compatibility tool ${match[1]}`
+        ).toContain(match[1]);
+      }
     }
   });
 

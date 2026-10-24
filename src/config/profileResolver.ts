@@ -191,6 +191,15 @@ export class WriteProtectionError extends Error {
 }
 
 /**
+ * Classify write-protection failures through the shared runtime identity.
+ * Subclasses retain the same authority disposition even when they add
+ * recovery metadata such as a retained backup path.
+ */
+export function isWriteProtectionError(error: unknown): error is WriteProtectionError {
+  return error instanceof WriteProtectionError;
+}
+
+/**
  * Validate if writes are allowed to a profile path
  *
  * Write discipline rules:

@@ -206,6 +206,10 @@ lex-pr discover --owner <owner> --repo <repo>
 
 **Solution:**
 
+These contrasting `items` snippets are dependency fragments, not complete executable Plans.
+
+<!-- lexrunner-non-executable-plan:troubleshooting-dependency-items-fragment -->
+
 ```yaml
 # In deps.yml or stack.yml
 # Ensure dependency names match item names exactly

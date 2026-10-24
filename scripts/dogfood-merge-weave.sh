@@ -14,15 +14,16 @@
 #
 # Examples:
 #   # Dry run with plan file
-#   ./dogfood-merge-weave.sh --plan merge-weave-dogfood.json --dry-run
+#   ./dogfood-merge-weave.sh --plan plan.json --dry-run
 #
 #   # Execute from GitHub discovery
-#   ./dogfood-merge-weave.sh --from-github --owner myorg --repo myrepo --labels "ready-to-merge" --execute
+#   ./dogfood-merge-weave.sh --from-github --owner myorg --repo-name myrepo --labels "ready-to-merge" --execute
 #
 #   # Execute with custom settings
-#   ./dogfood-merge-weave.sh --plan plan.json --repo /path/to/repo --artifacts ./output --execute --cleanup
+#   ./dogfood-merge-weave.sh --plan plan.json --repo /path/to/repo --artifacts ./output --execute
 
 set -e
+set -o pipefail
 
 # Default values
 REPO_DIR="$(pwd)"
@@ -34,8 +35,6 @@ GITHUB_BASE=""
 GITHUB_LABELS=""
 GITHUB_QUERY=""
 ARTIFACTS_DIR=""
-INTEGRATION_BRANCH=""
-CLEANUP=false
 DRY_RUN=true
 EXECUTE=false
 VERBOSE=false
@@ -72,19 +71,19 @@ print_step() {
 }
 
 print_success() {
-    echo -e "${GREEN}✅ $1${NC}"
+    printf "%b✅ %s%b\n" "$GREEN" "$1" "$NC"
 }
 
 print_error() {
-    echo -e "${RED}❌ $1${NC}"
+    printf "%b❌ %s%b\n" "$RED" "$1" "$NC"
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
+    printf "%b⚠️  %s%b\n" "$YELLOW" "$1" "$NC"
 }
 
 print_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
+    printf "%bℹ️  %s%b\n" "$BLUE" "$1" "$NC"
 }
 
 usage() {
@@ -103,18 +102,16 @@ Plan Source Options (choose one):
 GitHub Discovery Options (used with --from-github):
   --owner <name>             GitHub repository owner
   --repo-name <name>         GitHub repository name
-  --base <branch>            Base branch (default: main)
+  --base <branch>            Base branch (default: repository default branch)
   --labels <labels>          Comma-separated list of labels to filter PRs
   --query <query>            Custom GitHub search query
 
 Output Options:
   --artifacts <dir>          Artifacts output directory (default: ./artifacts/dogfood-<timestamp>)
-  --integration-branch <name> Custom integration branch name (default: auto-generated)
 
 Execution Options:
   --dry-run                  Preview operations without executing (default)
   --execute                  Actually perform merge operations
-  --cleanup                  Clean up integration branches after execution
   --verbose                  Enable verbose output
 
 Other Options:
@@ -122,13 +119,13 @@ Other Options:
 
 Examples:
   # Dry run with existing plan file
-  $0 --plan merge-weave-dogfood.json --dry-run
+  $0 --plan plan.json --dry-run
 
   # Execute from GitHub with labels filter
   $0 --from-github --owner myorg --repo-name myrepo --labels "ready-to-merge" --execute
 
-  # Execute with custom repository and cleanup
-  $0 --repo /srv/my-project --plan plan.json --execute --cleanup
+  # Execute with a custom repository
+  $0 --repo /srv/my-project --plan plan.json --execute
 
   # Discover and preview PRs from GitHub
   $0 --from-github --owner octocat --repo-name hello-world --base main --dry-run
@@ -175,14 +172,6 @@ while [[ $# -gt 0 ]]; do
         --artifacts)
             ARTIFACTS_DIR="$2"
             shift 2
-            ;;
-        --integration-branch)
-            INTEGRATION_BRANCH="$2"
-            shift 2
-            ;;
-        --cleanup)
-            CLEANUP=true
-            shift
             ;;
         --dry-run)
             DRY_RUN=true
@@ -257,11 +246,17 @@ fi
 # Create artifacts directory
 mkdir -p "$ARTIFACTS_DIR"
 
+# A report is success evidence for exactly one completed invocation. Invalidate
+# any report left by a previous run before the first fallible workflow step so
+# a failed rerun cannot appear successful merely because it reused a directory.
+REPORT_FILE="$ARTIFACTS_DIR/dogfood-report.md"
+rm -f -- "$REPORT_FILE"
+
 # Check for lex-pr CLI
 if ! command -v lex-pr &> /dev/null; then
     # Try using npm run cli as fallback
     if [ -f "package.json" ] && grep -q '"cli"' package.json; then
-        LEX_PR_CMD="npm run cli --"
+        LEX_PR_CMD=(npm run cli --)
         print_info "Using npm run cli for lex-pr commands"
     else
         print_error "lex-pr command not found and no npm cli script available"
@@ -269,7 +264,7 @@ if ! command -v lex-pr &> /dev/null; then
         exit 1
     fi
 else
-    LEX_PR_CMD="lex-pr"
+    LEX_PR_CMD=(lex-pr)
 fi
 
 # Print configuration
@@ -289,9 +284,7 @@ else
     echo "  Plan File:      $PLAN_FILE"
 fi
 echo "  Artifacts Dir:  $ARTIFACTS_DIR"
-[ -n "$INTEGRATION_BRANCH" ] && echo "  Integration:    $INTEGRATION_BRANCH"
 echo "  Mode:           $([ "$EXECUTE" = true ] && echo "EXECUTE" || echo "DRY-RUN")"
-echo "  Cleanup:        $([ "$CLEANUP" = true ] && echo "Yes" || echo "No")"
 
 # Step 1: Generate or validate plan
 print_section "Step 1: Plan Generation"
@@ -299,17 +292,36 @@ print_section "Step 1: Plan Generation"
 if [ "$FROM_GITHUB" = true ]; then
     print_step "🔍 Discovering PRs from GitHub..."
 
-    DISCOVER_OPTS="--owner $GITHUB_OWNER --repo $GITHUB_REPO"
-    [ -n "$GITHUB_BASE" ] && DISCOVER_OPTS="$DISCOVER_OPTS --base $GITHUB_BASE"
-    [ -n "$GITHUB_LABELS" ] && DISCOVER_OPTS="$DISCOVER_OPTS --labels $GITHUB_LABELS"
-    [ -n "$GITHUB_QUERY" ] && DISCOVER_OPTS="$DISCOVER_OPTS --query $GITHUB_QUERY"
-
     PLAN_FILE="$ARTIFACTS_DIR/plan.json"
+    PLAN_ARGS=(
+        weave plan
+        --from-github
+        "--owner=$GITHUB_OWNER"
+        "--repo=$GITHUB_REPO"
+        "--repo-root=$REQUESTED_REPO_ROOT"
+    )
+    [ -n "$GITHUB_BASE" ] && PLAN_ARGS+=("--target=$GITHUB_BASE")
+    [ -n "$GITHUB_QUERY" ] && PLAN_ARGS+=("--query=$GITHUB_QUERY")
+    if [ -n "$GITHUB_LABELS" ]; then
+        IFS=',' read -r -a LABEL_VALUES <<< "$GITHUB_LABELS"
+        PLAN_ARGS+=(--labels)
+        for LABEL_VALUE in "${LABEL_VALUES[@]}"; do
+            # Trim surrounding whitespace without evaluating the value.
+            LABEL_VALUE="${LABEL_VALUE#"${LABEL_VALUE%%[![:space:]]*}"}"
+            LABEL_VALUE="${LABEL_VALUE%"${LABEL_VALUE##*[![:space:]]}"}"
+            if [ -z "$LABEL_VALUE" ] || [[ "$LABEL_VALUE" == -* ]]; then
+                print_error "Invalid label in --labels: labels must be non-empty and must not begin with '-'"
+                exit 1
+            fi
+            PLAN_ARGS+=("$LABEL_VALUE")
+        done
+    fi
+    PLAN_ARGS+=("--output=$PLAN_FILE")
 
     if [ "$VERBOSE" = true ]; then
-        $LEX_PR_CMD discover $DISCOVER_OPTS --output "$PLAN_FILE"
+        "${LEX_PR_CMD[@]}" "${PLAN_ARGS[@]}"
     else
-        $LEX_PR_CMD discover $DISCOVER_OPTS --output "$PLAN_FILE" 2>&1 | tail -10
+        "${LEX_PR_CMD[@]}" "${PLAN_ARGS[@]}" 2>&1 | tail -10
     fi
 
     if [ ! -f "$PLAN_FILE" ]; then
@@ -319,38 +331,37 @@ if [ "$FROM_GITHUB" = true ]; then
 
     print_success "Plan generated: $PLAN_FILE"
 else
-    print_step "📄 Validating plan file..."
-
     if [ ! -f "$PLAN_FILE" ]; then
         print_error "Plan file not found: $PLAN_FILE"
         exit 1
     fi
+fi
 
-    # Validate plan schema (optional - continue even if validation fails)
-    if $LEX_PR_CMD schema validate "$PLAN_FILE" > /dev/null 2>&1; then
-        print_success "Plan file validated: $PLAN_FILE"
-    else
-        print_warning "Plan file validation failed (continuing anyway): $PLAN_FILE"
-        print_info "Note: Schema validation may fail for older plan formats"
-    fi
+# Both supplied and discovered plans cross the same fail-closed validation
+# boundary before gates, dependency analysis, or merge preview/execution.
+print_step "📄 Validating plan file..."
+if "${LEX_PR_CMD[@]}" schema validate "$PLAN_FILE" > /dev/null 2>&1; then
+    print_success "Plan file validated: $PLAN_FILE"
+else
+    PLAN_VALIDATION_EXIT_CODE=$?
+    print_error "Plan file validation failed (exit code: $PLAN_VALIDATION_EXIT_CODE): $PLAN_FILE"
+    print_info "Supply a current schema-valid plan.json; legacy plan formats are not executable."
+    exit "$PLAN_VALIDATION_EXIT_CODE"
 fi
 
 # Show plan summary
 print_step "📊 Plan Summary:"
 if command -v jq &> /dev/null; then
-    PR_COUNT=$(jq -r '.nodes | length' "$PLAN_FILE" 2>/dev/null || echo "unknown")
-    INTEGRATION_BRANCH_FROM_PLAN=$(jq -r '.integrationBranch // "auto-generated"' "$PLAN_FILE" 2>/dev/null)
-    TARGET_BRANCH=$(jq -r '.targetBranch // .target // "main"' "$PLAN_FILE" 2>/dev/null)
+    ITEM_COUNT=$(jq -r '.items | length' "$PLAN_FILE" 2>/dev/null || echo "unknown")
+    TARGET_BRANCH=$(jq -r '.target // "main"' "$PLAN_FILE" 2>/dev/null)
 
-    echo "  PRs/Nodes:      $PR_COUNT"
+    echo "  Items:          $ITEM_COUNT"
     echo "  Target Branch:  $TARGET_BRANCH"
-    echo "  Integration:    $INTEGRATION_BRANCH_FROM_PLAN"
+    echo "  Integration:    auto-generated"
 
-    # Override integration branch if specified
-    [ -n "$INTEGRATION_BRANCH" ] && echo "  Override:       $INTEGRATION_BRANCH"
 else
     print_warning "jq not found, skipping detailed plan summary"
-    cat "$PLAN_FILE" | head -20
+    head -20 "$PLAN_FILE"
 fi
 
 # Step 2: Run gates (if available)
@@ -409,9 +420,18 @@ print_section "Step 3: Merge Analysis"
 print_step "📊 Analyzing merge order and dependencies..."
 
 MERGE_ORDER_FILE="$ARTIFACTS_DIR/merge-order.json"
-$LEX_PR_CMD merge-order "$PLAN_FILE" --json > "$MERGE_ORDER_FILE" 2>&1 || {
-    print_warning "Merge order analysis failed, continuing anyway"
-}
+if "${LEX_PR_CMD[@]}" merge-order "$PLAN_FILE" --json > "$MERGE_ORDER_FILE" 2>&1; then
+    print_success "Merge order and dependencies validated"
+else
+    MERGE_ORDER_EXIT_CODE=$?
+    print_error "Merge order analysis failed (exit code: $MERGE_ORDER_EXIT_CODE)"
+    if [ -s "$MERGE_ORDER_FILE" ]; then
+        echo ""
+        echo "Details:"
+        cat "$MERGE_ORDER_FILE"
+    fi
+    exit "$MERGE_ORDER_EXIT_CODE"
+fi
 
 if [ -f "$MERGE_ORDER_FILE" ] && [ "$VERBOSE" = true ]; then
     echo ""
@@ -425,19 +445,23 @@ print_section "Step 4: Merge Execution"
 if [ "$EXECUTE" = true ]; then
     print_step "🚀 Executing merge pyramid..."
 
-    MERGE_OPTS="--plan $PLAN_FILE --execute"
-    [ -n "$INTEGRATION_BRANCH" ] && MERGE_OPTS="$MERGE_OPTS --branch-prefix $INTEGRATION_BRANCH"
-    [ "$CLEANUP" = true ] && MERGE_OPTS="$MERGE_OPTS --cleanup"
+    MERGE_OPTS=(--plan "$PLAN_FILE" --execute)
 
     MERGE_RESULTS_FILE="$ARTIFACTS_DIR/merge-results.json"
 
     if [ "$VERBOSE" = true ]; then
-        $LEX_PR_CMD merge $MERGE_OPTS --json | tee "$MERGE_RESULTS_FILE"
+        if "${LEX_PR_CMD[@]}" merge "${MERGE_OPTS[@]}" --json | tee "$MERGE_RESULTS_FILE"; then
+            MERGE_EXIT_CODE=0
+        else
+            MERGE_EXIT_CODE=$?
+        fi
     else
-        $LEX_PR_CMD merge $MERGE_OPTS --json > "$MERGE_RESULTS_FILE" 2>&1
+        if "${LEX_PR_CMD[@]}" merge "${MERGE_OPTS[@]}" --json > "$MERGE_RESULTS_FILE" 2>&1; then
+            MERGE_EXIT_CODE=0
+        else
+            MERGE_EXIT_CODE=$?
+        fi
     fi
-
-    MERGE_EXIT_CODE=$?
 
     if [ $MERGE_EXIT_CODE -eq 0 ]; then
         print_success "Merge pyramid execution completed successfully"
@@ -456,21 +480,38 @@ if [ "$EXECUTE" = true ]; then
 else
     print_step "🔍 Dry-run: Previewing merge operations..."
 
-    MERGE_OPTS="--plan $PLAN_FILE --dry-run"
-    [ -n "$INTEGRATION_BRANCH" ] && MERGE_OPTS="$MERGE_OPTS --branch-prefix $INTEGRATION_BRANCH"
+    MERGE_OPTS=(--plan "$PLAN_FILE" --dry-run)
 
     DRY_RUN_FILE="$ARTIFACTS_DIR/dry-run.json"
 
-    # Run merge command and capture exit code, but don't fail if it errors in dry-run
     if [ "$VERBOSE" = true ]; then
-        $LEX_PR_CMD merge $MERGE_OPTS --json | tee "$DRY_RUN_FILE" || true
+        if "${LEX_PR_CMD[@]}" merge "${MERGE_OPTS[@]}" --json | tee "$DRY_RUN_FILE"; then
+            DRY_RUN_EXIT_CODE=0
+        else
+            DRY_RUN_EXIT_CODE=$?
+        fi
     else
-        $LEX_PR_CMD merge $MERGE_OPTS --json > "$DRY_RUN_FILE" 2>&1 || true
+        if "${LEX_PR_CMD[@]}" merge "${MERGE_OPTS[@]}" --json > "$DRY_RUN_FILE" 2>&1; then
+            DRY_RUN_EXIT_CODE=0
+        else
+            DRY_RUN_EXIT_CODE=$?
+        fi
     fi
 
-    # Check if the dry-run file contains an error
+    if [ "$DRY_RUN_EXIT_CODE" -ne 0 ]; then
+        print_error "Dry-run merge preview failed (exit code: $DRY_RUN_EXIT_CODE)"
+        if [ -s "$DRY_RUN_FILE" ]; then
+            echo ""
+            echo "Details:"
+            cat "$DRY_RUN_FILE"
+        fi
+        exit "$DRY_RUN_EXIT_CODE"
+    fi
+
+    # A zero exit status is authoritative. Retain a visible warning when the
+    # successful JSON payload itself contains an error marker.
     if [ -f "$DRY_RUN_FILE" ] && grep -qi "error" "$DRY_RUN_FILE" 2>/dev/null; then
-        print_warning "Dry-run completed with warnings/errors (continuing)"
+        print_warning "Dry-run output contains an error marker; review the preview artifact"
     else
         print_success "Dry-run completed"
     fi
@@ -489,8 +530,6 @@ fi
 print_section "Step 5: Report Generation"
 
 print_step "📝 Generating final report..."
-
-REPORT_FILE="$ARTIFACTS_DIR/dogfood-report.md"
 
 cat > "$REPORT_FILE" << EOF
 # Dogfood Merge-Weave Report

@@ -88,6 +88,11 @@ All artifacts are generated in `.smartergpt/deliverables/weave-{timestamp}/`:
 
 Structured analysis data with schema versioning:
 
+The nested `nodes` graph illustrates a historical analysis artifact, not the current executable
+Plan schema.
+
+<!-- lexrunner-non-executable-plan:autopilot-legacy-plan-graph -->
+
 ```json
 {
   "schemaVersion": "1.0.0",

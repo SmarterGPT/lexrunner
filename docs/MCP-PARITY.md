@@ -1,102 +1,65 @@
-# MCP/CLI Parity Audit
+# MCP/CLI Selected Mapping Guide
 
-**Status:** Complete  
-**Issue:** AX-004  
+**Status:** Bounded selected-operation guide
+**Issue:** AX-004
 **AX Principle:** Structured Over Conversational
 
-This document establishes parity between the CLI interface and MCP server tools for LexRunner 1.0.0.
+This guide documents selected CLI/MCP routes that share an application service. It is not the
+published tool inventory and does not claim command-for-tool symmetry. The generated inventory in
+[README.mcp.md](../README.mcp.md#published-tool-inventory) and its checked source,
+[cli-mcp-surface.json](architecture/cli-mcp-surface.json), are authoritative for current names,
+dispositions, owners, and intentional exceptions. `npm run docs:surface:check` verifies them against
+the server's published `tools/list` response.
 
-## Parity Matrix
+## Selected mappings
 
-### Core Commands
+<!-- lexrunner-mcp-parity-tools:start -->
 
-| CLI Command   | MCP Tool      | Parity  | Notes                                                     |
-| ------------- | ------------- | ------- | --------------------------------------------------------- |
-| `plan`        | `plan.create` | ✅ Full | Both support GitHub auto-discovery, labels, gates, target |
-| `execute`     | `gates.run`   | ✅ Full | MCP accepts external planFile or internal state           |
-| `merge`       | `merge.apply` | ✅ Full | MCP enforces ALLOW_MUTATIONS for safety                   |
-| `discover`    | `discover`    | ✅ Full | Added in AX-004 audit                                     |
-| `status`      | `status`      | ✅ Full | Added in AX-004 audit                                     |
-| `doctor`      | `doctor`      | ✅ Full | Added in AX-004 audit                                     |
-| `health`      | `health`      | ✅ Full | MCP tool, CLI uses `doctor --json`                        |
-| `merge-order` | `merge-order` | ✅ Full | Added in AX-004 audit                                     |
+| Operation            | CLI route                                        | MCP tool          | Shared owner / boundary                                                   |
+| -------------------- | ------------------------------------------------ | ----------------- | ------------------------------------------------------------------------- |
+| create Plan          | `lexrunner weave plan`                           | `plan.create`     | `PlanCreationService`; MCP returns its own transport envelope             |
+| run gates            | `lexrunner gate run`                             | `gates.run`       | `GateExecutionService`; external-plan routing is explicitly tested        |
+| apply merge          | `lexrunner weave apply`                          | `merge.apply`     | `MergeApplicationService`; MCP mutations also require `ALLOW_MUTATIONS`   |
+| discover PRs         | `lexrunner weave discover`                       | `discover`        | `DiscoveryQueryService`                                                   |
+| integration status   | `lexrunner weave status`                         | `status`          | `IntegrationStatusQueryService`                                           |
+| diagnostics          | `lexrunner workspace doctor`                     | `doctor`          | `WorkspaceDiagnosticsService`; startup/repository scope remains explicit  |
+| merge order          | `lexrunner weave merge-order`                    | `merge-order`     | `MergeOrderQueryService`                                                  |
+| configuration        | `lexrunner config show`                          | `config.show`     | `ConfigurationQueryService`                                               |
+| initialize workspace | `lexrunner workspace init --non-interactive`     | `local.init`      | deterministic non-interactive `WorkspaceInitializationService` route only |
+| resolve profile      | `lexrunner config show` (overlapping projection) | `profile.resolve` | bounded profile projection, not identical command output                  |
 
-### Configuration Commands
+<!-- lexrunner-mcp-parity-tools:end -->
 
-| CLI Command   | MCP Tool          | Parity      | Notes                                       |
-| ------------- | ----------------- | ----------- | ------------------------------------------- |
-| `init-local`  | `local.init`      | ✅ Full     | Identical semantics                         |
-| `config show` | `config.show`     | ✅ Full     | Added in AX-004 audit                       |
-| n/a           | `profile.resolve` | ✅ MCP Only | Internal profile resolution exposed via MCP |
+The interactive `workspace init` path is human-only. The mapping above is explicitly the shared
+non-interactive route. Likewise, the legacy senior-dev CLI group is classified `internal-only` and
+has no published MCP tools. Deprecated `health` and dotted legacy compatibility tools are omitted
+from this selected table; the generated inventory remains authoritative, and they are not canonical
+orchestration authority.
 
-### Senior Dev Executor Tools (MCP Only)
+## Domain projection versus transport
 
-| MCP Tool                     | CLI Equivalent               | Notes                          |
-| ---------------------------- | ---------------------------- | ------------------------------ |
-| `senior-dev.prepare-context` | `senior-dev prepare-context` | Full parity via CLI subcommand |
-| `senior-dev.recall-context`  | `senior-dev recall-context`  | Full parity via CLI subcommand |
-| `senior-dev.capture-frame`   | `senior-dev capture-frame`   | Full parity via CLI subcommand |
-| `senior-dev.modes`           | `senior-dev modes`           | Full parity via CLI subcommand |
+Mappings above identify shared service/domain behavior for equivalent inputs. They do not promise
+byte-identical output, identical command flags, a common transport envelope, or proof that an
+operation ran. CLI JSON, human CLI formatting, and MCP JSON-RPC/content envelopes are distinct.
+Protected mutations also retain adapter-specific admission checks. Exact equivalence belongs to the
+operation-specific tests and contract profile recorded in the generated surface.
 
-### Deprecated IntegrationRun Record Tools
-
-| MCP Tool                  | CLI Equivalent | Notes                                                               |
-| ------------------------- | -------------- | ------------------------------------------------------------------- |
-| `lexrunner.startRun`      | n/a            | Deprecated IntegrationRun record adapter; remove in 3.0.0           |
-| `lexrunner.getStatus`     | n/a            | Deprecated bounded IntegrationRun status; remove in 3.0.0           |
-| `lexrunner.listArtifacts` | n/a            | Deprecated bounded artifact metadata, without inline content; 3.0.0 |
-
-## Intentional Gaps
-
-### CLI-Only Commands
-
-These commands are intentionally CLI-only due to their interactive or local-only nature:
-
-| Command          | Reason                                  |
-| ---------------- | --------------------------------------- |
-| `init`           | Interactive wizard requiring user input |
-| `bootstrap`      | Local filesystem bootstrap              |
-| `view`           | Interactive TUI requiring terminal      |
-| `plan-review`    | Interactive review with prompts         |
-| `completion`     | Shell-specific completion scripts       |
-| `retry`          | Requires local execution state          |
-| `query`          | Interactive query interface             |
-| `plan-diff`      | Local file comparison                   |
-| `idea`           | Interactive ideation workflow           |
-| `create-project` | Interactive project creation            |
-
-### MCP-Only Tools
-
-These surfaces are MCP-only. The `lexrunner.*` entries are legacy IntegrationRun record adapters,
-not orchestration authority:
-
-| Tool                      | Reason                                                    |
-| ------------------------- | --------------------------------------------------------- |
-| `lexrunner.startRun`      | Deprecated; use integration operations or `start_attempt` |
-| `lexrunner.getStatus`     | Deprecated; use `status` or `get_attempt_status`          |
-| `lexrunner.listArtifacts` | Deprecated; use owning operation artifact references      |
-| `profile.resolve`         | Internal resolution exposed for MCP clients               |
-
-## Semantic Equivalence
-
-All parity commands guarantee:
-
-1. **Same inputs produce same outputs**: JSON payloads are equivalent
-2. **Same error codes**: Validation errors return equivalent structures
-3. **Same side effects**: File writes, API calls behave identically
-4. **Deterministic output**: All JSON uses `canonicalJSONStringify()`
-
-### Input/Output Mapping
+### Selected input/output sketches
 
 #### `plan` / `plan.create`
 
+The combined command/output block below is an abbreviated mapping sketch, not an executable Plan;
+the returned object uses ellipses and omits required fields.
+
+<!-- lexrunner-non-executable-plan:mcp-parity-plan-output-fragment -->
+
 ```
-CLI:  lex-pr plan --from-github --labels "ready" --json
+CLI:  lexrunner weave plan --from-github --labels "ready" --json
 MCP:  { name: "plan.create", arguments: { fromGithub: true, labels: ["ready"] } }
 
-Both return:
+Shared domain projection sketch (transport wrappers omitted):
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.0.1",
   "target": "main",
   "items": [...],
   "policy": {...}
@@ -105,11 +68,15 @@ Both return:
 
 #### `execute` / `gates.run`
 
+The result sketch uses placeholders and omits transport fields; it is not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:mcp-parity-gate-output-fragment -->
+
 ```
-CLI:  lex-pr execute plan.json --json
+CLI:  lexrunner gate run plan.json --json
 MCP:  { name: "gates.run", arguments: { planFile: "plan.json" } }
 
-Both return:
+Shared domain projection sketch (transport wrappers omitted):
 {
   "items": [{ "name": "...", "status": "pass", "gates": [...] }],
   "allGreen": true
@@ -119,10 +86,10 @@ Both return:
 #### `discover` / `discover`
 
 ```
-CLI:  lex-pr discover --json
+CLI:  lexrunner weave discover --json
 MCP:  { name: "discover", arguments: {} }
 
-Both return:
+Shared domain projection sketch (transport wrappers omitted):
 {
   "pullRequests": [...],
   "total": N,
@@ -133,11 +100,15 @@ Both return:
 
 #### `status` / `status`
 
+The nested `plan` value below is an abbreviated status summary, not an executable Plan document.
+
+<!-- lexrunner-non-executable-plan:mcp-parity-status-plan-summary -->
+
 ```
-CLI:  lex-pr status plan.json --json
+CLI:  lexrunner weave status plan.json --json
 MCP:  { name: "status", arguments: { planFile: "plan.json" } }
 
-Both return:
+Shared domain projection sketch (transport wrappers omitted):
 {
   "plan": { "schemaVersion": "...", "target": "...", "itemCount": N },
   "mergeSummary": { "eligible": [...], "pending": [...], "failed": [...] }
@@ -147,10 +118,10 @@ Both return:
 #### `doctor` / `doctor`
 
 ```
-CLI:  lex-pr doctor --json
+CLI:  lexrunner workspace doctor --json
 MCP:  { name: "doctor", arguments: {} }
 
-Both return:
+Shared domain projection sketch (transport wrappers omitted):
 {
   "hasErrors": false,
   "issues": [],
@@ -164,10 +135,10 @@ Both return:
 #### `merge-order` / `merge-order`
 
 ```
-CLI:  lex-pr merge-order plan.json --json
+CLI:  lexrunner weave merge-order plan.json --json
 MCP:  { name: "merge-order", arguments: { planFile: "plan.json" } }
 
-Both return:
+Shared domain projection sketch (transport wrappers omitted):
 {
   "levels": [["item-a"], ["item-b"]],
   "totalItems": N,
@@ -178,44 +149,46 @@ Both return:
 #### `config show` / `config.show`
 
 ```
-CLI:  lex-pr config show --json
+CLI:  lexrunner config show --json
 MCP:  { name: "config.show", arguments: {} }
 
-Both return:
+Shared domain projection sketch (transport wrappers omitted):
 {
-  "config": { ... },
-  "provenance": { ... },
-  "sources": [...]
+  "contract": "bounded-ax-v1",
+  "precedenceChain": [...],
+  "configuration": [...]
 }
 ```
 
-## Error Handling Parity
+## Error mapping boundary
 
-| Error Type       | CLI Exit Code | MCP Error Code            |
-| ---------------- | ------------- | ------------------------- |
-| Success          | 0             | No error                  |
-| System error     | 1             | -32603 (Internal)         |
-| Validation error | 2             | -32602 (Invalid params)   |
-| Not found        | 1             | -32601 (Method not found) |
+Shared services expose bounded AX error data (`code`, `message`, `nextActions`, and optional
+`context`). Adapters project that domain failure differently: the CLI selects a command-specific
+exit status and output envelope, while MCP uses a JSON-RPC error/content envelope. JSON-RPC
+method-not-found applies only to an unknown protocol method or tool; it is not the mapping for a
+domain object that was not found. Use the operation-specific adapter tests for exact mappings.
 
 ## Testing Parity
 
-To verify parity, run the test suite:
+Run the generated-surface check and the real focused mapping tests:
 
 ```bash
-npm test -- --grep "mcp-parity"
+npm run docs:surface:check
+npx vitest run tests/architecture/cli-mcp-surface.spec.ts \
+  tests/mcp-workspace-config-parity.spec.ts \
+  tests/mcp-published-merge-application.spec.ts
 ```
 
 Or manually verify:
 
 ```bash
 # CLI
-lex-pr discover --json > /tmp/cli-discover.json
+lexrunner weave discover --json > /tmp/cli-discover.json
 
 # MCP (via test script)
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"discover","arguments":{}}}' | node mcp-server.mjs 2>/dev/null | jq -r '.result.content[0].text' > /tmp/mcp-discover.json
 
-# Compare structure
+# Inspect the transport-specific top-level structures; this is not a byte-equality assertion.
 jq 'keys' /tmp/cli-discover.json
 jq 'keys' /tmp/mcp-discover.json
 ```

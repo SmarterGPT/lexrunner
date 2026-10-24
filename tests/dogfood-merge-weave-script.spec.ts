@@ -10,7 +10,36 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-describe("scripts/dogfood-merge-weave.sh", () => {
+const resolveBashExecutable = (): string | undefined => {
+  const override = process.env.LEXRUNNER_TEST_BASH;
+  if (override) return override;
+  if (process.platform !== "win32") return "bash";
+
+  const programFiles = process.env.ProgramW6432 ?? process.env.ProgramFiles ?? "C:\\Program Files";
+  return [
+    path.join(programFiles, "Git", "bin", "bash.exe"),
+    path.join(programFiles, "Git", "usr", "bin", "bash.exe"),
+  ].find((candidate) => fs.existsSync(candidate));
+};
+
+const bashExecutable = resolveBashExecutable();
+const bashCommand = bashExecutable ?? "bash";
+const describeWithBash = bashExecutable === undefined ? describe.skip : describe;
+
+interface FakeLexPrOptions {
+  failValidation?: boolean;
+  failMergeOrder?: boolean;
+  failMerge?: boolean;
+  mode?: "dry-run" | "execute";
+}
+
+const hasCommand = (commands: string[][], prefix: string[]): boolean =>
+  commands.some((command) => prefix.every((part, index) => command[index] === part));
+
+const commandWithPrefix = (commands: string[][], prefix: string[]): string[] | undefined =>
+  commands.find((command) => prefix.every((part, index) => command[index] === part));
+
+describeWithBash("scripts/dogfood-merge-weave.sh", () => {
   const scriptPath = path.join(process.cwd(), "scripts/dogfood-merge-weave.sh");
   let tempDir: string;
 
@@ -21,42 +50,104 @@ describe("scripts/dogfood-merge-weave.sh", () => {
       JSON.stringify({
         schemaVersion: "1.0.0",
         target: "main",
-        nodes: [],
+        items: [],
       })
     );
     return planPath;
   };
 
-  const createFakeLexPr = (): string => {
+  const createFakeLexPr = (): { binDir: string; commandLogPath: string } => {
     const binDir = path.join(tempDir, "bin");
     const lexPrPath = path.join(binDir, "lex-pr");
+    const commandLogPath = path.join(tempDir, "lex-pr-commands.log");
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(lexPrPath, "#!/usr/bin/env bash\nprintf '{}\\n'\n", { mode: 0o755 });
-    return binDir;
+    fs.writeFileSync(
+      lexPrPath,
+      `#!/usr/bin/env bash
+printf '%s' "$1" >> "$LEX_PR_TEST_LOG"
+printf '\\037%s' "\${@:2}" >> "$LEX_PR_TEST_LOG"
+printf '\\n' >> "$LEX_PR_TEST_LOG"
+
+if [ "$1" = "weave" ] && [ "$2" = "plan" ]; then
+    while [ "$#" -gt 0 ]; do
+      if [[ "$1" == --output=* ]]; then
+        output_path="\${1#--output=}"
+        printf '%s\\n' '{"schemaVersion":"1.0.0","target":"main","items":[]}' > "$output_path"
+        break
+      elif [ "$1" = "--output" ]; then
+        shift
+        printf '%s\\n' '{"schemaVersion":"1.0.0","target":"main","items":[]}' > "$1"
+        break
+      fi
+      shift
+    done
+elif [ "$1" = "schema" ] && [ "$2" = "validate" ]; then
+    if [ "$FAKE_LEX_PR_FAIL_VALIDATION" = "1" ]; then
+      printf '%s\\n' 'schema validation rejected the plan' >&2
+      exit 41
+    fi
+elif [ "$1" = "merge-order" ]; then
+    if [ "$FAKE_LEX_PR_FAIL_MERGE_ORDER" = "1" ]; then
+      printf '%s\\n' 'dependency cycle detected' >&2
+      exit 42
+    fi
+elif [ "$1" = "merge" ]; then
+    if [ "$FAKE_LEX_PR_FAIL_MERGE" = "1" ]; then
+      printf '%s\\n' 'merge preview failed' >&2
+      exit 43
+    fi
+fi
+
+printf '{}\\n'
+`,
+      { mode: 0o755 }
+    );
+    return { binDir, commandLogPath };
   };
 
-  const runForRepo = async (repoPath: string) => {
+  const runWithFakeLexPr = async (
+    repoPath: string,
+    sourceArgs: string[],
+    options: FakeLexPrOptions = {}
+  ) => {
     const artifactsDir = path.join(tempDir, `artifacts-${path.basename(repoPath)}`);
-    const fakeBin = createFakeLexPr();
+    const { binDir, commandLogPath } = createFakeLexPr();
 
-    return execa(
-      "bash",
+    const result = await execa(
+      bashCommand,
       [
         scriptPath,
-        "--plan",
-        writePlan(),
+        ...sourceArgs,
         "--repo",
         repoPath,
         "--artifacts",
         artifactsDir,
-        "--dry-run",
+        options.mode === "execute" ? "--execute" : "--dry-run",
       ],
       {
         reject: false,
-        env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}` },
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          LEX_PR_TEST_LOG: commandLogPath,
+          FAKE_LEX_PR_FAIL_VALIDATION: options.failValidation ? "1" : "0",
+          FAKE_LEX_PR_FAIL_MERGE_ORDER: options.failMergeOrder ? "1" : "0",
+          FAKE_LEX_PR_FAIL_MERGE: options.failMerge ? "1" : "0",
+        },
       }
     );
+
+    const commands = fs.existsSync(commandLogPath)
+      ? fs
+          .readFileSync(commandLogPath, "utf8")
+          .split(/\r?\n/u)
+          .filter(Boolean)
+          .map((line) => line.split("\x1f"))
+      : [];
+    return { result, commands, artifactsDir };
   };
+
+  const runForRepo = async (repoPath: string, options: FakeLexPrOptions = {}) =>
+    runWithFakeLexPr(repoPath, ["--plan", writePlan()], options);
 
   const initRepository = async (repoPath: string): Promise<void> => {
     fs.mkdirSync(repoPath, { recursive: true });
@@ -82,7 +173,7 @@ describe("scripts/dogfood-merge-weave.sh", () => {
   });
 
   it("should display help message", async () => {
-    const { stdout, exitCode } = await execa("bash", [scriptPath, "--help"]);
+    const { stdout, exitCode } = await execa(bashCommand, [scriptPath, "--help"]);
 
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Generic Dogfood Merge-Weave Script");
@@ -93,11 +184,15 @@ describe("scripts/dogfood-merge-weave.sh", () => {
     expect(stdout).toContain("--artifacts");
     expect(stdout).toContain("--dry-run");
     expect(stdout).toContain("--execute");
+    expect(stdout).toContain("--plan plan.json");
+    expect(stdout).not.toContain("merge-weave-dogfood.json");
+    expect(stdout).not.toContain("--integration-branch");
+    expect(stdout).not.toContain("--cleanup");
   });
 
   it("should fail when no plan source is specified", async () => {
     try {
-      await execa("bash", [scriptPath]);
+      await execa(bashCommand, [scriptPath]);
       expect.fail("Should have thrown an error");
     } catch (error: any) {
       expect(error.exitCode).toBe(1);
@@ -111,7 +206,7 @@ describe("scripts/dogfood-merge-weave.sh", () => {
     const nonExistentPlan = path.join(tempDir, "nonexistent.json");
 
     try {
-      await execa("bash", [scriptPath, "--plan", nonExistentPlan]);
+      await execa(bashCommand, [scriptPath, "--plan", nonExistentPlan]);
       expect.fail("Should have thrown an error");
     } catch (error: any) {
       expect(error.exitCode).toBe(1);
@@ -121,7 +216,7 @@ describe("scripts/dogfood-merge-weave.sh", () => {
 
   it("should fail when --from-github is specified without required options", async () => {
     try {
-      await execa("bash", [scriptPath, "--from-github"]);
+      await execa(bashCommand, [scriptPath, "--from-github"]);
       expect.fail("Should have thrown an error");
     } catch (error: any) {
       expect(error.exitCode).toBe(1);
@@ -143,7 +238,7 @@ describe("scripts/dogfood-merge-weave.sh", () => {
     const nonExistentRepo = path.join(tempDir, "nonexistent-repo");
 
     try {
-      await execa("bash", [scriptPath, "--plan", testPlan, "--repo", nonExistentRepo]);
+      await execa(bashCommand, [scriptPath, "--plan", testPlan, "--repo", nonExistentRepo]);
       expect.fail("Should have thrown an error");
     } catch (error: any) {
       expect(error.exitCode).toBe(1);
@@ -157,10 +252,10 @@ describe("scripts/dogfood-merge-weave.sh", () => {
 
     expect(fs.statSync(path.join(repoPath, ".git")).isDirectory()).toBe(true);
 
-    const { exitCode, stdout } = await runForRepo(repoPath);
+    const { result } = await runForRepo(repoPath);
 
-    expect(exitCode).toBe(0);
-    expect(stdout).toContain("WORKFLOW COMPLETE");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("WORKFLOW COMPLETE");
   });
 
   it("accepts a linked worktree whose .git is a file", async () => {
@@ -171,10 +266,10 @@ describe("scripts/dogfood-merge-weave.sh", () => {
 
     expect(fs.statSync(path.join(worktreePath, ".git")).isFile()).toBe(true);
 
-    const { exitCode, stdout } = await runForRepo(worktreePath);
+    const { result } = await runForRepo(worktreePath);
 
-    expect(exitCode).toBe(0);
-    expect(stdout).toContain("WORKFLOW COMPLETE");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("WORKFLOW COMPLETE");
   });
 
   it("rejects a non-repository nested inside a checkout", async () => {
@@ -183,10 +278,152 @@ describe("scripts/dogfood-merge-weave.sh", () => {
     await initRepository(repoPath);
     fs.mkdirSync(nestedPath);
 
-    const { exitCode, stdout } = await runForRepo(nestedPath);
+    const { result } = await runForRepo(nestedPath);
 
-    expect(exitCode).toBe(1);
-    expect(stdout).toContain(`Not a git repository: ${nestedPath}`);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(`Not a git repository: ${nestedPath}`);
+  });
+
+  it("fails closed on supplied plan validation before merge analysis or preview", async () => {
+    const repoPath = path.join(tempDir, "validation-failure");
+    await initRepository(repoPath);
+
+    const { result, commands, artifactsDir } = await runForRepo(repoPath, {
+      failValidation: true,
+    });
+
+    expect(result.exitCode).toBe(41);
+    expect(result.stdout).toContain("Plan file validation failed");
+    expect(hasCommand(commands, ["schema", "validate"])).toBe(true);
+    expect(hasCommand(commands, ["merge-order"])).toBe(false);
+    expect(hasCommand(commands, ["merge"])).toBe(false);
+    expect(fs.existsSync(path.join(artifactsDir, "dogfood-report.md"))).toBe(false);
+  });
+
+  it("fails closed on generated plan validation before merge analysis or preview", async () => {
+    const repoPath = path.join(tempDir, "generated-validation-failure");
+    await initRepository(repoPath);
+
+    const { result, commands } = await runWithFakeLexPr(
+      repoPath,
+      ["--from-github", "--owner", "example", "--repo-name", "project"],
+      { failValidation: true }
+    );
+
+    expect(result.exitCode).toBe(41);
+    expect(hasCommand(commands, ["weave", "plan", "--from-github"])).toBe(true);
+    expect(hasCommand(commands, ["schema", "validate"])).toBe(true);
+    expect(hasCommand(commands, ["merge-order"])).toBe(false);
+    expect(hasCommand(commands, ["merge"])).toBe(false);
+  });
+
+  it("fails closed on merge-order errors before preview or execution", async () => {
+    const repoPath = path.join(tempDir, "merge-order-failure");
+    await initRepository(repoPath);
+
+    const { result, commands, artifactsDir } = await runForRepo(repoPath, {
+      failMergeOrder: true,
+    });
+
+    expect(result.exitCode).toBe(42);
+    expect(result.stdout).toContain("Merge order analysis failed");
+    expect(hasCommand(commands, ["schema", "validate"])).toBe(true);
+    expect(hasCommand(commands, ["merge-order"])).toBe(true);
+    expect(hasCommand(commands, ["merge"])).toBe(false);
+    expect(fs.existsSync(path.join(artifactsDir, "dogfood-report.md"))).toBe(false);
+  });
+
+  it("propagates a failed dry-run merge and does not generate a success report", async () => {
+    const repoPath = path.join(tempDir, "dry-run-failure");
+    await initRepository(repoPath);
+
+    const { result, commands, artifactsDir } = await runForRepo(repoPath, {
+      failMerge: true,
+    });
+
+    expect(result.exitCode).toBe(43);
+    expect(result.stdout).toContain("Dry-run merge preview failed");
+    expect(hasCommand(commands, ["merge"])).toBe(true);
+    expect(fs.existsSync(path.join(artifactsDir, "dogfood-report.md"))).toBe(false);
+  });
+
+  it("propagates a failed execute merge and does not generate a success report", async () => {
+    const repoPath = path.join(tempDir, "execute-failure");
+    await initRepository(repoPath);
+
+    const { result, commands, artifactsDir } = await runForRepo(repoPath, {
+      failMerge: true,
+      mode: "execute",
+    });
+
+    expect(result.exitCode).toBe(43);
+    expect(result.stdout).toContain("Merge pyramid execution failed");
+    expect(
+      commands.some((command) => command[0] === "merge" && command.includes("--execute"))
+    ).toBe(true);
+    expect(fs.existsSync(path.join(artifactsDir, "dogfood-report.md"))).toBe(false);
+  });
+
+  it("invalidates a stale success report before a failed rerun", async () => {
+    const repoPath = path.join(tempDir, "stale-report-rerun");
+    await initRepository(repoPath);
+    const artifactsDir = path.join(tempDir, `artifacts-${path.basename(repoPath)}`);
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    const reportPath = path.join(artifactsDir, "dogfood-report.md");
+    fs.writeFileSync(reportPath, "stale success\n");
+
+    const { result } = await runForRepo(repoPath, { failValidation: true });
+
+    expect(result.exitCode).toBe(41);
+    expect(fs.existsSync(reportPath)).toBe(false);
+  });
+
+  it("preserves argument boundaries for GitHub filters and paths containing spaces", async () => {
+    const repoPath = path.join(tempDir, "repository with spaces");
+    await initRepository(repoPath);
+    const query = 'is:pr label:"ready for merge"';
+    const { result, commands, artifactsDir } = await runWithFakeLexPr(
+      repoPath,
+      [
+        "--from-github",
+        "--owner",
+        "example org",
+        "--repo-name",
+        "example repo",
+        "--base",
+        "release branch",
+        "--labels",
+        "ready for merge, security",
+        "--query",
+        query,
+      ],
+      { mode: "dry-run" }
+    );
+
+    expect(result.exitCode).toBe(0);
+    const planCommand = commandWithPrefix(commands, ["weave", "plan", "--from-github"]);
+    expect(planCommand).toBeDefined();
+    expect(planCommand).toContain("--owner=example org");
+    expect(planCommand).toContain("--repo=example repo");
+    expect(planCommand).toContain("--target=release branch");
+    expect(planCommand).toContain(`--query=${query}`);
+    const labelsIndex = planCommand?.indexOf("--labels") ?? -1;
+    expect(planCommand?.slice(labelsIndex + 1, labelsIndex + 3)).toEqual([
+      "ready for merge",
+      "security",
+    ]);
+
+    const generatedPlan = path.join(artifactsDir, "plan.json");
+    expect(path.normalize(commandWithPrefix(commands, ["schema", "validate"])?.[2] ?? "")).toBe(
+      path.normalize(generatedPlan)
+    );
+    expect(path.normalize(commandWithPrefix(commands, ["merge-order"])?.[1] ?? "")).toBe(
+      path.normalize(generatedPlan)
+    );
+    const mergeCommand = commandWithPrefix(commands, ["merge"]);
+    expect(path.normalize(mergeCommand?.[mergeCommand.indexOf("--plan") + 1] ?? "")).toBe(
+      path.normalize(generatedPlan)
+    );
   });
 
   it("should handle valid plan file with dry-run (default behavior)", async () => {
@@ -196,7 +433,7 @@ describe("scripts/dogfood-merge-weave.sh", () => {
 
     // Run the script
     const { stdout, stderr, exitCode } = await execa(
-      "bash",
+      bashCommand,
       [scriptPath, "--plan", testPlan, "--artifacts", artifactsDir],
       {
         cwd: process.cwd(),
@@ -229,7 +466,7 @@ describe("scripts/dogfood-merge-weave.sh", () => {
     const artifactsDir = path.join(tempDir, "artifacts-verbose");
 
     const { stdout, exitCode } = await execa(
-      "bash",
+      bashCommand,
       [scriptPath, "--plan", testPlan, "--artifacts", artifactsDir, "--verbose", "--dry-run"],
       {
         cwd: process.cwd(),

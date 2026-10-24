@@ -106,6 +106,37 @@ describe("published MCP workspace/config parity", () => {
     );
   });
 
+  it("rejects missing and invalid workflow phases identically across MCP entrypoints", async () => {
+    const root = fixtureRoot();
+    const invalidArguments = [{}, { phase: "not-a-phase" }];
+    const responses = await invokeMany(root, [
+      {
+        id: 12,
+        method: "tools/call",
+        params: { name: "workflow.guide", arguments: {} },
+      },
+      {
+        id: 13,
+        method: "tools/call",
+        params: { name: "workflow.guide", arguments: { phase: "not-a-phase" } },
+      },
+    ]);
+
+    for (const [index, response] of responses.entries()) {
+      const error = normalizeMcpError(response.error);
+      const source = await invokeSourceToolError(root, "workflow_guide", invalidArguments[index]);
+      expect(source).toEqual(error);
+      expect(error).toMatchObject({
+        protocolCode: -32602,
+        code: "WORKFLOW_GUIDE_ARGUMENTS_INVALID",
+        context: { operation: "workflow.guide" },
+      });
+      expect(error.message).toContain("published phase values");
+      expect(JSON.stringify(error)).not.toContain("Cannot read properties");
+      expect(JSON.stringify(error)).not.toContain("not-a-phase");
+    }
+  });
+
   it("routes CLI and MCP configuration queries through the same bounded result", async () => {
     const root = fixtureRoot();
     fs.mkdirSync(path.join(root, ".smartergpt"), { recursive: true });
@@ -348,6 +379,14 @@ interface NormalizedMcpError {
 }
 
 async function invokeSourceLocalInitError(cwd: string): Promise<NormalizedMcpError> {
+  return invokeSourceToolError(cwd, "local_init", {});
+}
+
+async function invokeSourceToolError(
+  cwd: string,
+  name: string,
+  args: Record<string, unknown>
+): Promise<NormalizedMcpError> {
   const previousCwd = process.cwd();
   let server;
   let client: Client | undefined;
@@ -355,12 +394,12 @@ async function invokeSourceLocalInitError(cwd: string): Promise<NormalizedMcpErr
   try {
     process.chdir(cwd);
     server = createServer({ runStore: new InMemoryRunStore() });
-    client = new Client({ name: "local-init-parity-test", version: "1.0.0" });
+    client = new Client({ name: "workspace-config-parity-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     try {
-      await client.callTool({ name: "local_init", arguments: {} });
+      await client.callTool({ name, arguments: args });
     } catch (error) {
       captured = error;
     }
@@ -373,7 +412,7 @@ async function invokeSourceLocalInitError(cwd: string): Promise<NormalizedMcpErr
     }
   }
 
-  if (!captured) throw new Error("Expected source local_init to reject the protected profile");
+  if (!captured) throw new Error(`Expected source ${name} to reject invalid arguments`);
   return normalizeMcpError(captured);
 }
 
