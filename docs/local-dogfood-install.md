@@ -12,6 +12,12 @@ entry point, Node executable, versions, required policy capabilities and file
 hashes. A `packageManager` declaration alone does not qualify the running npm.
 The helper uses `npm_execpath` when invoked through npm, or the Node-adjacent npm
 entry when invoked directly. An older system npm is refused before installation.
+Each Node/npm capability probe runs once with a bounded deadline, hard termination
+signal and per-stream output limit. Receipts retain its stable selector, exact
+arguments, monotonic elapsed milliseconds, exit/signal/timeout result and the
+observed runtime paths and hashes; they never retain probe stdout or stderr. A
+failed probe is recorded as the partial `npmRuntimeObservation`, not a qualified
+`npmRuntime`, and is neither retried nor treated as policy success.
 
 When an isolated toolchain is needed, install the exact declared npm version
 with scripts suppressed into a dedicated tooling directory. For example, from
@@ -57,6 +63,13 @@ must be outside the target prefix and cannot overwrite tracked source files.
 The receipt binds the source HEAD/tree, manifest and lock hashes, actual npm/Node
 runtime, physical target paths, packed bytes, commands and installed file checks.
 Keep the receipt when an execution fails; a partial installation is not success.
+Before the first target-mutating command, every packed `bin` target must exist and
+begin with the exact LF-terminated `#!/usr/bin/env node` header. CRLF, BOM,
+alternate interpreters, missing targets and ambiguous portable paths fail with
+phase `packed_executable_admission`, error code
+`LOCAL_INSTALL_PACKED_EXECUTABLE_HEADER_NONCANONICAL`, and
+`targetMutationAttempted: false`. Restoring the committed LF bytes and repacking is
+the recovery; exact post-install packed-file equality remains required.
 
 ## Script policy across installation boundaries
 
@@ -76,7 +89,10 @@ into an approved script. The observed Node runtime separately refuses executable
 `NODE_OPTIONS` preloads. Source Git observations remove inherited `GIT_*` selectors
 so another checkout cannot supply the candidate's HEAD or clean-state result.
 These checks cover the installation policy and source binding; they do not qualify
-protected loading or the complete executable dependency graph.
+protected loading or the complete executable dependency graph. Runtime probe
+records establish bounded observation and packed-header records establish byte
+canonicality only; neither grants execution authority, review, signature trust or
+release qualification.
 
 The public packed-consumer smoke is a separate check: its fresh consumer owns an
 explicit strict policy. It approves only the inspected immutable LexRunner

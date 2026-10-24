@@ -10,6 +10,7 @@ import { observeNpmPolicyRuntime, assertNpmPolicyRuntimeUnchanged } from "./npm-
 const packageName = "@smartergpt/lexrunner";
 const nativeName = "better-sqlite3-multiple-ciphers";
 const nativeVersion = "12.11.1";
+const canonicalNodeShebang = Buffer.from("#!/usr/bin/env node\n");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 export function parseLocalInstallArguments(args) {
@@ -223,6 +224,8 @@ export function runLocalPackageInstall({
   let receipt = {
     schemaVersion: "lexrunner-local-install/v2",
     status: "preflight",
+    phase: "preflight",
+    targetMutationAttempted: false,
     projectRoot: root,
     artifactsDir: outputRoot,
     target,
@@ -235,11 +238,16 @@ export function runLocalPackageInstall({
       `${JSON.stringify(receipt, null, 2)}\n`
     );
   save();
-  const run = (name, executable, args, cwd, commandEnv = env) => {
+  const run = (name, executable, args, cwd, commandEnv = env, targetMutation = false) => {
     const index = receipt.commands.length;
     const command = { name, executable, args, cwd, startedAt: new Date().toISOString() };
     receipt.commands.push(command);
     save();
+    if (targetMutation && !receipt.targetMutationAttempted) {
+      receipt.phase = "target_mutation";
+      receipt.targetMutationAttempted = true;
+      save();
+    }
     const result = spawnSync(executable, args, {
       cwd,
       env: executable === "git" ? sourceGitEnv : commandEnv,
@@ -342,8 +350,16 @@ export function runLocalPackageInstall({
   try {
     const inputs = validateLocalInstallInputs(root);
     rejectPolicyEnvironment(env);
-    runtime = observeNpmPolicyRuntime({ projectRoot: root, env });
+    receipt.phase = "npm_policy_runtime_observation";
+    save();
+    try {
+      runtime = observeNpmPolicyRuntime({ projectRoot: root, env });
+    } catch (error) {
+      if (error.npmRuntimeObservation) receipt.npmRuntimeObservation = error.npmRuntimeObservation;
+      throw error;
+    }
     receipt.npmRuntime = runtime;
+    receipt.phase = "preflight";
     source = observeSource();
     if (
       runtime.manifestSha256 !== inputs.manifestSha256 ||
@@ -386,7 +402,7 @@ export function runLocalPackageInstall({
     run("source-signature", "git", ["verify-commit", source.head], root);
     receipt.source.signatureVerified = true;
     const npmEnv = localNpmCommandEnvironment(runtime, sourceGitEnv);
-    const npm = (name, args, cwd = root) => {
+    const npm = (name, args, cwd = root, targetMutation = false) => {
       assertSource();
       assertTarget();
       const output = run(
@@ -394,7 +410,8 @@ export function runLocalPackageInstall({
         runtime.nodeExecutable,
         [runtime.npmCliPath, ...qualifiedLocalNpmArguments(args, runtime.lifecycleNodeOptions)],
         cwd,
-        npmEnv
+        npmEnv,
+        targetMutation
       );
       assertSource();
       assertTarget();
@@ -448,6 +465,10 @@ export function runLocalPackageInstall({
       bytes: bytes.length,
       sha256: sha256(bytes),
     }));
+    receipt.phase = "packed_executable_admission";
+    save();
+    receipt.packedExecutableHeaders = admitPackedExecutableHeaders(packedManifest, packedFiles);
+    receipt.phase = "preflight";
     receipt.plannedCommands = installationCommands(
       target,
       tarballPath,
@@ -460,7 +481,7 @@ export function runLocalPackageInstall({
       throw new Error("Packed tarball changed before installation.");
     if (stableJSON(assertTarget().existingPackage) !== stableJSON(target.existingPackage))
       throw new Error("Existing target package identity changed before global installation.");
-    npm("global-install-without-scripts", receipt.plannedCommands[0].args);
+    npm("global-install-without-scripts", receipt.plannedCommands[0].args, root, true);
     assertSource();
     assertTarget();
     verifyInstalledPackedFiles(receipt.packedFiles, target.installedRoot);
@@ -478,12 +499,13 @@ export function runLocalPackageInstall({
       deploymentMetadata: true,
     };
     save();
-    npm("locked-runtime-dependencies", receipt.plannedCommands[1].args, target.installedRoot);
-    npm("approved-native-rebuild", receipt.plannedCommands[2].args, target.installedRoot);
+    npm("locked-runtime-dependencies", receipt.plannedCommands[1].args, target.installedRoot, true);
+    npm("approved-native-rebuild", receipt.plannedCommands[2].args, target.installedRoot, true);
     const pending = npm(
       "pending-install-scripts",
       receipt.plannedCommands[3].args,
-      target.installedRoot
+      target.installedRoot,
+      true
     ).trim();
     if (pending !== "No packages with unreviewed install scripts.")
       throw new Error(`Installed package has an ambiguous pending-script result: ${pending}`);
@@ -513,10 +535,16 @@ export function runLocalPackageInstall({
       throw new Error("Retained tarball or source lock changed during qualification.");
     receipt.installedAfter = inspectLocalInstallTarget(prefix, root).existingPackage;
     receipt.status = "installed_and_verified";
+    receipt.phase = "complete";
     receipt.pendingInstallScripts = 0;
     return receipt;
   } catch (error) {
     receipt.status = "failed";
+    if (error.code) receipt.errorCode = error.code;
+    if (error.phase) receipt.phase = error.phase;
+    if (error.npmRuntimeObservation) receipt.npmRuntimeObservation = error.npmRuntimeObservation;
+    if (error.targetMutationAttempted === false && !receipt.targetMutationAttempted)
+      receipt.targetMutationAttempted = false;
     receipt.error = error.message;
     error.receiptPath = path.join(outputRoot, "receipt.json");
     throw error;
@@ -646,6 +674,119 @@ export function inspectLocalInstallTarball(bytes) {
     throw new Error("Packed archive is truncated or has dangling metadata.");
   if (!files.length) throw new Error("Packed archive contains no files.");
   return files;
+}
+
+/**
+ * Admit the executable entry points from the immutable packed bytes before npm
+ * can rewrite a target prefix. This proves header byte canonicality only; it is
+ * not a source-signature, review, execution-authority or protected-host claim.
+ */
+export function admitPackedExecutableHeaders(manifest, packedFiles) {
+  const entries = packedExecutableEntries(manifest);
+  const files = new Map(packedFiles.map((file) => [file.path, file.bytes]));
+  const targets = new Map();
+  for (const [alias, selectedTarget] of entries) {
+    const target = normalizePackedExecutableTarget(selectedTarget);
+    const bytes = files.get(target);
+    if (
+      !Buffer.isBuffer(bytes) ||
+      !bytes.subarray(0, canonicalNodeShebang.length).equals(canonicalNodeShebang)
+    ) {
+      throw packedExecutableAdmissionError();
+    }
+    const admitted = targets.get(target) ?? {
+      aliases: [],
+      bytes: bytes.length,
+      sha256: sha256(bytes),
+    };
+    admitted.aliases.push(alias);
+    targets.set(target, admitted);
+  }
+  return Object.freeze({
+    status: "passed",
+    canonicalHeader: canonicalNodeShebang.toString(),
+    targets: Object.freeze(
+      [...targets]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([target, admitted]) =>
+          Object.freeze({
+            path: target,
+            aliases: Object.freeze([...admitted.aliases].sort()),
+            bytes: admitted.bytes,
+            sha256: admitted.sha256,
+          })
+        )
+    ),
+  });
+}
+
+function packedExecutableEntries(manifest) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw packedExecutableAdmissionError();
+  }
+  if (typeof manifest.bin === "string") {
+    const alias =
+      typeof manifest.name === "string" && manifest.name.includes("/")
+        ? manifest.name.slice(manifest.name.lastIndexOf("/") + 1)
+        : manifest.name;
+    if (!isPortablePackedExecutableAlias(alias)) {
+      throw packedExecutableAdmissionError();
+    }
+    return [[alias, manifest.bin]];
+  }
+  if (!manifest.bin || typeof manifest.bin !== "object" || Array.isArray(manifest.bin)) {
+    throw packedExecutableAdmissionError();
+  }
+  const entries = Object.entries(manifest.bin);
+  if (
+    !entries.length ||
+    entries.some(
+      ([alias, target]) => !isPortablePackedExecutableAlias(alias) || typeof target !== "string"
+    )
+  ) {
+    throw packedExecutableAdmissionError();
+  }
+  return entries;
+}
+
+function normalizePackedExecutableTarget(selectedTarget) {
+  if (
+    typeof selectedTarget !== "string" ||
+    !selectedTarget ||
+    selectedTarget.trim() !== selectedTarget ||
+    /[\u0000-\u001f\u007f]/.test(selectedTarget) ||
+    selectedTarget.includes("\\") ||
+    selectedTarget.includes(":") ||
+    path.posix.isAbsolute(selectedTarget)
+  ) {
+    throw packedExecutableAdmissionError();
+  }
+  const target = selectedTarget;
+  if (!target || target.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw packedExecutableAdmissionError();
+  }
+  return target;
+}
+
+function isPortablePackedExecutableAlias(alias) {
+  return (
+    typeof alias === "string" &&
+    alias.length > 0 &&
+    alias.length <= 128 &&
+    alias !== "." &&
+    alias !== ".." &&
+    /^[A-Za-z0-9._-]+$/.test(alias)
+  );
+}
+
+function packedExecutableAdmissionError() {
+  const error = new Error(
+    'Packed executable entry points must exist and begin with the exact LF-terminated "#!/usr/bin/env node" header; restore the committed LF bytes and repack before installing.'
+  );
+  error.code = "LOCAL_INSTALL_PACKED_EXECUTABLE_HEADER_NONCANONICAL";
+  error.phase = "packed_executable_admission";
+  error.targetMutationAttempted = false;
+  return error;
 }
 
 export function verifyInstalledPackedFiles(files, installedRoot) {

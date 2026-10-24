@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -35,6 +37,43 @@ function git(args: string[], cwd: string, env = localSourceGitEnvironment()) {
   });
   expect(result.status, result.stderr).toBe(0);
   return result.stdout.trim();
+}
+
+function tarball(entries: Array<{ path: string; bytes: Buffer }>) {
+  const blocks: Buffer[] = [];
+  for (const entry of entries) {
+    const header = Buffer.alloc(512);
+    header.write(entry.path, 0, 100);
+    header.write("0000644\0", 100, 8);
+    header.write("0000000\0", 108, 8);
+    header.write("0000000\0", 116, 8);
+    header.write(`${entry.bytes.length.toString(8).padStart(11, "0")}\0`, 124, 12);
+    header.write("00000000000\0", 136, 12);
+    header.fill(32, 148, 156);
+    header.write("0", 156, 1);
+    header.write("ustar\0", 257, 6);
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8);
+    blocks.push(header, entry.bytes, Buffer.alloc((512 - (entry.bytes.length % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(blocks));
+}
+
+function treeFingerprint(root: string) {
+  const hash = createHash("sha256");
+  const visit = (directory: string) => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const target = path.join(directory, name);
+      const relative = path.relative(root, target).split(path.sep).join("/");
+      const stat = fs.lstatSync(target);
+      hash.update(`${relative}\0${stat.isDirectory() ? "directory" : "file"}\0`);
+      if (stat.isDirectory()) visit(target);
+      else hash.update(fs.readFileSync(target));
+    }
+  };
+  visit(root);
+  return hash.digest("hex");
 }
 
 function fixture() {
@@ -84,6 +123,129 @@ function fixture() {
 }
 
 describe("local installer source Git context", () => {
+  it("rejects a clean CRLF-packed executable before mutating an existing target", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "lexrunner-local-install-crlf-"));
+    temporaryRoots.push(root);
+    const projectRoot = path.join(root, "source");
+    const prefix = path.join(root, "prefix");
+    const artifactsDir = path.join(root, "evidence");
+    fs.mkdirSync(projectRoot);
+    for (const name of ["package.json", "package-lock.json"]) {
+      fs.copyFileSync(path.join(sourceRoot, name), path.join(projectRoot, name));
+    }
+    fs.writeFileSync(path.join(projectRoot, ".gitattributes"), "* text=auto eol=lf\n");
+    fs.mkdirSync(path.join(projectRoot, "dist"));
+    fs.writeFileSync(path.join(projectRoot, "dist", "cli.js"), "#!/usr/bin/env node\n");
+    fs.writeFileSync(path.join(projectRoot, "mcp-server.mjs"), "#!/usr/bin/env node\n");
+    git(["init", "--quiet"], projectRoot);
+    git(["config", "user.name", "Signed installer fixture"], projectRoot);
+    git(["config", "user.email", "installer-fixture@example.invalid"], projectRoot);
+    git(["config", "core.autocrlf", "false"], projectRoot);
+    git(["config", "core.safecrlf", "warn"], projectRoot);
+    const signingKey = path.join(root, "fixture-signing-key");
+    const generated = spawnSync(
+      "ssh-keygen",
+      ["-q", "-t", "ed25519", "-N", "", "-C", "installer-fixture", "-f", signingKey],
+      { encoding: "utf8", timeout: 10_000, windowsHide: true }
+    );
+    expect(generated.status, generated.stderr).toBe(0);
+    const allowedSigners = path.join(root, "allowed-signers");
+    fs.writeFileSync(
+      allowedSigners,
+      `installer-fixture@example.invalid ${fs.readFileSync(`${signingKey}.pub`, "utf8")}`
+    );
+    git(["config", "gpg.format", "ssh"], projectRoot);
+    git(["config", "user.signingkey", signingKey], projectRoot);
+    git(["config", "gpg.ssh.allowedSignersFile", allowedSigners], projectRoot);
+    git(["add", "."], projectRoot);
+    git(["commit", "-S", "--quiet", "-m", "signed CRLF admission fixture"], projectRoot);
+    fs.writeFileSync(path.join(projectRoot, "dist", "cli.js"), "#!/usr/bin/env node\r\n");
+    git(["add", "dist/cli.js"], projectRoot);
+    expect(git(["diff", "--cached", "--name-only"], projectRoot)).toBe("");
+    expect(git(["status", "--porcelain=v1", "--untracked-files=all"], projectRoot)).toBe("");
+    git(["verify-commit", "HEAD"], projectRoot);
+
+    const manifestBytes = fs.readFileSync(path.join(projectRoot, "package.json"));
+    const packed = tarball([
+      { path: "package/package.json", bytes: manifestBytes },
+      { path: "package/dist/cli.js", bytes: Buffer.from("#!/usr/bin/env node\r\n") },
+      { path: "package/mcp-server.mjs", bytes: Buffer.from("#!/usr/bin/env node\n") },
+    ]);
+    const npmCliPath = path.join(root, "fixture-npm.cjs");
+    const npmTracePath = path.join(root, "fixture-npm-trace.jsonl");
+    fs.writeFileSync(
+      npmCliPath,
+      `const fs=require('node:fs');
+       const path=require('node:path');
+       const args=process.argv.slice(2);
+       fs.appendFileSync(${JSON.stringify(npmTracePath)}, JSON.stringify(args)+'\\n');
+       if(args[0]==='--version') console.log('11.16.0');
+       else if(args[0]==='approve-scripts'&&args[1]==='--usage') console.log('npm approve-scripts --allow-scripts-pending');
+       else if(args[0]==='install'&&args[1]==='--usage') console.log('npm install --allow-scripts --strict-allow-scripts');
+       else {
+         const command=args.find((argument)=>!argument.startsWith('--'));
+         if(command==='ci'&&args.includes('--dry-run')) process.exit(0);
+         else if(command==='run'&&args.includes('build')) process.exit(0);
+         else if(command==='pack') {
+           const destination=args[args.indexOf('--pack-destination')+1];
+           const filename='smartergpt-lexrunner-2.4.0.tgz';
+           fs.writeFileSync(path.join(destination,filename),Buffer.from(${JSON.stringify(packed.toString("base64"))},'base64'));
+           console.log(JSON.stringify([{filename,integrity:'sha512-fixture',files:[{path:'package.json'},{path:'dist/cli.js'},{path:'mcp-server.mjs'}]}]));
+         } else process.exit(9);
+       }`
+    );
+    const env = Object.fromEntries(
+      Object.entries(localSourceGitEnvironment()).filter(
+        ([key]) =>
+          !/^(?:node_options|npm_config_allow_scripts|npm_config_node_options|npm_execpath)$/i.test(
+            key
+          )
+      )
+    );
+    env.npm_execpath = npmCliPath;
+
+    const installedRoot = path.join(
+      prefix,
+      ...(process.platform === "win32" ? [] : ["lib"]),
+      "node_modules",
+      "@smartergpt",
+      "lexrunner"
+    );
+    fs.mkdirSync(installedRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(installedRoot, "package.json"),
+      JSON.stringify({ name: "@smartergpt/lexrunner", version: "2.3.0" })
+    );
+    fs.writeFileSync(path.join(installedRoot, "sentinel.bin"), Buffer.from([0, 1, 2, 3, 255]));
+    const before = treeFingerprint(installedRoot);
+
+    let failure: any;
+    try {
+      runLocalPackageInstall({ projectRoot, prefix, artifactsDir, execute: true, env });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: "LOCAL_INSTALL_PACKED_EXECUTABLE_HEADER_NONCANONICAL",
+      phase: "packed_executable_admission",
+      targetMutationAttempted: false,
+    });
+    const receipt = JSON.parse(fs.readFileSync(path.join(artifactsDir, "receipt.json"), "utf8"));
+    expect(receipt).toMatchObject({
+      status: "failed",
+      phase: "packed_executable_admission",
+      targetMutationAttempted: false,
+      errorCode: "LOCAL_INSTALL_PACKED_EXECUTABLE_HEADER_NONCANONICAL",
+      npmRuntime: { npmVersion: "11.16.0", probes: expect.any(Array) },
+    });
+    expect(
+      receipt.commands.some(
+        (command: { name: string }) => command.name === "global-install-without-scripts"
+      )
+    ).toBe(false);
+    expect(treeFingerprint(installedRoot)).toBe(before);
+  }, 30_000);
+
   it.each(["lock", "manifest"])(
     "refuses a clean %s checkpoint switch during runtime preflight before retaining or deploying inputs",
     (changedInput) => {

@@ -9,6 +9,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  admitPackedExecutableHeaders,
   createLocalInstallPlan,
   inspectLocalInstallTarball,
   inspectLocalInstallTarget,
@@ -288,6 +289,36 @@ describe("repository local-dogfood installation", () => {
     expect(fs.existsSync(input.prefix)).toBe(false);
   });
 
+  it("retains failed npm probes as bounded partial observations without claiming qualification", () => {
+    const input = fixture();
+    fs.writeFileSync(input.npmCliPath, 'console.error("SECRET_PROBE_FAILURE"); process.exit(7);\n');
+    let failure: any;
+    try {
+      runLocalPackageInstall(input);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "NPM_POLICY_RUNTIME_PROBE_FAILED" });
+    const receipt = JSON.parse(
+      fs.readFileSync(path.join(input.artifactsDir, "receipt.json"), "utf8")
+    );
+    expect(receipt).toMatchObject({
+      status: "failed",
+      phase: "npm_policy_runtime_observation",
+      targetMutationAttempted: false,
+      errorCode: "NPM_POLICY_RUNTIME_PROBE_FAILED",
+      npmRuntimeObservation: {
+        probes: [
+          { selector: "node-version", exitCode: 0 },
+          { selector: "npm-version", exitCode: 7, timedOut: false },
+        ],
+      },
+    });
+    expect(receipt.npmRuntime).toBeUndefined();
+    expect(JSON.stringify(receipt)).not.toContain("SECRET_PROBE_FAILURE");
+    expect(fs.existsSync(input.prefix)).toBe(false);
+  });
+
   it("refuses execution without a source Git checkpoint before build, pack or global mutation", () => {
     const input = fixture();
     expect(() => runLocalPackageInstall({ ...input, execute: true })).toThrow("git-observe failed");
@@ -380,6 +411,107 @@ describe("repository local-dogfood installation", () => {
     ).toThrow("unsupported non-file");
     const invalid = Buffer.alloc(512, 1);
     expect(() => inspectLocalInstallTarball(gzipSync(invalid))).toThrow("checksum");
+  });
+
+  it("admits only exact LF Node headers for declared packed executable targets", () => {
+    const cli = Buffer.from("#!/usr/bin/env node\nconsole.log('cli');\n");
+    const mcp = Buffer.from("#!/usr/bin/env node\nconsole.log('mcp');\n");
+    const packedFiles = [
+      { path: "dist/cli.js", bytes: cli },
+      { path: "mcp-server.mjs", bytes: mcp },
+    ];
+    const admitted = admitPackedExecutableHeaders(
+      {
+        name: "@smartergpt/lexrunner",
+        bin: {
+          lexrunner: "dist/cli.js",
+          "lex-pr": "dist/cli.js",
+          "lexrunner-mcp": "mcp-server.mjs",
+        },
+      },
+      packedFiles
+    );
+    expect(admitted).toEqual({
+      status: "passed",
+      canonicalHeader: "#!/usr/bin/env node\n",
+      targets: [
+        {
+          path: "dist/cli.js",
+          aliases: ["lex-pr", "lexrunner"],
+          bytes: cli.length,
+          sha256: hash(cli),
+        },
+        {
+          path: "mcp-server.mjs",
+          aliases: ["lexrunner-mcp"],
+          bytes: mcp.length,
+          sha256: hash(mcp),
+        },
+      ],
+    });
+    expect(
+      admitPackedExecutableHeaders(
+        { name: "@smartergpt/lexrunner", bin: "dist/cli.js" },
+        packedFiles
+      ).targets[0].aliases
+    ).toEqual(["lexrunner"]);
+
+    for (const bytes of [
+      Buffer.from("#!/usr/bin/env node\r\nconsole.log('crlf');\r\n"),
+      Buffer.from("\ufeff#!/usr/bin/env node\n"),
+      Buffer.from("#!/usr/bin/env -S node\n"),
+      Buffer.from("#!/usr/bin/node\n"),
+      Buffer.from("#!/usr/bin/env node"),
+      Buffer.from("short"),
+    ]) {
+      expect(() =>
+        admitPackedExecutableHeaders(
+          { name: "@smartergpt/lexrunner", bin: { lexrunner: "dist/cli.js" } },
+          [{ path: "dist/cli.js", bytes }]
+        )
+      ).toThrow(
+        expect.objectContaining({
+          code: "LOCAL_INSTALL_PACKED_EXECUTABLE_HEADER_NONCANONICAL",
+          phase: "packed_executable_admission",
+          targetMutationAttempted: false,
+        })
+      );
+    }
+    expect(() =>
+      admitPackedExecutableHeaders(
+        { name: "@smartergpt/lexrunner", bin: { lexrunner: "dist/missing.js" } },
+        packedFiles
+      )
+    ).toThrow("restore the committed LF bytes and repack");
+
+    const rejectedManifests = [
+      { name: "@smartergpt/lexrunner", bin: [] },
+      { name: "@smartergpt/lexrunner", bin: {} },
+      { name: "@smartergpt/lexrunner", bin: { lexrunner: 7 } },
+      { name: "@smartergpt/lexrunner", bin: { lexrunner: "../dist/cli.js" } },
+      { name: "@smartergpt/lexrunner", bin: { lexrunner: "/dist/cli.js" } },
+      { name: "@smartergpt/lexrunner", bin: { lexrunner: "C:/dist/cli.js" } },
+      { name: "@smartergpt/lexrunner", bin: { lexrunner: "dist\\cli.js" } },
+      { name: "@smartergpt/lexrunner", bin: { lexrunner: "dist/cli.js\n" } },
+      { name: "@smartergpt/lexrunner", bin: { lexrunner: "././dist/cli.js" } },
+      { name: "@smartergpt/lexrunner", bin: { "../shim": "dist/cli.js" } },
+      { name: "@smartergpt/lexrunner", bin: { "bad/shim": "dist/cli.js" } },
+      { name: "@smartergpt/lexrunner", bin: { "bad:shim": "dist/cli.js" } },
+      { name: "@smartergpt/lexrunner", bin: { ".": "dist/cli.js" } },
+    ];
+    const packedBefore = packedFiles.map((file) => ({ path: file.path, sha256: hash(file.bytes) }));
+    for (const manifest of rejectedManifests) {
+      expect(() => admitPackedExecutableHeaders(manifest, packedFiles)).toThrow(
+        expect.objectContaining({
+          code: "LOCAL_INSTALL_PACKED_EXECUTABLE_HEADER_NONCANONICAL",
+          phase: "packed_executable_admission",
+          targetMutationAttempted: false,
+        })
+      );
+    }
+    expect(packedFiles.map((file) => ({ path: file.path, sha256: hash(file.bytes) }))).toEqual(
+      packedBefore
+    );
   });
 
   it("checks all installed packed-file hashes and refuses replacement bytes", () => {
