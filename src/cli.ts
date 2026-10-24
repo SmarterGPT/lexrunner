@@ -1351,6 +1351,23 @@ export {
   MergeOrderQueryService,
   PlanCreationService,
 } from "./application/integration-query-services.js";
+export {
+  PlanCreationOperationArgsSchema,
+  PlanCreationOperationError,
+  PlanCreationOperationService,
+  writePlanCreationArtifacts,
+} from "./application/plan-creation-operation-service.js";
+export type {
+  PlanCreationOperationArgs,
+  PlanCreationOperationResult,
+  PlanRoutingReceipt,
+} from "./application/plan-creation-operation-service.js";
+export {
+  assertPlanRepositoryBinding,
+  assertRequestedRepositoryBinding,
+  observeRepositoryBinding,
+  RepositoryBindingError,
+} from "./application/repository-binding.js";
 export type {
   BoundedDiscoveryResult,
   BoundedIntegrationStatus,

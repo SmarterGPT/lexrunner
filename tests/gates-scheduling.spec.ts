@@ -496,7 +496,10 @@ describe("frozen-plan gate scheduler", () => {
       ],
       2
     );
-    f.plan.items[0].gates[0].cwd = path.join(f.root, "missing-owned-directory");
+    // Keep cwd admissible so this reaches the spawn-error callback; remove the
+    // shell from PATH rather than relying on a missing working directory that
+    // repository prebinding now rejects before scheduling.
+    f.plan.items[0].gates[0].env.PATH = path.join(f.root, "missing-bin");
     const itemDirectory = path.join(f.artifacts, artifactIdentitySegment("A"));
     fs.mkdirSync(itemDirectory, { recursive: true });
     fs.writeFileSync(
@@ -833,10 +836,12 @@ describe("frozen-plan gate scheduler", () => {
     }
   );
 
-  it("uses invocation-local resolved cwd while keeping declared gates and plan untouched", async () => {
+  it("replaces caller cwd maps with the declared bounded cwd without mutating the plan", async () => {
     const f = new Fixture([{ name: "A", deps: [] }]);
     const resolved = path.join(f.root, "resolved");
+    const declared = path.join(f.root, "declared-relative-path");
     fs.mkdirSync(resolved);
+    fs.mkdirSync(declared);
     f.plan.items[0].gates[0].cwd = "declared-relative-path";
     const frozen = JSON.stringify(f.plan);
     Object.freeze(f.plan.items[0].gates[0]);
@@ -844,7 +849,7 @@ describe("frozen-plan gate scheduler", () => {
       resolvedGateWorkingDirectories: { [JSON.stringify(["A", "fixture"])]: resolved },
     });
     const child = await f.started("A");
-    expect(path.resolve(child.cwd)).toBe(resolved);
+    expect(path.resolve(child.cwd)).toBe(declared);
     f.release("A");
     await run;
     expect(f.state.getNodeResult("A")?.status).toBe("pass");

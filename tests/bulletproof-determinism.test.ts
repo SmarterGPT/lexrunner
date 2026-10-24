@@ -42,13 +42,9 @@ items:
   - id: test-item
     branch: feat/test
     deps: []
-`
+`,
+      { encoding: "utf8", flush: true }
     );
-
-    // Ensure file is flushed to disk to avoid timing issues
-    const fd = fs.openSync(".smartergpt/stack.yml", "r");
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
 
     // Use pre-built CLI (assume it's already built) to avoid rebuild loop
     const repoRoot = path.resolve(__dirname, "..");
@@ -93,13 +89,9 @@ items:
   - id: test-item
     branch: feat/test
     deps: []
-`
+`,
+      { encoding: "utf8", flush: true }
     );
-
-    // Ensure file is flushed to disk to avoid timing issues
-    const fd = fs.openSync(".smartergpt/stack.yml", "r");
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
 
     // Use pre-built CLI (assume it's already built) to avoid rebuild loop
     const repoRoot = path.resolve(__dirname, "..");

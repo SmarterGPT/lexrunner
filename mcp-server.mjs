@@ -18,7 +18,6 @@ import "dotenv/config";
 
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import packageMetadata from "./package.json" with { type: "json" };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -298,7 +297,8 @@ const tools = {
   },
 
   "plan.create": {
-    description: "Create a plan from configuration files or auto-discover from GitHub PRs",
+    description:
+      "Create a plan from configuration files or auto-discover from GitHub PRs. GitHub discovery requires githubToken, GITHUB_TOKEN, or GH_TOKEN.",
     inputSchema: {
       type: "object",
       properties: {
@@ -310,6 +310,19 @@ const tools = {
         outDir: {
           type: "string",
           description: "Output directory for plan artifacts",
+        },
+        repoRoot: {
+          type: "string",
+          minLength: 1,
+          maxLength: 4096,
+          description:
+            "Explicit repository worktree binding (default: MCP server startup directory)",
+        },
+        profileDir: {
+          type: "string",
+          minLength: 1,
+          maxLength: 4096,
+          description: "Explicit profile directory resolved from the repository root",
         },
         fromGithub: {
           type: "boolean",
@@ -351,6 +364,22 @@ const tools = {
           type: "string",
           description: "GitHub repository name (auto-detected from git remote)",
         },
+        repos: {
+          type: "array",
+          maxItems: 32,
+          description:
+            "Multi-repository synthesis targets. Generated plans are artifacts only; execution and apply fail closed.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              owner: { type: "string" },
+              repo: { type: "string" },
+              priority: { type: "number" },
+            },
+            required: ["owner", "repo"],
+          },
+        },
         requiredGates: {
           type: "array",
           description: "List of required gates (default: lint,typecheck,test)",
@@ -370,94 +399,18 @@ const tools = {
     },
     call: async (args) => {
       try {
-        // Resolve profile directory
-        const { resolveProfile } = await import("./dist/cli.js");
-        const resolved = resolveProfile(config.profileDir, process.cwd());
-        const profilePath = resolved.path;
-        const role = resolved.manifest.role;
-
-        // Check write permissions
-        if (role === "workspace-template") {
-          throw new Error(
-            "Cannot write to workspace-template profile. Initialize local overlay first."
-          );
-        }
-
-        let plan;
-        let inputs = null;
-
-        if (args.fromGithub) {
-          // GitHub mode: auto-discover PRs
-          const { createGitHubClient, PlanCreationService } = await import("./dist/cli.js");
-
-          const client = await createGitHubClient({
-            token: args.githubToken,
-            owner: args.owner,
-            repo: args.repo,
-          });
-
-          // Parse required gates if provided
-          const requiredGates = args.requiredGates || ["lint", "typecheck", "test"];
-
-          // Parse max workers if provided
-          const maxWorkers = args.maxWorkers || 2;
-
-          // Generate plan from GitHub
-          plan = await new PlanCreationService().fromGitHub(client, {
-            query: args.query,
-            labels: args.labels,
-            excludePRs: args.excludePRs,
-            includeDrafts: args.includeDrafts,
-            target: args.target,
-            policy: {
-              requiredGates,
-              maxWorkers,
-            },
-          });
-        } else {
-          // Traditional mode: load from configuration files
-          const { loadInputs, PlanCreationService } = await import("./dist/cli.js");
-          inputs = loadInputs(profilePath);
-          plan = new PlanCreationService().fromInputs(inputs);
-        }
-
-        // Determine output directory
-        const outDir = args.outDir || resolve(profilePath, "runner");
-
-        // Ensure output directory exists
-        if (!existsSync(outDir)) {
-          mkdirSync(outDir, { recursive: true });
-        }
-
-        // Write plan.json
-        const { canonicalJSONStringify } = await import("./dist/cli.js");
-        const planPath = resolve(outDir, "plan.json");
-        const planJson = canonicalJSONStringify(plan);
-        writeFileSync(planPath, planJson + "\n");
-
-        // Generate snapshot - use GitHub snapshot for GitHub mode
-        const { generateSnapshot, generateGitHubSnapshot } = await import("./dist/cli.js");
-        let snapshot;
-        if (args.fromGithub) {
-          snapshot = generateGitHubSnapshot(plan);
-        } else {
-          // In traditional mode, inputs is guaranteed to be set
-          if (!inputs) {
-            throw new Error("Internal error: inputs not loaded in traditional mode");
-          }
-          snapshot = generateSnapshot(plan, inputs);
-        }
-        const snapshotPath = resolve(outDir, "snapshot.md");
-        writeFileSync(snapshotPath, snapshot);
-
+        const operation = await new core.PlanCreationOperationService().run({
+          args,
+          startupDir: serverBaseDir,
+          requireGitHubToken: true,
+        });
+        core.writePlanCreationArtifacts(operation);
         const result = {
           contract: "bounded-ax-v1",
-          plan: plan,
-          outDir: outDir,
-          files: {
-            plan: planPath,
-            snapshot: snapshotPath,
-          },
+          plan: operation.plan,
+          outDir: operation.routing.output.root,
+          routing: operation.routing,
+          files: operation.files,
         };
 
         return {
@@ -469,7 +422,7 @@ const tools = {
           ],
         };
       } catch (error) {
-        throw new Error(`Failed to create plan: ${error.message}`);
+        throw sharedServiceError(error, "plan.create", "PLAN_CREATION_FAILED");
       }
     },
   },
@@ -517,24 +470,47 @@ const tools = {
     call: async (args) => {
       try {
         if (
+          args.repoRoot !== undefined &&
+          (typeof args.repoRoot !== "string" ||
+            args.repoRoot.length < 1 ||
+            args.repoRoot.length > 4096)
+        ) {
+          throw new core.GateExecutionServiceError(
+            "GATE_CANDIDATE_ROOT_INVALID",
+            "The candidate root must be a non-empty bounded path"
+          );
+        }
+        if (
           args.timeoutMs !== undefined &&
           (!Number.isInteger(args.timeoutMs) || args.timeoutMs < 1 || args.timeoutMs > 86400000)
         ) {
           throw new Error("timeoutMs must be an integer from 1 through 86400000 milliseconds");
         }
+        let repoRoot;
+        try {
+          repoRoot = core.resolveGateRepositoryRoot(resolve(serverBaseDir, args.repoRoot ?? "."));
+        } catch {
+          throw new core.GateExecutionServiceError(
+            "GATE_CANDIDATE_ROOT_INVALID",
+            "The candidate root must identify an available Git repository"
+          );
+        }
         const artifact = new core.PlanArtifactService().resolve({
           planFile: args.planFile,
-          workingDir: process.cwd(),
-          profileDir: config.profileDir,
+          workingDir: repoRoot,
+          profileDir: args.repoRoot ? undefined : config.profileDir,
+          allowProfileFallback: args.repoRoot === undefined,
         });
 
         // Determine output directory
-        const outDir = args.outDir || resolve(dirname(artifact.filePath), "gates");
+        const outDir = args.outDir
+          ? resolve(repoRoot, args.outDir)
+          : resolve(dirname(artifact.filePath), "gates");
 
         const summary = (
           await new core.GateExecutionService().run({
             plan: artifact.plan,
-            repoRoot: args.repoRoot,
+            repoRoot,
             artifactDir: outDir,
             timeoutMs: args.timeoutMs,
             onlyItem: args.onlyItem,
@@ -1199,6 +1175,22 @@ function planValidationToolResult(error) {
   return failure ? canonicalToolResult(failure) : null;
 }
 
+const INVALID_PARAMETER_CODES = new Set([
+  "GATE_CANDIDATE_ROOT_INVALID",
+  "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID",
+  "PLAN_CREATION_ARGUMENTS_INVALID",
+  "PLAN_CREATION_MULTI_REPO_UNSUPPORTED",
+  "PLAN_REPOSITORY_ARGUMENTS_INVALID",
+  "PLAN_REPOSITORY_MISMATCH",
+  "PLAN_REPOSITORY_REMOTE_UNAVAILABLE",
+  "PLAN_REPOSITORY_ROOT_INVALID",
+  "PLAN_REFERENCE_INVALID",
+  "PLAN_REFERENCE_MISMATCH",
+  "PLAN_NOT_FOUND",
+  "PLAN_FILESYSTEM_UNSAFE",
+  "PLAN_ARTIFACT_LIMIT_EXCEEDED",
+]);
+
 async function mutationToolCall(action, call) {
   if (!config.allowMutations) {
     return canonicalToolResult({
@@ -1284,7 +1276,7 @@ async function handleRequest(request) {
           jsonrpc: "2.0",
           id,
           error: {
-            code: error?.code === "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID" ? -32602 : -32603,
+            code: INVALID_PARAMETER_CODES.has(error?.code) ? -32602 : -32603,
             message: error.message,
           },
         };

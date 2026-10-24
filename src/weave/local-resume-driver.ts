@@ -5,6 +5,10 @@ import { simpleGit, type SimpleGit } from "simple-git";
 import { ulid } from "ulid";
 
 import { executeGate } from "../gates.js";
+import {
+  assertSingleRepositoryPlan,
+  bindPlanGateWorkingDirectories,
+} from "../application/repository-binding.js";
 import { GitOperations } from "../git/operations.js";
 import { computeMergeOrder } from "../mergeOrder.js";
 import { Policy, Plan, type Gate } from "../schema.js";
@@ -25,12 +29,14 @@ export async function createLocalResumeCheckpoint(input: {
   runId?: string;
   now?: string;
 }): Promise<WeaveCheckpoint> {
+  Plan.parse(input.plan);
+  assertSingleRepositoryPlan(input.plan);
   const workingDir = input.workingDir ?? process.cwd();
+  bindPlanGateWorkingDirectories(input.plan, workingDir);
   const git = simpleGit(workingDir);
   const runId = input.runId ?? ulid();
   const at = input.now ?? new Date().toISOString();
   const levels = computeMergeOrder(input.plan);
-  Plan.parse(input.plan);
   const sourceHeads: Record<string, string> = Object.create(null);
   let targetHeadSha: string;
   if (input.plan.gitInputs) {
@@ -92,9 +98,33 @@ export class LocalWeaveResumeDriver implements WeaveResumeDriver {
     this.operations = new GitOperations(workingDir);
   }
 
+  preflight(
+    checkpoint: Readonly<WeaveCheckpoint>
+  ): { valid: true } | { valid: false; reason: string } {
+    try {
+      assertSingleRepositoryPlan(checkpoint.plan);
+    } catch {
+      return {
+        valid: false,
+        reason: "multi-repository checkpoints cannot resume in a single repository worktree",
+      };
+    }
+    try {
+      bindPlanGateWorkingDirectories(checkpoint.plan, this.workingDir);
+    } catch {
+      return {
+        valid: false,
+        reason: "checkpoint gate working directories are not bound to this repository",
+      };
+    }
+    return { valid: true };
+  }
+
   async validate(
     checkpoint: WeaveCheckpoint
   ): Promise<{ valid: true } | { valid: false; reason: string }> {
+    const preflight = this.preflight(checkpoint);
+    if (!preflight.valid) return preflight;
     const journal = checkpoint.metadata?.resume;
     if (!journal) return { valid: false, reason: "resume journal is missing" };
     try {
@@ -189,6 +219,14 @@ export class LocalWeaveResumeDriver implements WeaveResumeDriver {
   }
 
   async execute(operation: Readonly<ResumeOperation>, checkpoint: Readonly<WeaveCheckpoint>) {
+    try {
+      bindPlanGateWorkingDirectories(checkpoint.plan, this.workingDir);
+    } catch {
+      return {
+        completed: false as const,
+        reason: "checkpoint gate working directories are not bound to this repository",
+      };
+    }
     const journal = checkpoint.metadata!.resume!;
     const bound = !!checkpoint.plan.gitInputs;
     const expectedIntegration =

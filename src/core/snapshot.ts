@@ -5,17 +5,22 @@
 
 import { Plan } from "../schema.js";
 import { InputConfig } from "./inputs.js";
-import { sha256, environmentFingerprint, lockfileHash, sha256FileRaw } from "../util/hash.js";
+import { sha256, environmentFingerprint, lockfileHash } from "../util/hash.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
+import packageMetadata from "../../package.json" with { type: "json" };
 
 /**
  * Generate deterministic snapshot.md with plan metadata
  */
-export function generateSnapshot(plan: Plan, inputs: InputConfig): string {
+export function generateSnapshot(
+  plan: Plan,
+  inputs: InputConfig,
+  workspaceRoot: string | null = process.cwd()
+): string {
   const planJSON = canonicalJSONStringify(plan);
   const planHash = sha256(planJSON);
   const env = environmentFingerprint();
-  const lockHash = lockfileHash();
+  const lockHash = workspaceRoot === null ? null : lockfileHash(workspaceRoot);
 
   const lines: string[] = [];
 
@@ -93,23 +98,20 @@ export function generateSnapshot(plan: Plan, inputs: InputConfig): string {
  * Get package version from package.json
  */
 function getPackageVersion(): string {
-  try {
-    const fs = require("fs");
-    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
-    return packageJson.version || "unknown";
-  } catch {
-    return "unknown";
-  }
+  return packageMetadata.version;
 }
 
 /**
  * Generate snapshot.md for GitHub-generated plans
  */
-export function generateGitHubSnapshot(plan: Plan): string {
+export function generateGitHubSnapshot(
+  plan: Plan,
+  workspaceRoot: string | null = process.cwd()
+): string {
   const planJSON = canonicalJSONStringify(plan);
   const planHash = sha256(planJSON);
   const env = environmentFingerprint();
-  const lockHash = lockfileHash();
+  const lockHash = workspaceRoot === null ? null : lockfileHash(workspaceRoot);
 
   const lines: string[] = [];
 

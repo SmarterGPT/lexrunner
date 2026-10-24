@@ -76,6 +76,12 @@ describe("Checkpoint Storage", () => {
       expect(() => getCheckpointPath("../outside", testDir)).toThrow("Invalid checkpoint run ID");
       expect(() => getCheckpointPath("nested/run", testDir)).toThrow("Invalid checkpoint run ID");
     });
+
+    it("resolves without creating a checkpoint directory", () => {
+      const missingDir = path.join(testDir, "read-only-resolution");
+      expect(getCheckpointPath("run-1", missingDir)).toBe(path.join(missingDir, "run-1.json"));
+      expect(fs.existsSync(missingDir)).toBe(false);
+    });
   });
 
   describe("saveCheckpoint", () => {
@@ -136,6 +142,14 @@ describe("Checkpoint Storage", () => {
       );
     });
 
+    it("does not create a missing directory while loading", async () => {
+      const missingDir = path.join(testDir, "missing-load");
+      await expect(loadCheckpoint("nonexistent", { checkpointDir: missingDir })).rejects.toThrow(
+        "Checkpoint not found"
+      );
+      expect(fs.existsSync(missingDir)).toBe(false);
+    });
+
     it("should validate plan hash if provided", async () => {
       const checkpoint = createTestCheckpoint({ planHash: "abc123" });
       await saveCheckpoint(checkpoint, { checkpointDir: testDir, skipCleanup: true });
@@ -166,6 +180,12 @@ describe("Checkpoint Storage", () => {
     it("should return empty array if no checkpoints", async () => {
       const entries = await listCheckpoints({ checkpointDir: testDir });
       expect(entries).toEqual([]);
+    });
+
+    it("does not create a missing directory while listing", async () => {
+      const missingDir = path.join(testDir, "missing-list");
+      await expect(listCheckpoints({ checkpointDir: missingDir })).resolves.toEqual([]);
+      expect(fs.existsSync(missingDir)).toBe(false);
     });
 
     it("should list all checkpoints", async () => {

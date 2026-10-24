@@ -11,7 +11,6 @@
 import { Command } from "commander";
 import { throwExit } from "../cli/exitHandler.js";
 import { createGitHubAPI, GitHubAPI } from "../github/api.js";
-import { createGitHubClient } from "../github/client.js";
 import { loadPlan } from "../schema.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import { createGitOperations } from "../git/operations.js";
@@ -28,10 +27,11 @@ import { LocalWeaveResumeDriver } from "../weave/local-resume-driver.js";
 import { resumePersistedWeave } from "../weave/resume-service.js";
 import fs from "fs";
 import path from "path";
+import { DiscoveryQueryService } from "../application/integration-query-services.js";
 import {
-  DiscoveryQueryService,
-  PlanCreationService,
-} from "../application/integration-query-services.js";
+  PlanCreationOperationService,
+  writePlanCreationArtifacts,
+} from "../application/plan-creation-operation-service.js";
 import {
   MergeApplicationService,
   MergeApplicationServiceError,
@@ -188,6 +188,8 @@ Subcommands:
     .option("--from-github", "Auto-discover PRs from GitHub API")
     .option("--owner <owner>", "GitHub repository owner")
     .option("--repo <repo>", "GitHub repository name")
+    .option("--repo-root <dir>", "Repository worktree to bind discovery, gates, and artifacts")
+    .option("--profile-dir <dir>", "Explicit profile directory resolved from the repository root")
     .option("--query <query>", "GitHub search query")
     .option("--labels <labels...>", "Filter PRs by labels")
     .option("--include-drafts", "Include draft PRs", true)
@@ -204,48 +206,52 @@ Subcommands:
           throwExit(1);
         }
 
-        // Create GitHub client
-        const client = await createGitHubClient({
-          token: process.env.GITHUB_TOKEN,
-          owner: opts.owner,
-          repo: opts.repo,
-        });
-
-        // Generate plan from GitHub
-        const plan = await new PlanCreationService().fromGitHub(client, {
-          query: opts.query,
-          labels: opts.labels,
-          excludePRs: opts.excludePrs?.map((n: string) => parseInt(n, 10)),
-          includeDrafts: opts.includeDrafts,
-          target: opts.target,
-          policy: {
+        const operation = await new PlanCreationOperationService().run({
+          startupDir: process.cwd(),
+          args: {
+            fromGithub: true,
+            planFile: opts.output,
+            ...(opts.repoRoot ? { repoRoot: opts.repoRoot } : {}),
+            ...(opts.profileDir ? { profileDir: opts.profileDir } : {}),
+            ...(opts.owner ? { owner: opts.owner } : {}),
+            ...(opts.repo ? { repo: opts.repo } : {}),
+            ...(opts.query ? { query: opts.query } : {}),
+            ...(opts.labels ? { labels: opts.labels } : {}),
+            ...(opts.excludePrs
+              ? {
+                  excludePRs: opts.excludePrs
+                    .map((number: string) => parseInt(number, 10))
+                    .filter((number: number) => Number.isInteger(number) && number > 0),
+                }
+              : {}),
+            includeDrafts: opts.includeDrafts,
+            ...(opts.target ? { target: opts.target } : {}),
             requiredGates: ["lint", "typecheck", "test"],
             maxWorkers: 2,
           },
         });
-
-        // Write plan to file
-        const planJson = canonicalJSONStringify(plan);
-        fs.writeFileSync(opts.output, planJson + "\n");
+        writePlanCreationArtifacts(operation);
+        const plan = operation.plan;
 
         if (opts.json || deps.jsonModeActive()) {
           console.log(
             canonicalJSONStringify({
               success: true,
-              planFile: opts.output,
+              planFile: operation.files.plan,
+              routingReceipt: operation.files.routingReceipt,
               items: plan.items?.length || 0,
             })
           );
         } else {
           console.log(`\n✅ Plan generated successfully\n`);
-          console.log(`   File: ${opts.output}`);
+          console.log(`   File: ${operation.files.plan}`);
+          console.log(`   Routing: ${operation.files.routingReceipt}`);
           console.log(`   Items: ${plan.items?.length || 0}`);
           console.log(`   Target: ${plan.target || "default branch"}`);
           console.log("");
           console.log("Next steps:");
-          console.log(`  1. Review: lex-pr plan-review ${opts.output}`);
-          console.log(`  2. Dry-run: lex-pr weave apply --plan ${opts.output} --dry-run`);
-          console.log(`  3. Execute: lex-pr weave apply --plan ${opts.output} --execute\n`);
+          for (const step of weavePlanNextSteps(operation.files.plan)) console.log(step);
+          console.log("");
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -354,6 +360,14 @@ Subcommands:
 
   // weave checkpoints - Checkpoint management
   registerCheckpointCommands(weave, { jsonModeActive: deps.jsonModeActive });
+}
+
+export function weavePlanNextSteps(planFile: string): string[] {
+  return [
+    `  1. Review: lex-pr plan-review ${planFile}`,
+    `  2. Dry-run: lex-pr weave apply --plan ${planFile} --dry-run`,
+    `  3. Execute: lex-pr weave apply --plan ${planFile} --execute`,
+  ];
 }
 
 /** Shared canonical CLI adapter used by `weave apply` and its `merge` compatibility alias. */

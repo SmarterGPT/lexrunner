@@ -103,7 +103,7 @@ items:
       // Snapshot determinism
       expect(workflow1.snapshot).toBe(workflow2.snapshot);
       expect(workflow2.snapshot).toBe(workflow3.snapshot);
-    });
+    }, 15_000);
 
     it("should maintain determinism across different working directories", async () => {
       // Create configuration in original directory

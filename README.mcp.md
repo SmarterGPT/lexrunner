@@ -82,7 +82,9 @@ The MCP server respects these environment variables:
 
 - `LEX_PR_PROFILE_DIR`: Directory containing configuration files (default: auto-resolved via precedence chain)
 - `ALLOW_MUTATIONS`: Enable destructive operations like merging (default: `false`)
-- `GITHUB_TOKEN`: GitHub API token for authenticated access (required for private repos)
+- `GITHUB_TOKEN`: GitHub API token for authenticated access. GitHub-mode MCP plan creation requires
+  `githubToken`, `GITHUB_TOKEN`, or `GH_TOKEN`; other GitHub tools require authentication for private
+  repositories.
 
 ```bash
 # Example with custom configuration
@@ -91,7 +93,9 @@ LEX_PR_PROFILE_DIR=/custom/profile ALLOW_MUTATIONS=true npm run mcp
 
 ### GitHub Authentication
 
-**Important:** The MCP server requires `GITHUB_TOKEN` to access private repositories. Without it:
+**Important:** GitHub-mode `plan_create` / `plan.create` requires an explicit `githubToken`,
+`GITHUB_TOKEN`, or `GH_TOKEN`, including for public repositories. Other GitHub-backed tools require
+authentication for private repositories. Without authenticated access:
 
 - Private repos return "Repository not found" errors
 - API rate limits are severely restricted (60 req/hr vs 5000 authenticated)
@@ -172,6 +176,9 @@ Creates a plan from configuration files or auto-discovers from GitHub PRs. This 
 
 - `json` (boolean, optional): Output plan as JSON to stdout
 - `outDir` (string, optional): Output directory for plan artifacts
+- `repoRoot` (string, optional): Repository worktree that owns discovery, generated gate cwd,
+  and relative output paths. Defaults to the MCP server startup directory.
+- `profileDir` (string, optional): Explicit profile directory, resolved from `repoRoot`.
 
 **GitHub Auto-Discovery Parameters:**
 
@@ -180,9 +187,13 @@ Creates a plan from configuration files or auto-discovers from GitHub PRs. This 
 - `labels` (array of strings, optional): Filter PRs by labels
 - `includeDrafts` (boolean, optional): Include draft PRs (default: true)
 - `excludePRs` (array of numbers, optional): Exclude specific PR numbers
-- `githubToken` (string, optional): GitHub API token (or use GITHUB_TOKEN env var)
+- `githubToken` (string, optional field): GitHub API token. GitHub-mode plan creation requires
+  this field, `GITHUB_TOKEN`, or `GH_TOKEN`.
 - `owner` (string, optional): GitHub repository owner (auto-detected from git remote)
 - `repo` (string, optional): GitHub repository name (auto-detected from git remote)
+- `repos` (array, optional): Existing multi-repository synthesis mode. Each entry supplies
+  `owner`, `repo`, and optional `priority`; the resulting plan is an artifact only and cannot be
+  executed or applied in one worktree.
 - `requiredGates` (array of strings, optional): Required gates (default: ["lint", "typecheck", "test"])
 - `maxWorkers` (number, optional): Maximum parallel workers (default: 2)
 - `target` (string, optional): Target branch for merging PRs (default: repo default branch)
@@ -192,9 +203,33 @@ Creates a plan from configuration files or auto-discovers from GitHub PRs. This 
 ```json
 {
   "plan": { ... },
-  "outDir": "/path/to/output"
+  "outDir": "/path/to/output",
+  "routing": {
+    "contract": "lexrunner-plan-routing-v1",
+    "authority": "unverified",
+    "authorizesExecution": false,
+    "authorizesMerge": false
+  },
+  "files": {
+    "plan": "/path/to/output/plan.json",
+    "snapshot": "/path/to/output/snapshot.md",
+    "routingReceipt": "/path/to/output/routing-receipt.json"
+  }
 }
 ```
+
+`owner` and `repo` must be supplied together and must match the credential-free `origin` remote
+read from `repoRoot`. An explicit query always wins over profile configuration and is executed as a
+repository-bound GitHub PR search. Queries that can broaden scope (`repo:`, `org:`, `user:`,
+`type:`, unquoted `OR`, or conflicting state/base qualifiers) are rejected, including quoted
+qualifier values. A receipt records an exact query only when a query used GitHub search; ordinary
+repository-scoped pull-request listing does not claim a search query. Explicit
+cross-repository calls should always provide `repoRoot`; unrelated environment profiles are then
+ignored unless `profileDir` is also explicit. `repos` preserves multi-repository synthesis and
+records no executable gate root; multi-repository execution, checkpoint, resume, and apply remain
+unsupported and fail closed. Explicit plan output cannot collide with `snapshot.md` or
+`routing-receipt.json`. The routing receipt records consistency observations only and grants
+neither gate nor merge authority. See [repository-bound plan creation](docs/plan-routing.md).
 
 **Example - Traditional Mode (from configuration files):**
 
@@ -273,7 +308,9 @@ The tool will:
     "includeDrafts": false,
     "githubToken": "ghp_...",
     "owner": "myorg",
-    "repo": "myrepo"
+    "repo": "myrepo",
+    "repoRoot": "/worktrees/myrepo",
+    "outDir": "artifacts/plan"
   }
 }
 ```
@@ -481,6 +518,9 @@ All overlapping integration tools use the same plan-reference precedence:
 2. `plan.json` in the repository root.
 3. `<profile>/runner/plan.json` as the backward-compatible `plan_create` fallback.
 
+The third fallback is available only when `repoRoot` is omitted. An explicit repository root cannot
+inherit a plan from `LEX_PR_PROFILE_DIR`; provide `planFile` or a repository-root `plan.json`.
+
 Their results include the same path-independent `planArtifact` identity. Compare its canonical
 `digest` to verify that status, merge ordering, gate execution, and merge preview consumed the
 same frozen plan.
@@ -488,6 +528,7 @@ same frozen plan.
 **Parameters:**
 
 - `planFile` (string, optional): Explicit path to an authored plan
+- `repoRoot` (string, optional): Explicit physical Git repository root; disables ambient profile-plan fallback
 - `onlyItem` (string, optional): Execute gates for this item only
 - `onlyGate` (string, optional): Execute this gate only
 - `outDir` (string, optional): Output directory for gate results

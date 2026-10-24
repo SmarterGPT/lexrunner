@@ -53,13 +53,9 @@ items:
   - id: item-gamma
     branch: feat/gamma
     deps: [item-beta]
-`
+`,
+        { encoding: "utf8", flush: true }
       );
-
-      // Ensure file is flushed to disk to avoid timing issues
-      const fd = fs.openSync(".smartergpt/stack.yml", "r");
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
 
       // Generate plan first
       const planOutput1 = execSync(`node ${cliPath} plan --json`, { encoding: "utf8" });
@@ -130,13 +126,9 @@ items:
   - id: final-item
     branch: feat/final
     deps: [m-item, b-item]
-`
+`,
+        { encoding: "utf8", flush: true }
       );
-
-      // Ensure file is flushed to disk to avoid timing issues
-      const fd = fs.openSync(".smartergpt/stack.yml", "r");
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
 
       // Generate plan multiple times
       const outputs = [];
@@ -157,7 +149,7 @@ items:
       // Should be sorted by name for deterministic ordering
       const sortedNames = [...itemNames].sort();
       expect(itemNames).toEqual(sortedNames);
-    });
+    }, 30_000); // Five built CLI invocations can exceed the default on native Windows.
   });
 
   describe("Environment state isolation", () => {

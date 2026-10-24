@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +13,8 @@ import {
 } from "../src/weave/local-resume-driver.js";
 import { loadCheckpoint, saveCheckpoint } from "../src/weave/checkpoint/storage.js";
 import { resumePersistedWeave, validateResumeJournal } from "../src/weave/resume-service.js";
+import { canonicalJSONStringify } from "../src/util/canonicalJson.js";
+import { sha256 } from "../src/util/hash.js";
 import type { GitHubClient } from "../src/github/client.js";
 
 const roots: string[] = [];
@@ -126,6 +129,64 @@ describe("frozen generated Git inputs (local repositories, simulated GitHub meta
     const finished = await loadCheckpoint(checkpoint.runId, { checkpointDir: f.checkpointDir });
     expect(finished.metadata?.resume?.operations[0].attempts).toBe(1);
     expect(await git(f.working, "rev-parse", "HEAD^2")).toBe(f.source);
+  }, 30_000);
+
+  it("rejects a resumed gate outside the repository before creating its integration branch", async () => {
+    const f = await fixture();
+    const foreign = join(f.root, "foreign-repository");
+    await mkdir(foreign);
+    await git(foreign, "init", "--quiet");
+    const invalidPlan = structuredClone(f.plan);
+    invalidPlan.items[0]!.gates[0]!.cwd = foreign;
+    const originalHead = await git(f.working, "rev-parse", "HEAD");
+    const originalAcquiredRefs = await git(
+      f.working,
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/lexrunner"
+    );
+    await expect(
+      createLocalResumeCheckpoint({ plan: invalidPlan, workingDir: f.working })
+    ).rejects.toMatchObject({ code: "PLAN_REPOSITORY_MISMATCH" });
+    expect(await git(f.working, "rev-parse", "HEAD")).toBe(originalHead);
+    expect(await git(f.working, "for-each-ref", "--format=%(refname)", "refs/lexrunner")).toBe(
+      originalAcquiredRefs
+    );
+
+    const checkpoint = await createLocalResumeCheckpoint({ plan: f.plan, workingDir: f.working });
+    checkpoint.plan.items[0]!.gates[0]!.cwd = foreign;
+    checkpoint.planHash = sha256(Buffer.from(canonicalJSONStringify(checkpoint.plan)));
+    await saveCheckpoint(checkpoint, { checkpointDir: f.checkpointDir, skipCleanup: true });
+    const lockPath = join(f.checkpointDir, `${checkpoint.runId}.json.resume.lock`);
+    class InspectingLocalResumeDriver extends LocalWeaveResumeDriver {
+      override preflight(value: Parameters<LocalWeaveResumeDriver["preflight"]>[0]) {
+        expect(existsSync(lockPath)).toBe(false);
+        return super.preflight(value);
+      }
+    }
+    const driver = new InspectingLocalResumeDriver(f.working);
+    const integrationBranch = checkpoint.metadata!.resume!.repository.integrationBranch;
+
+    await expect(
+      resumePersistedWeave({
+        runId: checkpoint.runId,
+        checkpointDir: f.checkpointDir,
+        driver,
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "external_state_mismatch",
+      reason: expect.stringContaining("not bound"),
+    });
+    expect(existsSync(lockPath)).toBe(false);
+    await expect(driver.validate(checkpoint)).resolves.toMatchObject({
+      valid: false,
+      reason: expect.stringContaining("not bound"),
+    });
+    await expect(
+      driver.execute(checkpoint.metadata!.resume!.operations[0]!, checkpoint)
+    ).resolves.toMatchObject({ completed: false, reason: expect.stringContaining("not bound") });
+    expect(await git(f.working, "branch", "--list", integrationBranch)).toBe("");
   }, 30_000);
 
   it.each(["source", "target"])(

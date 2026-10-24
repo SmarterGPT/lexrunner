@@ -63,6 +63,18 @@ describe("MCP Contract Tests", () => {
       expect(() => PlanCreateArgs.parse({ fromGithub: true, maxWorkers: 4 })).not.toThrow();
       expect(() => PlanCreateArgs.parse({ fromGithub: true, target: "develop" })).not.toThrow();
 
+      const multiRepoArgs = PlanCreateArgs.parse({
+        fromGithub: true,
+        repos: [
+          { owner: "org", repo: "primary", priority: 1.5 },
+          { owner: "org", repo: "secondary" },
+        ],
+      });
+      expect(multiRepoArgs.repos).toEqual([
+        { owner: "org", repo: "primary", priority: 1.5 },
+        { owner: "org", repo: "secondary", priority: 1 },
+      ]);
+
       // Valid arguments - complex GitHub scenarios
       expect(() =>
         PlanCreateArgs.parse({
@@ -90,6 +102,7 @@ describe("MCP Contract Tests", () => {
       expect(() => PlanCreateArgs.parse({ excludePRs: [123, "456"] })).toThrow(); // Should be numbers, not strings
       expect(() => PlanCreateArgs.parse({ maxWorkers: "4" })).toThrow(); // Should be number
       expect(() => PlanCreateArgs.parse({ requiredGates: "lint,test" })).toThrow(); // Should be array
+      expect(() => PlanCreateArgs.parse({ repos: [{ owner: "org" }] })).toThrow();
     });
 
     it("should validate GatesRunArgs schema correctly", () => {
@@ -160,8 +173,8 @@ describe("MCP Contract Tests", () => {
   describe("Filesystem isolation", () => {
     it("should run in isolated temp directory", () => {
       // Tests should run in isolated temp directory
-      expect(process.cwd()).toContain("tmp");
-      expect(process.cwd()).toContain("mcp-test-");
+      expect(path.resolve(process.cwd())).toBe(path.resolve(testDir));
+      expect(path.basename(process.cwd())).toContain("mcp-test-");
     });
 
     it("should clean up test artifacts after each test", () => {

@@ -5,6 +5,10 @@ import {
   type MergeApplicationRuntime,
 } from "../../src/application/merge-application-service.js";
 import type { Plan } from "../../src/schema.js";
+import {
+  createLocalResumeCheckpoint,
+  LocalWeaveResumeDriver,
+} from "../../src/weave/local-resume-driver.js";
 
 describe("MergeApplicationService", () => {
   it("proves dry-run cannot observe, prepare, or mutate the runtime", async () => {
@@ -39,6 +43,31 @@ describe("MergeApplicationService", () => {
       })
     ).rejects.toMatchObject({ code: "MERGE_MUTATION_DENIED" });
     expect(runtime.prepare).not.toHaveBeenCalled();
+  });
+
+  it("rejects multi-repository plans before runtime or persisted-resume admission", async () => {
+    const runtime = mockedRuntime();
+    const plan = fixturePlan();
+    plan.items[0]!.name = "SmarterGPT/lex#PR-1";
+
+    await expect(
+      new MergeApplicationService(runtime).run({
+        plan,
+        workingDir: "/repo",
+        dryRun: false,
+        mutationAuthorized: true,
+      })
+    ).rejects.toMatchObject({ code: "MERGE_MULTI_REPO_UNSUPPORTED" });
+    expect(runtime.isClean).not.toHaveBeenCalled();
+    expect(runtime.prepare).not.toHaveBeenCalled();
+    expect(runtime.resume).not.toHaveBeenCalled();
+
+    await expect(
+      createLocalResumeCheckpoint({ plan, workingDir: "/missing-repository" })
+    ).rejects.toMatchObject({ code: "PLAN_MULTI_REPO_EXECUTION_UNSUPPORTED" });
+    await expect(
+      new LocalWeaveResumeDriver(process.cwd()).validate({ plan } as any)
+    ).resolves.toMatchObject({ valid: false, reason: expect.stringContaining("multi-repository") });
   });
 
   it("returns bounded operation evidence from the shared executor", async () => {

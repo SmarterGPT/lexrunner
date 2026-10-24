@@ -10,17 +10,17 @@ This document provides a comprehensive parity matrix showing which LexRunner ope
 
 ### Core Operations
 
-| Operation     | CLI                         | MCP                                | Notes                                                     |
-| ------------- | --------------------------- | ---------------------------------- | --------------------------------------------------------- |
-| plan create   | ✅ `lex-pr plan`            | ✅ `plan.create`                   | Both support GitHub auto-discovery, labels, gates, target |
-| plan validate | ✅ `lex-pr schema validate` | ✅ `plan.create` (with validation) | MCP validates during creation                             |
-| gates run     | ✅ `lex-pr execute`         | ✅ `gates.run`                     | MCP accepts external planFile or internal state           |
-| merge apply   | ✅ `lex-pr merge`           | ✅ `merge.apply`                   | MCP enforces ALLOW_MUTATIONS for safety                   |
-| health check  | ✅ `lex-pr doctor`          | ✅ `health` / `doctor`             | MCP has `health` tool, CLI uses `doctor`                  |
-| discover PRs  | ✅ `lex-pr discover`        | ✅ `discover`                      | Both support GitHub PR discovery                          |
-| status check  | ✅ `lex-pr status`          | ✅ `status`                        | Show execution status and merge eligibility               |
-| merge order   | ✅ `lex-pr merge-order`     | ✅ `merge-order`                   | Compute dependency levels using Kahn's algorithm          |
-| config show   | ✅ `lex-pr config show`     | ✅ `config.show`                   | Display configuration with precedence chain               |
+| Operation     | CLI                         | MCP                                | Notes                                                  |
+| ------------- | --------------------------- | ---------------------------------- | ------------------------------------------------------ |
+| plan create   | ✅ `lexrunner weave plan`   | ✅ `plan.create`                   | Shared repository-bound routing, discovery and receipt |
+| plan validate | ✅ `lex-pr schema validate` | ✅ `plan.create` (with validation) | MCP validates during creation                          |
+| gates run     | ✅ `lex-pr execute`         | ✅ `gates.run`                     | MCP accepts external planFile or internal state        |
+| merge apply   | ✅ `lex-pr merge`           | ✅ `merge.apply`                   | MCP enforces ALLOW_MUTATIONS for safety                |
+| health check  | ✅ `lex-pr doctor`          | ✅ `health` / `doctor`             | MCP has `health` tool, CLI uses `doctor`               |
+| discover PRs  | ✅ `lex-pr discover`        | ✅ `discover`                      | Both support GitHub PR discovery                       |
+| status check  | ✅ `lex-pr status`          | ✅ `status`                        | Show execution status and merge eligibility            |
+| merge order   | ✅ `lex-pr merge-order`     | ✅ `merge-order`                   | Compute dependency levels using Kahn's algorithm       |
+| config show   | ✅ `lex-pr config show`     | ✅ `config.show`                   | Display configuration with precedence chain            |
 
 ### Configuration Operations
 
@@ -84,21 +84,33 @@ This document provides a comprehensive parity matrix showing which LexRunner ope
 
 ```bash
 # CLI
-lex-pr plan --from-github --labels "ready" --json
+lexrunner weave plan --from-github --repo-root /worktrees/repo --owner org --repo repo --query "is:pr is:open head:release" --output plan.json
 
 # MCP
-{ "name": "plan.create", "arguments": { "fromGithub": true, "labels": ["ready"] } }
+{ "name": "plan.create", "arguments": { "fromGithub": true, "repoRoot": "/worktrees/repo", "owner": "org", "repo": "repo", "query": "is:pr is:open head:release", "outDir": "artifacts/plan" } }
 ```
+
+Both adapters call `PlanCreationOperationService`. Relative profiles and outputs anchor to the
+selected physical Git root. Explicit repository identity must match its local `origin` remote
+before API access or writes. Both MCP adapters require a GitHub token for GitHub-mode creation;
+the CLI retains unauthenticated public discovery. Each non-JSON creation writes
+`routing-receipt.json`; that receipt is explicitly non-authorizing. See
+[repository-bound plan creation](plan-routing.md).
 
 **Gates Execution:**
 
 ```bash
 # CLI
-lex-pr execute plan.json --json
+lex-pr execute plan.json --repo-root /worktrees/repo --json
 
 # MCP
-{ "name": "gates.run", "arguments": { "planFile": "plan.json" } }
+{ "name": "gates.run", "arguments": { "repoRoot": "/worktrees/repo", "planFile": "plan.json" } }
 ```
+
+With `repoRoot`, both adapters resolve the relative plan, artifact output and local gate cwd from
+that physical repository. A local gate cwd cannot escape into another repository. For MCP gate
+execution, explicit `repoRoot` disables the ambient profile runner-plan fallback; use `planFile` or
+the selected repository's `plan.json`.
 
 **Merge Apply (Dry Run):**
 

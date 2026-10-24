@@ -5,19 +5,19 @@
 import { Command } from "commander";
 import { Plan, loadPlan } from "../schema.js";
 import { computeMergeOrder, CycleError, UnknownDependencyError } from "../mergeOrder.js";
-import { loadInputs, detectGitHubMode } from "../core/inputs.js";
-import { generateSnapshot, generatePlanSummary, generateGitHubSnapshot } from "../core/snapshot.js";
+import { generatePlanSummary } from "../core/snapshot.js";
 import { createGitHubClient } from "../github/index.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
-import { resolveProfile, validateWriteOperation } from "../config/profileResolver.js";
 import { throwExit } from "../cli/exitHandler.js";
 import { FileAnalyzer } from "../planner/fileAnalysis.js";
 import { scoreDependencies } from "../planner/dependencyScoring.js";
 import { formatSuggestions, type SuggestionFormat } from "../cli/formatSuggestions.js";
 import { parseTierOverrides, calculateTierMetrics, formatTierMetrics } from "../tiers/index.js";
 import * as fs from "fs";
-import * as path from "path";
-import { PlanCreationService } from "../application/integration-query-services.js";
+import {
+  PlanCreationOperationService,
+  writePlanCreationArtifacts,
+} from "../application/plan-creation-operation-service.js";
 
 interface PlanCommandDeps {
   jsonModeActive: () => boolean;
@@ -35,6 +35,8 @@ export function registerPlanCommand(program: Command, deps: PlanCommandDeps): vo
       "Generate plan from configuration sources or GitHub PRs (canonical: lexrunner weave plan)"
     )
     .option("--out <dir>", "Output directory for artifacts (default: <profile>/runner)")
+    .option("--repo-root <dir>", "Repository worktree to bind discovery, gates, and artifacts")
+    .option("--profile-dir <dir>", "Explicit profile directory resolved from the repository root")
     .option("--json", "Output canonical plan JSON to stdout only")
     .option("--dry-run", "Validate inputs and show what would be written")
     .option("--from-github", "Auto-discover PRs from GitHub API")
@@ -106,157 +108,101 @@ Common Issues:
 }
 
 async function executePlan(opts: any, deps: PlanCommandDeps): Promise<void> {
-  // Resolve profile first to determine default output directory
-  const resolved = resolveProfile(undefined, process.cwd());
-  const defaultOutDir = path.join(resolved.path, "runner");
-  const outDir = opts.out || defaultOutDir;
-
-  let plan: Plan;
-  let inputs: any = null;
-  let autoDetectedGitHubMode = false;
-
   // Parse tier overrides from CLI
   const tierOverrides = opts.tierOverride ? parseTierOverrides(opts.tierOverride) : undefined;
+  const labels = opts.labels
+    ? opts.labels.split(",").map((label: string) => label.trim())
+    : undefined;
+  const excludePRs = opts.excludePrs
+    ? opts.excludePrs
+        .split(",")
+        .map((number: string) => parseInt(number.trim(), 10))
+        .filter((number: number) => Number.isInteger(number) && number > 0)
+    : undefined;
+  const operation = await new PlanCreationOperationService().run({
+    startupDir: process.cwd(),
+    tierOverrides,
+    args: {
+      ...(opts.out ? { outDir: opts.out } : {}),
+      ...(opts.repoRoot ? { repoRoot: opts.repoRoot } : {}),
+      ...(opts.profileDir ? { profileDir: opts.profileDir } : {}),
+      ...(opts.fromGithub ? { fromGithub: true } : {}),
+      ...(opts.query ? { query: opts.query } : {}),
+      ...(labels ? { labels } : {}),
+      ...(opts.includeDrafts !== undefined ? { includeDrafts: opts.includeDrafts } : {}),
+      ...(excludePRs ? { excludePRs } : {}),
+      ...(opts.githubToken ? { githubToken: opts.githubToken } : {}),
+      ...(opts.owner ? { owner: opts.owner } : {}),
+      ...(opts.repo ? { repo: opts.repo } : {}),
+      ...(opts.requiredGates
+        ? { requiredGates: opts.requiredGates.split(",").map((gate: string) => gate.trim()) }
+        : {}),
+      ...(opts.maxWorkers ? { maxWorkers: opts.maxWorkers } : {}),
+      ...(opts.target ? { target: opts.target } : {}),
+    },
+  });
+  const plan: Plan = operation.plan;
+  const githubMode = operation.routing.discovery.mode === "github";
+  const autoDetectedGitHubMode = githubMode && !opts.fromGithub;
 
-  // Auto-detect GitHub mode from scope.yml if --from-github not explicitly set
-  if (!opts.fromGithub) {
-    const detection = detectGitHubMode(resolved.path);
-    if (detection.shouldUseGitHub) {
-      autoDetectedGitHubMode = true;
-      // Merge scope.yml filters with CLI options (CLI takes precedence)
-      opts.fromGithub = true;
-      if (!opts.query && detection.scopeConfig?.query) {
-        opts.query = detection.scopeConfig.query;
-      }
-      if (
-        !opts.labels &&
-        detection.scopeConfig?.labels &&
-        detection.scopeConfig.labels.length > 0
-      ) {
-        opts.labels = detection.scopeConfig.labels.join(",");
-      }
-      if (!opts.target && detection.scopeConfig?.target) {
-        opts.target = detection.scopeConfig.target;
-      }
-
-      if (!deps.jsonModeActive()) {
-        console.error("[plan] Auto-detected GitHub mode from scope.yml filters");
-      }
-    }
-  }
-
-  if (opts.fromGithub) {
-    // GitHub mode: auto-discover PRs
+  if (opts.suggestDeps) {
+    if (!githubMode) throw new Error("Dependency suggestions require GitHub discovery mode");
     const client = await createGitHubClient({
       token: opts.githubToken,
-      owner: opts.owner,
-      repo: opts.repo,
+      owner: operation.routing.resolvedRepository.owner,
+      repo: operation.routing.resolvedRepository.repo,
     });
-
-    // Parse labels if provided
-    const labels = opts.labels ? opts.labels.split(",").map((l: string) => l.trim()) : undefined;
-
-    // Parse excluded PR numbers if provided
-    const excludePRs = opts.excludePrs
-      ? opts.excludePrs
-          .split(",")
-          .map((n: string) => parseInt(n.trim(), 10))
-          .filter((n: number) => !isNaN(n))
-      : undefined;
-
-    // Handle --suggest-deps mode
-    if (opts.suggestDeps) {
-      // Discover PRs based on query/filters
-      const prs = await client.listOpenPRs({
-        state: "open",
-        labels,
-        ...(opts.query ? { query: opts.query } : {}),
-      });
-
-      // Default behavior: include drafts unless explicitly disabled
-      const includeDrafts = opts.includeDrafts === undefined ? true : Boolean(opts.includeDrafts);
-      const filteredPRs = includeDrafts ? prs : prs.filter((pr) => !pr.draft);
-
-      // Exclude specific PRs if requested
-      const finalPRs =
-        excludePRs && excludePRs.length > 0
-          ? filteredPRs.filter((pr) => !excludePRs.includes(pr.number))
-          : filteredPRs;
-
-      if (finalPRs.length === 0) {
-        console.log("No PRs found matching the criteria.");
-        return;
-      }
-
-      // Get detailed information for each PR
-      const prDetails = await Promise.all(finalPRs.map((pr) => client.getPRDetails(pr.number)));
-
-      // Create file analyzer
-      const fileAnalyzer = new FileAnalyzer(
-        client.getOctokit(),
-        client.getOwner(),
-        client.getRepo()
-      );
-
-      // Score dependencies
-      const threshold = opts.threshold ?? 0.3;
-      const scores = await scoreDependencies(
-        prDetails.map((pr) => ({
-          number: pr.number,
-          name: `PR-${pr.number}`,
-          body: pr.body,
-          sha: pr.head.sha,
-        })),
-        fileAnalyzer,
-        { threshold }
-      );
-
-      // Format output
-      const format = (opts.format as SuggestionFormat) || "table";
-      const output = formatSuggestions(scores, format, threshold);
-
-      // Write to stdout or file
-      if (opts.output) {
-        fs.writeFileSync(opts.output, output, "utf-8");
-        if (!deps.jsonModeActive()) {
-          console.log(`✓ Suggestions written to ${opts.output}`);
-        }
-      } else {
-        console.log(output);
-      }
-
-      // Exit without generating plan.json
+    const prNumbers = plan.items
+      .map(({ name }) => /^PR-([1-9][0-9]*)$/u.exec(name)?.[1])
+      .filter((number): number is string => Boolean(number))
+      .map(Number);
+    if (prNumbers.length === 0) {
+      console.log("No PRs found matching the criteria.");
       return;
     }
+    const prDetails = await Promise.all(prNumbers.map((number) => client.getPRDetails(number)));
 
-    // Parse required gates if provided
-    const requiredGates = opts.requiredGates
-      ? opts.requiredGates.split(",").map((g: string) => g.trim())
-      : ["lint", "typecheck", "test"];
+    // Create file analyzer
+    const fileAnalyzer = new FileAnalyzer(client.getOctokit(), client.getOwner(), client.getRepo());
 
-    // Parse max workers if provided
-    const maxWorkers = opts.maxWorkers || 2;
+    // Score dependencies
+    const threshold = opts.threshold ?? 0.3;
+    const scores = await scoreDependencies(
+      prDetails.map((pr) => ({
+        number: pr.number,
+        name: `PR-${pr.number}`,
+        body: pr.body,
+        sha: pr.head.sha,
+      })),
+      fileAnalyzer,
+      { threshold }
+    );
 
-    // Generate plan from GitHub
-    plan = await new PlanCreationService().fromGitHub(client, {
-      query: opts.query,
-      labels,
-      excludePRs,
-      includeDrafts: opts.includeDrafts,
-      target: opts.target,
-      policy: {
-        requiredGates,
-        maxWorkers,
-      },
-      tierOverrides,
-    });
+    // Format output
+    const format = (opts.format as SuggestionFormat) || "table";
+    const output = formatSuggestions(scores, format, threshold);
 
-    // If JSON mode is requested, keep non-JSON logs on stderr and emit a brief diagnostic
+    // Write to stdout or file
+    if (opts.output) {
+      fs.writeFileSync(opts.output, output, "utf-8");
+      if (!deps.jsonModeActive()) {
+        console.log(`✓ Suggestions written to ${opts.output}`);
+      }
+    } else {
+      console.log(output);
+    }
+
+    // Exit without generating plan.json
+    return;
+  }
+
+  if (githubMode) {
     if (deps.jsonModeActive()) {
-      // diagnostics to stderr only
-      const repoDiag = `${client.getOwner()}/${client.getRepo()}`;
+      const repoDiag = `${operation.routing.resolvedRepository.owner}/${operation.routing.resolvedRepository.repo}`;
       const filterInfo = labels ? ` labels=${labels.join(",")}` : "";
-      const queryInfo = opts.query ? ` query="${opts.query}"` : "";
+      const queryInfo = operation.routing.discovery.query
+        ? ` query="${operation.routing.discovery.query}"`
+        : "";
       console.error(
         `[from-github] repo=${repoDiag}${filterInfo}${queryInfo} discovered=${plan.items.length}`
       );
@@ -266,21 +212,14 @@ async function executePlan(opts: any, deps: PlanCommandDeps): Promise<void> {
       if (labels && labels.length > 0) {
         console.log(`  Filtered by labels: ${labels.join(", ")}`);
       }
-      if (opts.query) {
-        console.log(`  Using query: ${opts.query}`);
+      if (operation.routing.discovery.query) {
+        console.log(`  Using query: ${operation.routing.discovery.query}`);
       }
       if (plan.items.length === 0) {
         console.log(`\n⚠️  No PRs found matching the criteria.`);
         console.log(`    Try adjusting filters or check that PRs exist in the repository.`);
       }
     }
-  } else {
-    // Traditional mode: load from configuration files
-    inputs = loadInputs();
-    plan = new PlanCreationService().fromInputs(inputs, {
-      tierOverrides,
-      preserveEmptyPlan: true,
-    });
   }
 
   // Validate plan structure
@@ -355,41 +294,24 @@ async function executePlan(opts: any, deps: PlanCommandDeps): Promise<void> {
 
   // Generate artifacts
   const planJSON = canonicalJSONStringify(validatedPlan);
-  const snapshot = opts.fromGithub
-    ? generateGitHubSnapshot(validatedPlan)
-    : generateSnapshot(validatedPlan, inputs);
+  const snapshot = operation.snapshot;
 
   if (opts.dryRun) {
     console.log("Dry run - would generate:");
-    console.log(`📁 ${path.join(outDir, "plan.json")} (${planJSON.length} bytes)`);
-    console.log(`📁 ${path.join(outDir, "snapshot.md")} (${snapshot.length} bytes)`);
+    console.log(`📁 ${operation.files.plan} (${planJSON.length} bytes)`);
+    console.log(`📁 ${operation.files.snapshot} (${snapshot.length} bytes)`);
+    console.log(`📁 ${operation.files.routingReceipt} (non-authorizing routing receipt)`);
     console.log("");
     console.log(generatePlanSummary(validatedPlan));
     return;
   }
 
-  // Write artifacts - validate write permissions first
-
-  // Check if output directory is within a profile and validate write permissions
-  const absOutDir = path.resolve(outDir);
-  const profilePath = resolved.path;
-
-  // If output directory is inside the profile, validate write permissions
-  if (absOutDir.startsWith(profilePath)) {
-    validateWriteOperation(profilePath, resolved.manifest.role, "write plan artifacts");
-  }
-
-  fs.mkdirSync(outDir, { recursive: true });
-
-  const planPath = path.join(outDir, "plan.json");
-  const snapshotPath = path.join(outDir, "snapshot.md");
-
-  fs.writeFileSync(planPath, planJSON);
-  fs.writeFileSync(snapshotPath, snapshot);
+  writePlanCreationArtifacts(operation);
 
   console.log(`✓ Generated plan artifacts:`);
-  console.log(`  📁 ${planPath}`);
-  console.log(`  📁 ${snapshotPath}`);
+  console.log(`  📁 ${operation.files.plan}`);
+  console.log(`  📁 ${operation.files.snapshot}`);
+  console.log(`  📁 ${operation.files.routingReceipt}`);
   console.log("");
   console.log(generatePlanSummary(validatedPlan));
 

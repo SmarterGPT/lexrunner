@@ -98,6 +98,81 @@ describe("built gate run selection", () => {
     });
     expect(markers(fixture)).toEqual([]);
   }, 30_000);
+
+  it("binds a dry-run plan before purging profile cache or creating artifacts", async () => {
+    const fixture = makeFixture();
+    const foreign = join(fixture.root, "foreign-repository");
+    mkdirSync(foreign);
+    execFileSync("git", ["init", "--quiet"], {
+      cwd: foreign,
+      env: fixtureEnvironment,
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    const profile = join(fixture.root, "explicit-profile");
+    const cache = join(profile, "runner", ".cache");
+    mkdirSync(cache, { recursive: true });
+    writeFileSync(join(profile, "profile.yml"), "role: local\n");
+    const cacheMarker = join(cache, "preserve.txt");
+    writeFileSync(cacheMarker, "preserve\n");
+    const planFile = join(fixture.root, "foreign-cwd-plan.json");
+    writeFileSync(
+      planFile,
+      JSON.stringify({
+        schemaVersion: "1.0.0",
+        target: "main",
+        items: [
+          {
+            name: "foreign",
+            deps: [],
+            gates: [{ name: "test", run: 'node -e "process.exit(0)"', cwd: foreign }],
+          },
+        ],
+      })
+    );
+    const artifacts = join(fixture.root, "must-not-create-artifacts");
+
+    const args = [
+      cli,
+      "--no-emit-frames",
+      "gate",
+      "run",
+      "--plan",
+      planFile,
+      "--repo-root",
+      fixture.repo,
+      "--profile-dir",
+      profile,
+      "--artifact-dir",
+      artifacts,
+      "--dry-run",
+    ];
+    const result = await execa(process.execPath, args, {
+      cwd: fixture.startup,
+      env: fixtureEnvironment,
+      reject: false,
+      timeout: 25_000,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(existsSync(cacheMarker)).toBe(true);
+    expect(existsSync(artifacts)).toBe(false);
+    expect(markers(fixture)).toEqual([]);
+
+    const jsonResult = await execa(process.execPath, [...args, "--json"], {
+      cwd: fixture.startup,
+      env: fixtureEnvironment,
+      reject: false,
+      timeout: 25_000,
+    });
+    expect(jsonResult.exitCode).not.toBe(0);
+    expect(JSON.parse(jsonResult.stdout)).toMatchObject({
+      code: "GATE_WORKING_DIRECTORY_CONFLICT",
+      context: { tool: "gates.run" },
+    });
+    expect(existsSync(cacheMarker)).toBe(true);
+    expect(existsSync(artifacts)).toBe(false);
+  }, 30_000);
 });
 
 function makeFixture() {

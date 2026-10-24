@@ -16,8 +16,6 @@ import {
 import { z } from "zod";
 import packageMetadata from "../../package.json" with { type: "json" };
 
-import { loadInputs, detectGitHubMode } from "../core/inputs.js";
-import { generateSnapshot, generateGitHubSnapshot } from "../core/snapshot.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import {
   GateExecutionService,
@@ -41,8 +39,13 @@ import {
   IntegrationQueryServiceError,
   IntegrationStatusQueryService,
   MergeOrderQueryService,
-  PlanCreationService,
 } from "../application/integration-query-services.js";
+import {
+  PlanCreationOperationError,
+  PlanCreationOperationService,
+  writePlanCreationArtifacts,
+} from "../application/plan-creation-operation-service.js";
+import { RepositoryBindingError } from "../application/repository-binding.js";
 import {
   MergeApplicationService,
   MergeApplicationServiceError,
@@ -104,11 +107,7 @@ import {
   FanoutAnalyzeResult,
   StatusArgs,
 } from "./types.js";
-import {
-  resolveProfile,
-  validateWriteOperation,
-  WriteProtectionError,
-} from "../config/profileResolver.js";
+import { resolveProfile, WriteProtectionError } from "../config/profileResolver.js";
 import { getCIMutationPolicy, validateCIEnvironment } from "../util/envUtils.js";
 
 // Governance metrics imports
@@ -302,7 +301,7 @@ function createServer(options?: McpServerOptions): Server {
         {
           name: "plan_create",
           description:
-            "Create a plan from configuration files or auto-discover from GitHub PRs. Requires GITHUB_TOKEN environment variable when using fromGithub mode.",
+            "Create a plan from configuration files or auto-discover from GitHub PRs. GitHub discovery requires githubToken, GITHUB_TOKEN, or GH_TOKEN.",
           inputSchema: {
             type: "object",
             properties: {
@@ -314,6 +313,19 @@ function createServer(options?: McpServerOptions): Server {
               outDir: {
                 type: "string",
                 description: "Output directory for plan artifacts",
+              },
+              repoRoot: {
+                type: "string",
+                minLength: 1,
+                maxLength: 4096,
+                description:
+                  "Explicit repository worktree binding (default: MCP server startup directory)",
+              },
+              profileDir: {
+                type: "string",
+                minLength: 1,
+                maxLength: 4096,
+                description: "Explicit profile directory resolved from the repository root",
               },
               fromGithub: {
                 type: "boolean",
@@ -357,17 +369,16 @@ function createServer(options?: McpServerOptions): Server {
               },
               repos: {
                 type: "array",
+                maxItems: 32,
                 description:
-                  "Multi-repo mode: array of repositories to discover PRs from. Overrides owner/repo if provided.",
+                  "Multi-repository synthesis targets. Generated plans are artifacts only; execution and apply fail closed.",
                 items: {
                   type: "object",
+                  additionalProperties: false,
                   properties: {
-                    owner: { type: "string", description: "Repository owner" },
-                    repo: { type: "string", description: "Repository name" },
-                    priority: {
-                      type: "number",
-                      description: "Priority for merge ordering (default: 1, lower = earlier)",
-                    },
+                    owner: { type: "string" },
+                    repo: { type: "string" },
+                    priority: { type: "number" },
                   },
                   required: ["owner", "repo"],
                 },
@@ -1180,7 +1191,7 @@ function createServer(options?: McpServerOptions): Server {
     switch (name) {
       // Plan tools
       case "plan_create":
-        return await handlePlanCreate(args as PlanCreateArgs);
+        return await handlePlanCreate(args as PlanCreateArgs, serverBaseDir);
 
       case "pr_list":
         return await handlePrList(args as PrListArgs);
@@ -1193,7 +1204,7 @@ function createServer(options?: McpServerOptions): Server {
 
       // Gate tools
       case "gates_run":
-        return await handleGatesRun(args as GatesRunArgs);
+        return await handleGatesRun(args as GatesRunArgs, serverBaseDir);
       case "gates_start":
       case "gates_status":
       case "gates_cancel":
@@ -1321,170 +1332,27 @@ function ensureGitHubToken(providedToken?: string): void {
  * Handle plan.create tool
  */
 async function handlePlanCreate(
-  args: PlanCreateArgs
+  args: PlanCreateArgs,
+  serverBaseDir: string
 ): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
-    const env = getMCPEnvironment();
-
-    // Resolve profile and validate write permissions
-    const resolved = resolveProfile(undefined, process.cwd());
-    const profilePath = resolved.path;
-    const role = resolved.manifest.role;
-
-    let plan;
-    let inputs = null;
-    let autoDetectedGitHubMode = false;
-
-    // Auto-detect GitHub mode from scope.yml if fromGithub not explicitly set
-    if (!args.fromGithub) {
-      const detection = detectGitHubMode(profilePath);
-      if (detection.shouldUseGitHub) {
-        autoDetectedGitHubMode = true;
-        // Merge scope.yml filters with args (args take precedence)
-        args.fromGithub = true;
-        if (!args.query && detection.scopeConfig?.query) {
-          args.query = detection.scopeConfig.query;
-        }
-        if (
-          !args.labels &&
-          detection.scopeConfig?.labels &&
-          detection.scopeConfig.labels.length > 0
-        ) {
-          args.labels = detection.scopeConfig.labels;
-        }
-        if (!args.target && detection.scopeConfig?.target) {
-          args.target = detection.scopeConfig.target;
-        }
-
-        console.error("[mcp:plan.create] Auto-detected GitHub mode from scope.yml filters");
-      }
-    }
-
-    if (args.fromGithub) {
-      // Check for GitHub authentication before making API calls
-      ensureGitHubToken(args.githubToken);
-
-      // Parse required gates if provided
-      const requiredGates = args.requiredGates || ["lint", "typecheck", "test"];
-
-      // Parse max workers if provided
-      const maxWorkers = args.maxWorkers || 2;
-
-      // Check for multi-repo mode (issue #677)
-      if (args.repos && args.repos.length > 0) {
-        // Multi-repo mode: discover PRs from multiple repositories
-        console.error(`[mcp:plan.create] Multi-repo mode: ${args.repos.length} repositories`);
-
-        plan = await new PlanCreationService().fromMultipleRepositories(args.repos, {
-          query: args.query,
-          labels: args.labels,
-          excludePRs: args.excludePRs,
-          includeDrafts: args.includeDrafts,
-          target: args.target,
-          githubToken: args.githubToken,
-          policy: {
-            requiredGates,
-            maxWorkers,
-          },
-        });
-
-        // Log discovery results to stderr
-        const repoList = args.repos.map((r) => `${r.owner}/${r.repo}`).join(", ");
-        const filterInfo = args.labels ? ` labels=${args.labels.join(",")}` : "";
-        console.error(
-          `[mcp:plan.create] repos=[${repoList}]${filterInfo} discovered=${plan.items.length} PRs`
-        );
-
-        if (plan.items.length === 0) {
-          console.error(
-            `[mcp:plan.create] Warning: No PRs found matching criteria. Check filters and repository state.`
-          );
-        } else {
-          const prNames = plan.items.map((item) => item.name).join(", ");
-          console.error(`[mcp:plan.create] PRs included: ${prNames}`);
-        }
-      } else {
-        // Single-repo mode (backward compatible)
-        const client = await createGitHubClient({
-          token: args.githubToken,
-          owner: args.owner,
-          repo: args.repo,
-        });
-
-        // Generate plan from GitHub
-        plan = await new PlanCreationService().fromGitHub(client, {
-          query: args.query,
-          labels: args.labels,
-          excludePRs: args.excludePRs,
-          includeDrafts: args.includeDrafts,
-          target: args.target,
-          policy: {
-            requiredGates,
-            maxWorkers,
-          },
-        });
-
-        // Log discovery results to stderr
-        const repoDiag = `${client.getOwner()}/${client.getRepo()}`;
-        const filterInfo = args.labels ? ` labels=${args.labels.join(",")}` : "";
-        const queryInfo = args.query ? ` query="${args.query}"` : "";
-        console.error(
-          `[mcp:plan.create] repo=${repoDiag}${filterInfo}${queryInfo} discovered=${plan.items.length} PRs`
-        );
-
-        if (plan.items.length === 0) {
-          console.error(
-            `[mcp:plan.create] Warning: No PRs found matching criteria. Check filters and repository state.`
-          );
-        } else {
-          const prNumbers = plan.items.map((item) => item.name).join(", ");
-          console.error(`[mcp:plan.create] PRs included: ${prNumbers}`);
-        }
-      }
-    } else {
-      // Traditional mode: load from configuration files
-      inputs = loadInputs(profilePath);
-      plan = new PlanCreationService().fromInputs(inputs);
-    }
-
-    // Determine output directory
-    const outDir = args.outDir || path.join(profilePath, "runner");
-
-    // Validate write operation is allowed
-    validateWriteOperation(profilePath, role, "write plan artifacts");
-
-    // Ensure output directory exists
-    if (!fs.existsSync(outDir)) {
-      fs.mkdirSync(outDir, { recursive: true });
-    }
-
-    // Write plan.json
-    const planPath = path.join(outDir, "plan.json");
-    const planJson = canonicalJSONStringify(plan);
-    fs.writeFileSync(planPath, planJson + "\n");
-
-    // Generate snapshot - use GitHub snapshot for GitHub mode
-    let snapshot: string;
-    if (args.fromGithub) {
-      snapshot = generateGitHubSnapshot(plan);
-    } else {
-      // In traditional mode, inputs is guaranteed to be set
-      if (!inputs) {
-        const axError = mcpToolError(
-          ErrorCodes.INTERNAL_ERROR,
-          "Internal error: inputs not loaded in traditional mode",
-          { tool: "plan.create", operation: "generate snapshot" }
-        );
-        throwMcpAXError(ErrorCode.InternalError, axError);
-      }
-      snapshot = generateSnapshot(plan, inputs);
-    }
-    const snapshotPath = path.join(outDir, "snapshot.md");
-    fs.writeFileSync(snapshotPath, snapshot);
+    const operation = await new PlanCreationOperationService().run({
+      args,
+      startupDir: serverBaseDir,
+      requireGitHubToken: true,
+    });
+    writePlanCreationArtifacts(operation);
+    const plan = operation.plan;
+    const repoDiag = `${operation.routing.resolvedRepository.owner}/${operation.routing.resolvedRepository.repo}`;
+    console.error(
+      `[mcp:plan.create] repo=${repoDiag} mode=${operation.routing.discovery.mode} discovered=${plan.items.length} PRs`
+    );
 
     const result: PlanCreateResult = {
-      plan: plan,
-      outDir: outDir,
+      plan,
+      outDir: operation.routing.output.root,
+      routing: operation.routing,
+      files: operation.files,
     };
 
     return {
@@ -1499,6 +1367,9 @@ async function handlePlanCreate(
     if (error instanceof WriteProtectionError) {
       const axError = writeProtectionError(error.message, "plan.create");
       throwMcpAXError(ErrorCode.InvalidRequest, axError);
+    }
+    if (error instanceof PlanCreationOperationError || error instanceof RepositoryBindingError) {
+      throwMcpToolError(ErrorCode.InvalidParams, "plan.create", error, "route plan creation");
     }
     throwMcpToolError(ErrorCode.InternalError, "plan.create", error, "create plan");
   }
@@ -1822,24 +1693,49 @@ async function handlePlanAnalyze(
  * Handle gates.run tool
  */
 async function handleGatesRun(
-  args: GatesRunArgs
+  args: GatesRunArgs,
+  serverBaseDir: string
 ): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
+    const rawRepoRoot = (args as unknown as { repoRoot?: unknown }).repoRoot;
+    if (
+      rawRepoRoot !== undefined &&
+      (typeof rawRepoRoot !== "string" || rawRepoRoot.length < 1 || rawRepoRoot.length > 4096)
+    ) {
+      throw new GateExecutionServiceError(
+        "GATE_CANDIDATE_ROOT_INVALID",
+        "The candidate root must be a non-empty bounded path"
+      );
+    }
     const validatedArgs = GatesRunArgs.parse(args);
     const env = getMCPEnvironment();
+    let repoRoot: string;
+    try {
+      repoRoot = resolveGateRepositoryRoot(
+        path.resolve(serverBaseDir, validatedArgs.repoRoot ?? ".")
+      );
+    } catch {
+      throw new GateExecutionServiceError(
+        "GATE_CANDIDATE_ROOT_INVALID",
+        "The candidate root must identify an available Git repository"
+      );
+    }
     const artifact = new PlanArtifactService().resolve({
       planFile: validatedArgs.planFile,
-      workingDir: process.cwd(),
-      profileDir: env.LEX_PR_PROFILE_DIR,
+      workingDir: repoRoot,
+      profileDir: validatedArgs.repoRoot ? undefined : env.LEX_PR_PROFILE_DIR,
+      allowProfileFallback: validatedArgs.repoRoot === undefined,
     });
 
     // Determine output directory
-    const outDir = validatedArgs.outDir || path.join(path.dirname(artifact.filePath), "gates");
+    const outDir = validatedArgs.outDir
+      ? path.resolve(repoRoot, validatedArgs.outDir)
+      : path.join(path.dirname(artifact.filePath), "gates");
 
     const summary = (
       await new GateExecutionService().run({
         plan: artifact.plan,
-        repoRoot: validatedArgs.repoRoot,
+        repoRoot,
         artifactDir: outDir,
         timeoutMs: validatedArgs.timeoutMs,
         onlyItem: validatedArgs.onlyItem,
@@ -1863,7 +1759,9 @@ async function handleGatesRun(
 
     if (error instanceof GateExecutionServiceError) {
       throwMcpAXError(
-        ErrorCode.InternalError,
+        error.code === "GATE_CANDIDATE_ROOT_INVALID"
+          ? ErrorCode.InvalidParams
+          : ErrorCode.InternalError,
         mcpToolError(error.code, error.message, { tool: "gates.run" })
       );
     }

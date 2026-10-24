@@ -41,7 +41,9 @@ export type RepoTarget = z.infer<typeof RepoTarget>;
 
 export const PlanCreateArgs = z.object({
   json: z.boolean().optional(),
-  outDir: z.string().optional(),
+  outDir: z.string().min(1).max(4096).optional(),
+  repoRoot: z.string().min(1).max(4096).optional(),
+  profileDir: z.string().min(1).max(4096).optional(),
   // GitHub auto-discovery options
   fromGithub: z.boolean().optional(),
   query: z.string().optional(),
@@ -98,6 +100,8 @@ export type ProfileResolveArgs = z.infer<typeof ProfileResolveArgs>;
 export interface PlanCreateResult {
   plan: object;
   outDir: string;
+  routing: import("../application/plan-creation-operation-service.js").PlanRoutingReceipt;
+  files: import("../application/plan-creation-operation-service.js").PlanCreationOperationResult["files"];
 }
 
 export interface GatesRunResult {

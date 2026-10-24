@@ -286,6 +286,7 @@ function generateGatesForMultiRepoPR(pr: PRWithRepo, options: MultiRepoPlanOptio
     gates.push({
       name: gateName,
       run: getStandardGateCommand(gateName),
+      cwd: ".",
       env: {
         PR_NUMBER: pr.number.toString(),
         PR_BRANCH: pr.head.ref,

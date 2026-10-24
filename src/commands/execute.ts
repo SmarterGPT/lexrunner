@@ -47,6 +47,12 @@ import {
   tierMetricsToJSON,
 } from "../tiers/index.js";
 import { createTurnCostTracker } from "../metrics/turncost.js";
+import {
+  assertPlanRepositoryBinding,
+  bindPlanGateWorkingDirectories,
+  RepositoryBindingError,
+  resolveExecutionRoot,
+} from "../application/repository-binding.js";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -144,10 +150,12 @@ Common Issues:
       let auditEmitter: AuditEmitter | null = null;
 
       try {
-        // Purge cache unless --keep-cache is specified
-        if (!(opts.json || deps.jsonModeActive())) {
-          purgeCache(opts.profileDir, opts.keepCache);
-        }
+        const repoRoot = resolveExecutionRoot(
+          path.resolve(process.cwd(), opts.repoRoot ?? "."),
+          false
+        );
+        const resolvedPlanFile = path.resolve(repoRoot, planFile);
+        const artifactDir = path.resolve(repoRoot, opts.artifactDir);
 
         // Initialize budget tracker from global options
         const programOpts = deps.getProgramOpts();
@@ -175,25 +183,8 @@ Common Issues:
           throw error;
         }
 
-        // Show autopilot configuration if not in JSON mode
-        if (
-          !(opts.json || deps.jsonModeActive()) &&
-          autopilotConfig.maxLevel > AutopilotLevel.ReportOnly
-        ) {
-          console.log(
-            `🤖 Autopilot Level ${autopilotConfig.maxLevel}: ${getAutopilotLevelDescription(
-              autopilotConfig.maxLevel
-            )}`
-          );
-          if (autopilotConfig.dryRun) {
-            console.log("   Mode: Dry run (preview only)");
-          }
-          console.log("");
-        }
-
-        const planContent = fs.readFileSync(planFile, "utf-8");
+        const planContent = fs.readFileSync(resolvedPlanFile, "utf-8");
         let plan = loadPlan(planContent);
-        const repoRoot = opts.repoRoot ?? process.cwd();
         const timeoutMs = Number(opts.timeout);
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86_400_000) {
           throw new Error("--timeout must be an integer from 1 through 86400000 milliseconds");
@@ -212,12 +203,60 @@ Common Issues:
             headSha: opts.implementationHead,
           });
           plan = applyGateImpactSelection(plan, impactSelection);
-          if (!opts.dryRun) {
-            impactReceiptPath = writeGateImpactReceipt(impactSelection, opts.artifactDir);
-          }
         }
 
         assertGateSelectionExists({ plan, onlyItem: opts.onlyItem, onlyGate: opts.onlyGate });
+        try {
+          assertPlanRepositoryBinding(plan, repoRoot);
+        } catch {
+          throw new GateExecutionServiceError(
+            "GATE_REPOSITORY_MISMATCH",
+            "The plan repository is not bound to this gate execution worktree"
+          );
+        }
+        try {
+          bindPlanGateWorkingDirectories(plan, repoRoot, {
+            onlyItem: opts.onlyItem,
+            onlyGate: opts.onlyGate,
+          });
+        } catch (error) {
+          const conflict =
+            error instanceof RepositoryBindingError && error.code === "PLAN_REPOSITORY_MISMATCH";
+          throw new GateExecutionServiceError(
+            conflict ? "GATE_WORKING_DIRECTORY_CONFLICT" : "GATE_WORKING_DIRECTORY_INVALID",
+            conflict
+              ? "A selected local gate working directory belongs to another candidate"
+              : "A selected local gate working directory is unavailable"
+          );
+        }
+
+        // No profile mutation, receipt write, command, or dry-run result is
+        // admitted until the plan and every selected local gate bind to this repo.
+        if (!(opts.json || deps.jsonModeActive())) {
+          purgeCache(opts.profileDir, opts.keepCache, {
+            baseDir: repoRoot,
+            ignoreEnvironment: Boolean(opts.repoRoot && !opts.profileDir),
+          });
+        }
+        if (impactSelection && !opts.dryRun) {
+          impactReceiptPath = writeGateImpactReceipt(impactSelection, artifactDir);
+        }
+
+        // Show autopilot configuration if not in JSON mode
+        if (
+          !(opts.json || deps.jsonModeActive()) &&
+          autopilotConfig.maxLevel > AutopilotLevel.ReportOnly
+        ) {
+          console.log(
+            `🤖 Autopilot Level ${autopilotConfig.maxLevel}: ${getAutopilotLevelDescription(
+              autopilotConfig.maxLevel
+            )}`
+          );
+          if (autopilotConfig.dryRun) {
+            console.log("   Mode: Dry run (preview only)");
+          }
+          console.log("");
+        }
 
         // Parse tier overrides from CLI
         const tierOverrides = opts.tierOverride ? parseTierOverrides(opts.tierOverride) : [];
@@ -266,7 +305,9 @@ Common Issues:
 
         // Initialize audit emitter if profile is not 'off'
         if (opts.audit && opts.audit !== "off") {
-          const auditDir = opts.auditDir || path.join(opts.artifactDir, "audit");
+          const auditDir = opts.auditDir
+            ? path.resolve(repoRoot, opts.auditDir)
+            : path.join(artifactDir, "audit");
           const programOpts = deps.getProgramOpts();
           const cliKey = programOpts.auditKey as string | undefined;
           const envKey = process.env.LEX_AUDIT_KEY_HEX;
@@ -437,7 +478,7 @@ Common Issues:
         const gateExecution = await new GateExecutionService().run({
           plan,
           executionState,
-          artifactDir: opts.artifactDir,
+          artifactDir,
           timeoutMs,
           progressReporter,
           skipValidation,
