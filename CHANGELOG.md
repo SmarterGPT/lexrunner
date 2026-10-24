@@ -6,49 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-24
+
 ### Added
 
-- Explicit durable gate operations through CLI `gate start/status/cancel` and MCP
-  `gates.start/status/cancel`. A detached worker retains a frozen plan, candidate,
-  idempotent admission and gate receipts across observer disconnects.
-- Cooperative cancellation stops future commands and retries after active gates settle.
-  Missing or stale worker observations remain unknown and never trigger automatic replay.
-- Optional retained-artifact read-back through existing status CLI, SDK and MCP
-  surfaces, with bounded raw-byte checks and explicit incomplete observations.
-- Public compact JSON digest helper and compatibility profile name, preserving
-  the existing canonical bytes and schema hashes.
+- Durable gate operations through CLI `gate start/status/cancel` and MCP
+  `gates.start/status/cancel`. Frozen candidate identity, idempotent admission,
+  receipts, status, and cooperative cancellation survive observer disconnects.
+- Bounded retained-artifact inspection through status CLI, SDK, and MCP surfaces.
+  Missing or changed evidence remains incomplete and cannot grant merge eligibility.
+- Durable worker dispatch, observation, reconciliation, evidence snapshots, structured
+  receipts, and human-question/answer evidence foundations for ADR-010 coordination.
+- A public compact-JSON SHA-256 helper and explicit compatibility profile name,
+  preserving the existing canonical bytes and schema hashes.
 
 ### Fixed
 
-- Local dogfood installation now rejects noncanonical packed executable headers
-  before any target mutation, while preserving exact post-install file equality and
-  recording an unchanged-target refusal phase and stable error code.
-- npm policy-runtime probes now retain bounded per-probe timing, selector,
-  exit/signal/timeout and runtime-identity diagnostics without stdout/stderr,
-  automatic retry or a false qualification claim on failure.
-- Plan creation now binds explicit repository, profile, query, output and gate
-  routing across CLI and both MCP adapters. Cross-repository mismatches and
-  unsafe search qualifiers fail before GitHub access or artifact writes; gate
-  execution rejects plans bound to a different worktree. Snapshots fingerprint
-  that selected worktree, and existing multi-repository synthesis remains available
-  while recording no executable gate root. Routing receipts remain non-authorizing
-  and report only the discovery query actually executed.
-- Local gate cwd is confined to the selected physical worktree in service, raw,
-  and persisted-resume execution. Unsupported multi-repository plans fail closed
-  before apply/checkpoint/resume mutation, and colliding plan companion outputs
-  are rejected before network access or writes.
-- Explicit MCP gate roots no longer import ambient profile plans, invalid candidate
-  roots map to invalid parameters, grouped search qualifiers remain confined, and
-  CLI dry-run/cache/audit plus resume paths bind the repository before side effects.
-- Evidence status accepts an explicit repository root from a non-Git MCP startup
-  folder, while retaining candidate/hash validation and unverified merge authority.
-- CI package qualification activates the exact npm runtime required by its policy
-  observer. Packed-process timeout tests track owned timers independently of the
-  test runner's ambient timers.
-- Restore the public multi-repository MCP argument schema, including fractional
-  numeric priorities and their default, and create missing artifact directories
-  through a pinned physical ancestor. Refresh production dependencies for the
-  current Zod, body-parser, fast-uri and transitive advisory fixes.
+- Bind plan creation, gate execution, dry runs, status, snapshots, and resume paths
+  to the explicitly selected repository and physical worktree. Unsafe qualifiers,
+  cross-repository mismatches, ambiguous output paths, and unsupported executable
+  multi-repository plans fail before side effects.
+- Make blank-repository onboarding schema-valid and preserve authored standard and
+  enterprise profile files unless `--force` is explicit. Protected, malformed,
+  missing, or changing profiles fail closed across CLI and both MCP adapters.
+- Restore the public multi-repository MCP argument contract and align workflow-guide,
+  doctor, configuration, and write-protection errors across source and published MCP.
+- Reject pattern artifact declarations before gate dispatch and verify retained
+  diagnostic and compact reports against their actual bounded artifacts.
+- Harden the local dogfood installer around exact source/runtime identity,
+  executable headers, strict install-script policy, and unchanged-target refusal.
+- Make the dogfood merge-weave helper preserve argument boundaries, validate and
+  order Plans fail closed, invalidate stale reports, propagate preview/execution
+  failures, and report the branch resolved into the validated Plan.
+
+### Security
+
+- Update audited runtime and transitive dependencies, including MCP SDK, Sharp,
+  Zod, body-parser, and fast-uri fixes.
+- Harden physical artifact-directory admission, pinned writers, package-policy
+  runtime observation, and signed-tag/OIDC release evidence.
+
+### Compatibility and limits
+
+- Existing package exports, `lexrunner` and `lex-pr`, Plan Schema 1.0.1, Node.js
+  24+, and exact `@smartergpt/lex@4.0.3` remain unchanged.
+- The MCP inventory grows additively from 34 to 37 tools.
+- Worker-continuation, native Windows boundary, and human-host work remains bounded
+  application or qualification evidence. This release does not enable a public
+  headless launcher, production native host, trusted human signer, autonomous retry,
+  merge authority, or release authority.
 
 ## [2.4.0] - 2026-09-09
 

@@ -29,7 +29,7 @@ describe("LexRunner current release readiness", () => {
       scripts: Record<string, string>;
     }>("package.json");
 
-    expect(packageJson.version).toBe("2.4.0");
+    expect(packageJson.version).toBe("2.5.0");
     expect(packageJson.engines.node).toBe(">=24");
     expect(packageJson.dependencies["@smartergpt/lex"]).toBe("4.0.3");
     expect(packageJson.bin["lexrunner"]).toBe("dist/cli.js");
@@ -68,6 +68,7 @@ describe("LexRunner current release readiness", () => {
       readme,
       changelog,
       currentReleaseNotes,
+      durableOperationsReleaseNotes,
       frozenInputReleaseNotes,
       openSourceReleaseNotes,
       releaseNotes,
@@ -82,6 +83,7 @@ describe("LexRunner current release readiness", () => {
       read("README.md"),
       read("CHANGELOG.md"),
       read("docs/releases/2.3.0.md"),
+      read("docs/releases/2.5.0.md"),
       read("docs/releases/2.2.0.md"),
       read("docs/releases/2.1.0.md"),
       read("docs/releases/2.0.0.md"),
@@ -94,7 +96,13 @@ describe("LexRunner current release readiness", () => {
       read("scripts/check-release-drift.mjs"),
     ]);
 
-    expect(readme).toContain("Current repository package version: **2.4.0**");
+    expect(readme).toContain("Current repository package version: **2.5.0**");
+    expect(readme).toContain("[2.5.0 durable-operations release](docs/releases/2.5.0.md)");
+    expect(changelog).toContain("## [2.5.0] - 2026-10-24");
+    expect(durableOperationsReleaseNotes).toContain("`gate start/status/cancel`");
+    expect(durableOperationsReleaseNotes).toContain("37 MCP tools");
+    expect(durableOperationsReleaseNotes).toContain("public headless launcher");
+    expect(durableOperationsReleaseNotes).toContain("signed `v2.5.0` tag");
     const progressiveHelpNotes = await read("docs/releases/2.4.0.md");
     expect(progressiveHelpNotes).toContain("`--help-all`");
     expect(progressiveHelpNotes).toContain("clean registry consumer check");

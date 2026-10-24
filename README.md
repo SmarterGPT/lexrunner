@@ -17,19 +17,20 @@ branch, pushing, opening a PR, or merging requires separate approval.
 
 ## Start here
 
-The [2.4.0 release](docs/releases/2.4.0.md) makes `lexrunner --help` show the main work and integration families with a first-use
-path. Use `lexrunner --help-all` for every family and compatibility alias, or
-`lexrunner <command> --help` for full options and nested operations. Help changes
-presentation only; command effects and authority requirements still apply.
-Earlier 2.3.0 packages do not contain this help view or `--help-all`.
+The [2.5.0 release](docs/releases/2.5.0.md) adds durable gate operations, bounded retained-evidence
+inspection, safer repository-bound planning, and preservation-first workspace onboarding. The progressive
+help introduced in 2.4.0 remains available: use `lexrunner --help-all` for every family and
+compatibility alias, or `lexrunner <command> --help` for full options and nested operations.
+Presentation, guidance, and retained evidence do not grant execution or merge authority.
 
 For your first trial, install **LexRunner only** in a GitHub repository with open
 PRs. Node.js 24+ and Git are required. npm installs LexRunner's dependencies; you
 do not need to install Lex, AXF, LexSona, a policy-host service, or an MCP server
-separately for this CLI workflow. These examples use the published 2.4.0 release.
+separately for this CLI workflow. These examples target 2.5.0; verify registry availability rather
+than inferring publication from this repository.
 
 ```bash
-npm install --save-dev @smartergpt/lexrunner@2.4.0
+npm install --save-dev @smartergpt/lexrunner@2.5.0
 npx lexrunner --version
 npx lexrunner weave discover --json
 ```
@@ -124,11 +125,13 @@ The checked-in package version is the single source for `lexrunner --version` an
 
 <!-- BEGIN GENERATED PACKAGE VERSION -->
 
-Current repository package version: **2.4.0**. npm availability and dist-tags are separate
+Current repository package version: **2.5.0**. npm availability and dist-tags are separate
 release evidence; inspect the registry rather than inferring publication from source metadata.
 <!-- END GENERATED PACKAGE VERSION -->
 
-See the [2.4.0 progressive-help release](docs/releases/2.4.0.md), the [2.3.0 selected-work release](docs/releases/2.3.0.md), the
+See the [2.5.0 durable-operations release](docs/releases/2.5.0.md), the
+[2.4.0 progressive-help release](docs/releases/2.4.0.md), the
+[2.3.0 selected-work release](docs/releases/2.3.0.md), the
 [2.2.0 frozen-input release](docs/releases/2.2.0.md), the
 [2.1.0 open-source release](docs/releases/2.1.0.md), the
 [2.0.2 generated timeout correction](docs/releases/2.0.2.md), the
