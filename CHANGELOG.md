@@ -20,6 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Fixed
 
+- Local dogfood installation now rejects noncanonical packed executable headers
+  before any target mutation, while preserving exact post-install file equality and
+  recording an unchanged-target refusal phase and stable error code.
+- npm policy-runtime probes now retain bounded per-probe timing, selector,
+  exit/signal/timeout and runtime-identity diagnostics without stdout/stderr,
+  automatic retry or a false qualification claim on failure.
 - Plan creation now binds explicit repository, profile, query, output and gate
   routing across CLI and both MCP adapters. Cross-repository mismatches and
   unsafe search qualifiers fail before GitHub access or artifact writes; gate

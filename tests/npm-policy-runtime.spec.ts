@@ -25,6 +25,8 @@ function fixture({
   installUsage = "npm install --allow-scripts --strict-allow-scripts",
   versionExit = 0,
   changeDuringProbe = false,
+  delayCommand = "",
+  delayMs = 0,
   pendingOutput = "No packages with unreviewed install scripts.",
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lexrunner-npm-runtime-"));
@@ -34,13 +36,22 @@ function fixture({
     JSON.stringify({ packageManager: "npm@11.16.0", engines: { node: ">=24" } })
   );
   const npmCliPath = path.join(projectRoot, "npm-cli.cjs");
+  const tracePath = path.join(projectRoot, "probe-trace.jsonl");
   fs.writeFileSync(
     npmCliPath,
     `
     const fs = require("node:fs");
     const command = process.argv[2];
+    fs.appendFileSync(${JSON.stringify(tracePath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+    if (command === ${JSON.stringify(delayCommand)}) {
+      process.stdout.write("SECRET_STDOUT");
+      process.stderr.write("SECRET_STDERR");
+      const deadline = Date.now() + ${JSON.stringify(delayMs)};
+      while (Date.now() < deadline) {}
+    }
     if (command === "--version") {
       ${changeDuringProbe ? 'fs.appendFileSync(__filename, "\\n// replaced during observation\\n");' : ""}
+      console.error("unretained probe output");
       console.log(${JSON.stringify(version)});
       process.exit(${versionExit});
     } else if (command === "approve-scripts") {
@@ -54,7 +65,7 @@ function fixture({
     Object.entries(process.env).filter(([key]) => !/^(?:node_options|npm_execpath)$/i.test(key))
   );
   env.npm_execpath = npmCliPath;
-  return { projectRoot, npmCliPath, env };
+  return { projectRoot, npmCliPath, tracePath, env };
 }
 
 describe("observed npm install-policy runtime", () => {
@@ -114,7 +125,104 @@ describe("observed npm install-policy runtime", () => {
         .digest("hex")
     );
     expect(Object.isFrozen(observation)).toBe(true);
+    expect(observation.probes).toHaveLength(4);
+    expect(observation.probes.map((probe: { selector: string }) => probe.selector)).toEqual([
+      "node-version",
+      "npm-version",
+      "approve-scripts-usage",
+      "install-usage",
+    ]);
+    expect(observation.probes.map((probe: { arguments: string[] }) => probe.arguments)).toEqual([
+      ["--version"],
+      [fs.realpathSync(input.npmCliPath), "--version"],
+      [fs.realpathSync(input.npmCliPath), "approve-scripts", "--usage"],
+      [fs.realpathSync(input.npmCliPath), "install", "--usage"],
+    ]);
+    for (const probe of observation.probes) {
+      expect(probe).toMatchObject({
+        executable: fs.realpathSync(process.execPath),
+        timeoutMs: 10_000,
+        maxOutputBytesPerStream: 16 * 1024,
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        spawnErrorCode: null,
+        runtime: {
+          nodeExecutable: fs.realpathSync(process.execPath),
+          npmCliPath: fs.realpathSync(input.npmCliPath),
+        },
+      });
+      expect(Number.isSafeInteger(probe.elapsedMs)).toBe(true);
+      expect(probe.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(Object.isFrozen(probe)).toBe(true);
+      expect(Object.isFrozen(probe.arguments)).toBe(true);
+      expect(Object.isFrozen(probe.runtime)).toBe(true);
+    }
+    expect(JSON.stringify(observation)).not.toContain("unretained probe output");
     expect(() => assertNpmPolicyRuntimeUnchanged(observation)).not.toThrow();
+  });
+
+  it("retains bounded timeout diagnostics exactly once without output or retry", () => {
+    const input = fixture({ delayCommand: "install", delayMs: 5_000 });
+    let failure: any;
+    try {
+      observeNpmPolicyRuntime({ ...input, probeTimeoutMs: 2_000 });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "NPM_POLICY_RUNTIME_PROBE_FAILED" });
+    expect(failure.npmRuntimeObservation).toMatchObject({
+      probeTimeoutMs: 2_000,
+      npmCliPath: fs.realpathSync(input.npmCliPath),
+    });
+    expect(failure.npmRuntimeObservation.probes).toHaveLength(4);
+    expect(failure.npmRuntimeObservation.probes[3]).toMatchObject({
+      selector: "install-usage",
+      target: "npm",
+      timeoutMs: 2_000,
+      maxOutputBytesPerStream: 16 * 1024,
+      exitCode: null,
+      timedOut: true,
+      spawnErrorCode: "ETIMEDOUT",
+    });
+    const trace = fs
+      .readFileSync(input.tracePath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(trace).toEqual([["--version"], ["approve-scripts", "--usage"], ["install", "--usage"]]);
+    expect(JSON.stringify(failure.npmRuntimeObservation)).not.toContain("unretained probe output");
+    expect(JSON.stringify(failure.npmRuntimeObservation)).not.toContain("SECRET_STDOUT");
+    expect(JSON.stringify(failure.npmRuntimeObservation)).not.toContain("SECRET_STDERR");
+    expect(failure.message).not.toContain("SECRET_STDOUT");
+    expect(failure.message).not.toContain("SECRET_STDERR");
+    expect(JSON.stringify(failure.npmRuntimeObservation)).not.toMatch(/stdout|stderr/i);
+  });
+
+  it("keeps caller-selected probe deadlines within the bounded diagnostic contract", () => {
+    const input = fixture();
+    for (const probeTimeoutMs of [0, 1.5, 60_001]) {
+      expect(() => observeNpmPolicyRuntime({ ...input, probeTimeoutMs })).toThrow(
+        "integer from 1 through 60000"
+      );
+    }
+    expect(fs.existsSync(input.tracePath)).toBe(false);
+  });
+
+  it("never retains malformed probe output as a semantic runtime field", () => {
+    for (const version of ["SECRET_STDOUT_NOT_A_VERSION", `${"9".repeat(1_000)}.0.0`]) {
+      const input = fixture({ version });
+      let failure: any;
+      try {
+        observeNpmPolicyRuntime(input);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure.message).toContain("malformed version response");
+      expect(failure.npmRuntimeObservation.npmVersion).toBeUndefined();
+      expect(JSON.stringify(failure.npmRuntimeObservation)).not.toContain(version);
+      expect(failure.message).not.toContain(version);
+    }
   });
 
   it("selects npm_execpath deterministically without searching PATH", () => {
