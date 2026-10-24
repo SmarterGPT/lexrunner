@@ -367,6 +367,22 @@ function createServer(options?: McpServerOptions): Server {
                 type: "string",
                 description: "GitHub repository name (auto-detected from git remote)",
               },
+              repos: {
+                type: "array",
+                maxItems: 32,
+                description:
+                  "Multi-repository synthesis targets. Generated plans are artifacts only; execution and apply fail closed.",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    owner: { type: "string" },
+                    repo: { type: "string" },
+                    priority: { type: "integer" },
+                  },
+                  required: ["owner", "repo"],
+                },
+              },
               requiredGates: {
                 type: "array",
                 description: "List of required gates (default: lint,typecheck,test)",

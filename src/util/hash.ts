@@ -4,6 +4,7 @@
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 
 /**
  * Compute SHA-256 hash of buffer or string
@@ -53,12 +54,12 @@ export function environmentFingerprint(): {
 /**
  * Generate deterministic lockfile hash (if available)
  */
-export function lockfileHash(): string | null {
+export function lockfileHash(baseDir = process.cwd()): string | null {
   const lockfiles = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"];
 
   for (const lockfile of lockfiles) {
     try {
-      return sha256FileRaw(lockfile);
+      return sha256FileRaw(path.join(baseDir, lockfile));
     } catch {
       // File doesn't exist, try next
       continue;

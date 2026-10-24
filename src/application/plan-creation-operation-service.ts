@@ -64,9 +64,14 @@ export const PlanCreationOperationArgsSchema = z
     target: boundedLabel.optional(),
   })
   .strict()
-  .refine((value) => Boolean(value.owner) === Boolean(value.repo), {
-    message: "owner and repo must be supplied together",
-  });
+  .refine(
+    (value) =>
+      (value.repos !== undefined && value.repos.length > 0) ||
+      Boolean(value.owner) === Boolean(value.repo),
+    {
+      message: "owner and repo must be supplied together",
+    }
+  );
 
 export type PlanCreationOperationArgs = z.infer<typeof PlanCreationOperationArgsSchema>;
 
@@ -76,8 +81,10 @@ export interface PlanRoutingReceipt {
   authorizesExecution: false;
   authorizesMerge: false;
   requestedRepository?: { owner: string; repo: string };
+  requestedRepositories?: Array<{ owner: string; repo: string; priority?: number }>;
   resolvedRepository: {
     root: string;
+    role?: "artifact-host";
     remote?: string;
     owner?: string;
     repo?: string;
@@ -90,12 +97,21 @@ export interface PlanRoutingReceipt {
   discovery: {
     mode: "github" | "configuration";
     query?: string;
+    queries?: Array<{ repository: string; query: string }>;
+    multiRepositorySynthesis?: true;
     querySource: "explicit" | "profile" | "none";
     target?: string;
     targetSource: "explicit" | "profile" | "repository-default";
   };
   output: { root: string; source: "explicit" | "profile-default" };
-  gate: { cwd: "."; repositoryRoot: string };
+  gate:
+    | { cwd: "."; repositoryRoot: string }
+    | {
+        cwd: null;
+        repositoryRoot: null;
+        executable: false;
+        reason: "multi-repository-synthesis-only";
+      };
 }
 
 export interface PlanCreationOperationResult {
@@ -145,23 +161,22 @@ export class PlanCreationOperationService {
       );
     }
     const args = { ...parsed.data };
-    if (args.repos && args.repos.length > 0) {
-      throw new PlanCreationOperationError(
-        "PLAN_CREATION_MULTI_REPO_UNSUPPORTED",
-        "Multi-repository plan creation is not executable safely; create one repository-bound plan per worktree"
-      );
-    }
+    const repositories = args.repos && args.repos.length > 0 ? args.repos : undefined;
 
     // Local binding is deliberately first: no token lookup, API call, or write may
     // occur before an explicit repository mismatch has failed closed.
     const requestedRoot = args.repoRoot
       ? path.resolve(request.startupDir, args.repoRoot)
       : request.startupDir;
-    const explicitRepositoryRouting = Boolean(args.repoRoot || args.owner || args.repo);
+    const explicitRepositoryRouting = Boolean(
+      args.repoRoot || (!repositories && (args.owner || args.repo))
+    );
     let repository: RepositoryBindingObservation | undefined;
     let repositoryRoot: string;
     try {
-      if (args.fromGithub || args.owner || args.repo) {
+      if (repositories) {
+        repositoryRoot = resolveExecutionRoot(requestedRoot, false);
+      } else if (args.fromGithub || args.owner || args.repo) {
         repository = assertRequestedRepositoryBinding({
           repoRoot: requestedRoot,
           owner: args.owner,
@@ -192,14 +207,25 @@ export class PlanCreationOperationService {
     });
     const detected = detectGitHubModeFromProfile(resolvedProfile.path);
     const autoDetectedGitHub = !args.fromGithub && detected.shouldUseGitHub;
-    const fromGithub = Boolean(args.fromGithub || autoDetectedGitHub);
-    if (fromGithub && !repository) {
+    const fromGithub = Boolean(repositories || args.fromGithub || autoDetectedGitHub);
+    if (fromGithub && !repository && !repositories) {
       repository = assertRequestedRepositoryBinding({ repoRoot: repositoryRoot });
     }
     const query = args.query ?? detected.scopeConfig?.query;
     const labels = args.labels ?? detected.scopeConfig?.labels;
     const target = args.target ?? detected.scopeConfig?.target;
-    if (fromGithub && repository) {
+    let exactQueries: Array<{ repository: string; query: string }> | undefined;
+    if (repositories && query) {
+      exactQueries = repositories.map(({ owner, repo }) => ({
+        repository: `${owner}/${repo}`,
+        query: buildRepositoryBoundPullRequestQuery({
+          query,
+          owner,
+          repo,
+          state: "open",
+        }),
+      }));
+    } else if (fromGithub && repository) {
       // Validate the caller/profile query and interpolated routing fields before
       // token lookup, client construction, network access or writes.
       buildRepositoryBoundPullRequestQuery({
@@ -241,7 +267,21 @@ export class PlanCreationOperationService {
     let plan: Plan;
     let inputs: InputConfig | undefined;
     let exactQuery: string | undefined;
-    if (fromGithub) {
+    if (repositories) {
+      plan = await this.plans.fromMultipleRepositories(repositories, {
+        query,
+        labels,
+        excludePRs: args.excludePRs,
+        includeDrafts: args.includeDrafts,
+        target,
+        githubToken: args.githubToken,
+        policy: {
+          requiredGates: args.requiredGates ?? ["lint", "typecheck", "test"],
+          maxWorkers: args.maxWorkers ?? 2,
+        },
+        tierOverrides: request.tierOverrides,
+      });
+    } else if (fromGithub) {
       if (!repository) {
         throw new PlanCreationOperationError(
           "PLAN_CREATION_FAILED",
@@ -287,11 +327,13 @@ export class PlanCreationOperationService {
       authority: "unverified",
       authorizesExecution: false,
       authorizesMerge: false,
-      ...(args.owner && args.repo
+      ...(!repositories && args.owner && args.repo
         ? { requestedRepository: { owner: args.owner, repo: args.repo } }
         : {}),
+      ...(repositories ? { requestedRepositories: repositories } : {}),
       resolvedRepository: {
         root: repositoryRoot,
+        ...(repositories ? { role: "artifact-host" as const } : {}),
         ...(repository
           ? {
               remote: repository.remote,
@@ -314,6 +356,8 @@ export class PlanCreationOperationService {
         ...(fromGithub
           ? {
               query: exactQuery,
+              ...(exactQueries ? { queries: exactQueries } : {}),
+              ...(repositories ? { multiRepositorySynthesis: true as const } : {}),
             }
           : {}),
         querySource: args.query ? "explicit" : detected.scopeConfig?.query ? "profile" : "none",
@@ -328,13 +372,22 @@ export class PlanCreationOperationService {
         root: outDir,
         source: args.planFile || args.outDir ? "explicit" : "profile-default",
       },
-      gate: { cwd: ".", repositoryRoot },
+      gate: repositories
+        ? {
+            cwd: null,
+            repositoryRoot: null,
+            executable: false,
+            reason: "multi-repository-synthesis-only",
+          }
+        : { cwd: ".", repositoryRoot },
     };
 
     return {
       plan,
       ...(inputs ? { inputs } : {}),
-      snapshot: fromGithub ? generateGitHubSnapshot(plan) : generateSnapshot(plan, inputs!),
+      snapshot: fromGithub
+        ? generateGitHubSnapshot(plan, repositories ? null : repositoryRoot)
+        : generateSnapshot(plan, inputs!, repositoryRoot),
       routing,
       files,
     };

@@ -23,8 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - Plan creation now binds explicit repository, profile, query, output and gate
   routing across CLI and both MCP adapters. Cross-repository mismatches and
   unsafe search qualifiers fail before GitHub access or artifact writes; gate
-  execution rejects plans bound to a different worktree. Routing receipts remain
-  non-authorizing and report only the discovery query actually executed.
+  execution rejects plans bound to a different worktree. Snapshots fingerprint
+  that selected worktree, and existing multi-repository synthesis remains available
+  while recording no executable gate root. Routing receipts remain non-authorizing
+  and report only the discovery query actually executed.
 - Local gate cwd is confined to the selected physical worktree in service, raw,
   and persisted-resume execution. Unsupported multi-repository plans fail closed
   before apply/checkpoint/resume mutation, and colliding plan companion outputs

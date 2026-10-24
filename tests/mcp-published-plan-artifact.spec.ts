@@ -32,7 +32,11 @@ describe("published plan artifact parity", () => {
       repoRoot: { type: "string", minLength: 1, maxLength: 4096 },
       profileDir: { type: "string", minLength: 1, maxLength: 4096 },
     });
-    expect(planCreateTool.inputSchema.properties.repos).toBeUndefined();
+    expect(planCreateTool.inputSchema.properties.repos).toMatchObject({
+      type: "array",
+      maxItems: 32,
+      items: { required: ["owner", "repo"] },
+    });
     for (const name of ["status", "merge-order", "gates.run", "merge.apply"]) {
       const tool = inventory.result.tools.find(
         (candidate: { name: string }) => candidate.name === name

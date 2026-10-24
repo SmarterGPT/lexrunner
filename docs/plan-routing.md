@@ -9,7 +9,7 @@ explicit before it can safely produce the frozen integration input. `lexrunner p
 
 The service copies and strictly validates caller input, then:
 
-1. resolves `repoRoot` against the adapter's captured startup directory and finds its physical Git
+1. resolves `repoRoot` against the adapter's captured startup directory and finds its physical
    root;
 2. reads the local `origin` remote without credentials or network access and requires it to
    identify the actual `github.com` host;
@@ -17,8 +17,8 @@ The service copies and strictly validates caller input, then:
 4. resolves an explicit profile, otherwise a repository-local profile for explicit routing;
 5. applies explicit query, label, target and output arguments ahead of profile defaults;
 6. rejects colliding plan/snapshot/receipt output paths;
-7. performs GitHub discovery, verifies that the synthesized frozen plan still matches the local
-   worktree, and only then permits the adapter to write;
+7. performs single-repository GitHub discovery, verifies that the synthesized frozen plan still
+   matches the local worktree, and only then permits the adapter to write;
 8. writes `plan.json`, `snapshot.md`, and `routing-receipt.json` together.
 
 For a cross-repository call, provide all three binding fields:
@@ -39,6 +39,12 @@ rejected before search, including qualifiers with quoted values. Labels remain a
 intersection filter. Both MCP plan-creation adapters require `githubToken`, `GITHUB_TOKEN`, or
 `GH_TOKEN` for GitHub mode; the CLI may use GitHub's unauthenticated public API.
 
+The MCP `repos` array retains the existing multi-repository synthesis surface. Each explicit query
+is bounded to its declared repository before client construction. Its receipt identifies the
+physical output host, lists the requested repositories, and records `gate.executable: false` with
+no repository cwd. The snapshot omits a single-worktree lockfile hash because no one worktree owns
+that synthesis.
+
 ## Receipt and execution boundary
 
 The routing receipt exposes requested and observed repository identity, physical root, normalized
@@ -56,7 +62,9 @@ It always declares:
 ```
 
 Generated standard gates use `cwd: "."`, interpreted relative to the selected physical repository
-root. Before creating artifacts or starting commands, both `GateExecutionService` and the raw
+root. The snapshot lockfile fingerprint is read from that same selected worktree, while the footer
+reports the bundled LexRunner version rather than a caller repository's package version. Before
+creating artifacts or starting commands, both `GateExecutionService` and the raw
 `executeGatesWithPolicy` compatibility path compare a frozen plan's repository with the selected
 worktree remote and confine local gate cwd to that worktree. CLI and MCP gate adapters resolve a
 relative plan and artifact directory from explicit `repoRoot`, not the server startup repository.

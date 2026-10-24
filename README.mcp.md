@@ -191,6 +191,9 @@ Creates a plan from configuration files or auto-discovers from GitHub PRs. This 
   this field, `GITHUB_TOKEN`, or `GH_TOKEN`.
 - `owner` (string, optional): GitHub repository owner (auto-detected from git remote)
 - `repo` (string, optional): GitHub repository name (auto-detected from git remote)
+- `repos` (array, optional): Existing multi-repository synthesis mode. Each entry supplies
+  `owner`, `repo`, and optional `priority`; the resulting plan is an artifact only and cannot be
+  executed or applied in one worktree.
 - `requiredGates` (array of strings, optional): Required gates (default: ["lint", "typecheck", "test"])
 - `maxWorkers` (number, optional): Maximum parallel workers (default: 2)
 - `target` (string, optional): Target branch for merging PRs (default: repo default branch)
@@ -222,8 +225,9 @@ repository-bound GitHub PR search. Queries that can broaden scope (`repo:`, `org
 qualifier values. A receipt records an exact query only when a query used GitHub search; ordinary
 repository-scoped pull-request listing does not claim a search query. Explicit
 cross-repository calls should always provide `repoRoot`; unrelated environment profiles are then
-ignored unless `profileDir` is also explicit. Multi-repository plan execution is not supported and
-fails closed. Explicit plan output cannot collide with `snapshot.md` or
+ignored unless `profileDir` is also explicit. `repos` preserves multi-repository synthesis and
+records no executable gate root; multi-repository execution, checkpoint, resume, and apply remain
+unsupported and fail closed. Explicit plan output cannot collide with `snapshot.md` or
 `routing-receipt.json`. The routing receipt records consistency observations only and grants
 neither gate nor merge authority. See [repository-bound plan creation](docs/plan-routing.md).
 

@@ -72,7 +72,11 @@ describe("SDK MCP plan artifact parity", () => {
         repoRoot: { type: "string", minLength: 1, maxLength: 4096 },
         profileDir: { type: "string", minLength: 1, maxLength: 4096 },
       });
-      expect(planCreateTool?.inputSchema.properties.repos).toBeUndefined();
+      expect(planCreateTool?.inputSchema.properties.repos).toMatchObject({
+        type: "array",
+        maxItems: 32,
+        items: { required: ["owner", "repo"] },
+      });
       for (const name of ["weave_status", "merge_order", "gates_run", "merge_apply"]) {
         const tool = inventory.tools.find((candidate) => candidate.name === name);
         expect((tool?.inputSchema.properties as Record<string, unknown>).planFile).toMatchObject({

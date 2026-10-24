@@ -149,7 +149,7 @@ items:
       // Should be sorted by name for deterministic ordering
       const sortedNames = [...itemNames].sort();
       expect(itemNames).toEqual(sortedNames);
-    });
+    }, 30_000); // Five built CLI invocations can exceed the default on native Windows.
   });
 
   describe("Environment state isolation", () => {
