@@ -69,18 +69,20 @@ printf '\\037%s' "\${@:2}" >> "$LEX_PR_TEST_LOG"
 printf '\\n' >> "$LEX_PR_TEST_LOG"
 
 if [ "$1" = "weave" ] && [ "$2" = "plan" ]; then
+    output_path=""
+    target="trunk"
     while [ "$#" -gt 0 ]; do
       if [[ "$1" == --output=* ]]; then
         output_path="\${1#--output=}"
-        printf '%s\\n' '{"schemaVersion":"1.0.0","target":"main","items":[]}' > "$output_path"
-        break
       elif [ "$1" = "--output" ]; then
         shift
-        printf '%s\\n' '{"schemaVersion":"1.0.0","target":"main","items":[]}' > "$1"
-        break
+        output_path="$1"
+      elif [[ "$1" == --target=* ]]; then
+        target="\${1#--target=}"
       fi
       shift
     done
+    node -e 'const fs = require("node:fs"); fs.writeFileSync(process.argv[1], JSON.stringify({schemaVersion:"1.0.0",target:process.argv[2],items:[]}));' "$output_path" "$target"
 elif [ "$1" = "schema" ] && [ "$2" = "validate" ]; then
     if [ "$FAKE_LEX_PR_FAIL_VALIDATION" = "1" ]; then
       printf '%s\\n' 'schema validation rejected the plan' >&2
@@ -424,6 +426,30 @@ printf '{}\\n'
     expect(path.normalize(mergeCommand?.[mergeCommand.indexOf("--plan") + 1] ?? "")).toBe(
       path.normalize(generatedPlan)
     );
+    expect(fs.readFileSync(path.join(artifactsDir, "dogfood-report.md"), "utf8")).toContain(
+      "- Base Branch: release branch"
+    );
+  });
+
+  it("reports the repository default branch resolved into the generated plan", async () => {
+    const repoPath = path.join(tempDir, "default-branch-report");
+    await initRepository(repoPath);
+
+    const { result, commands, artifactsDir } = await runWithFakeLexPr(repoPath, [
+      "--from-github",
+      "--owner",
+      "example",
+      "--repo-name",
+      "project",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const planCommand = commandWithPrefix(commands, ["weave", "plan", "--from-github"]);
+    expect(planCommand?.some((argument) => argument.startsWith("--target="))).toBe(false);
+
+    const report = fs.readFileSync(path.join(artifactsDir, "dogfood-report.md"), "utf8");
+    expect(report).toContain("- Base Branch: trunk");
+    expect(report).not.toContain("- Base Branch: main");
   });
 
   it("should handle valid plan file with dry-run (default behavior)", async () => {

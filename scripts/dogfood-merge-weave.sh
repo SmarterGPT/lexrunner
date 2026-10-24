@@ -349,20 +349,31 @@ else
     exit "$PLAN_VALIDATION_EXIT_CODE"
 fi
 
+# Bind report evidence to the validated Plan rather than guessing the branch
+# selected by GitHub discovery. Node is already a runtime prerequisite for the
+# lexrunner CLI, and JSON parsing here avoids shell/grep ambiguity.
+if ! TARGET_BRANCH=$(node -e '
+const fs = require("node:fs");
+const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (typeof plan.target !== "string" || plan.target.length === 0) process.exit(1);
+process.stdout.write(plan.target);
+' "$PLAN_FILE"); then
+    print_error "Validated plan does not expose a reportable target branch: $PLAN_FILE"
+    exit 1
+fi
+
 # Show plan summary
 print_step "📊 Plan Summary:"
 if command -v jq &> /dev/null; then
     ITEM_COUNT=$(jq -r '.items | length' "$PLAN_FILE" 2>/dev/null || echo "unknown")
-    TARGET_BRANCH=$(jq -r '.target // "main"' "$PLAN_FILE" 2>/dev/null)
 
     echo "  Items:          $ITEM_COUNT"
-    echo "  Target Branch:  $TARGET_BRANCH"
-    echo "  Integration:    auto-generated"
-
 else
     print_warning "jq not found, skipping detailed plan summary"
     head -20 "$PLAN_FILE"
 fi
+echo "  Target Branch:  $TARGET_BRANCH"
+echo "  Integration:    auto-generated"
 
 # Step 2: Run gates (if available)
 print_section "Step 2: Gate Validation"
@@ -549,7 +560,7 @@ $([ "$FROM_GITHUB" = true ] && cat << GITHUB_SECTION
 
 - Owner: $GITHUB_OWNER
 - Repository: $GITHUB_REPO
-- Base Branch: ${GITHUB_BASE:-main}
+- Base Branch: $TARGET_BRANCH
 - Labels Filter: ${GITHUB_LABELS:-none}
 - Custom Query: ${GITHUB_QUERY:-none}
 
