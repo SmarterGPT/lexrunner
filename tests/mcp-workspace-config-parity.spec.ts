@@ -56,6 +56,56 @@ describe("published MCP workspace/config parity", () => {
     expect(mcpResult.contract).toBe("bounded-ax-v1");
   });
 
+  it("preserves protected-write failures across CLI and MCP adapters", async () => {
+    const root = fixtureRoot();
+    const profile = path.join(root, ".smartergpt.local");
+    fs.mkdirSync(profile, { recursive: true });
+    fs.writeFileSync(path.join(profile, "profile.yml"), "role: example\nname: Protected\n");
+    fs.writeFileSync(path.join(profile, "gates.yml"), "AUTHORED-GATES-SENTINEL\n");
+
+    const cli = await execa(
+      "node",
+      [
+        path.join(repositoryRoot, "dist", "cli.js"),
+        "workspace",
+        "init",
+        "--non-interactive",
+        "--json",
+      ],
+      { cwd: root, reject: false }
+    );
+    const published = await invoke(root, {
+      id: 11,
+      method: "tools/call",
+      params: { name: "local.init", arguments: {} },
+    });
+    const source = await withoutProfileEnvironment(() => invokeSourceLocalInitError(root));
+    const publishedError = normalizeMcpError(published.error);
+    const cliError = JSON.parse(cli.stdout).error;
+
+    expect(cli.exitCode).toBe(2);
+    expect(JSON.parse(cli.stdout)).toMatchObject({
+      success: false,
+      error: { code: "EWRITE_PROTECTED" },
+    });
+    expect(source).toEqual(publishedError);
+    expect(source).toEqual({
+      protocolCode: -32602,
+      code: "WRITE_PROTECTION_ERROR",
+      message: cliError.message,
+      data: null,
+      actions: [
+        "Use a local overlay profile (.smartergpt.local/) for write operations",
+        "Set role to 'local' or 'ci' in profile.yml",
+        "Run 'local.init' to create a writable profile",
+      ],
+      context: { operation: "local.init" },
+    });
+    expect(fs.readFileSync(path.join(profile, "gates.yml"), "utf8")).toBe(
+      "AUTHORED-GATES-SENTINEL\n"
+    );
+  });
+
   it("routes CLI and MCP configuration queries through the same bounded result", async () => {
     const root = fixtureRoot();
     fs.mkdirSync(path.join(root, ".smartergpt"), { recursive: true });
@@ -286,6 +336,74 @@ describe("published MCP workspace/config parity", () => {
 interface JsonRpcResponse {
   result: any;
   error: any;
+}
+
+interface NormalizedMcpError {
+  protocolCode: number;
+  code: string;
+  message: string;
+  data: unknown;
+  actions: string[];
+  context: Record<string, unknown>;
+}
+
+async function invokeSourceLocalInitError(cwd: string): Promise<NormalizedMcpError> {
+  const previousCwd = process.cwd();
+  let server;
+  let client: Client | undefined;
+  let captured: unknown;
+  try {
+    process.chdir(cwd);
+    server = createServer({ runStore: new InMemoryRunStore() });
+    client = new Client({ name: "local-init-parity-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      await client.callTool({ name: "local_init", arguments: {} });
+    } catch (error) {
+      captured = error;
+    }
+  } finally {
+    try {
+      if (client) await client.close();
+      if (server) await server.close();
+    } finally {
+      process.chdir(previousCwd);
+    }
+  }
+
+  if (!captured) throw new Error("Expected source local_init to reject the protected profile");
+  return normalizeMcpError(captured);
+}
+
+function normalizeMcpError(error: unknown): NormalizedMcpError {
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    !("code" in error) ||
+    typeof error.code !== "number" ||
+    !("message" in error) ||
+    typeof error.message !== "string"
+  ) {
+    throw new Error("Expected a structured MCP error");
+  }
+  const envelopeStart = error.message.indexOf("{");
+  if (envelopeStart < 0) throw new Error("Expected an AXError JSON envelope in the MCP error");
+  const envelope = JSON.parse(error.message.slice(envelopeStart)) as {
+    code: string;
+    message: string;
+    context: Record<string, unknown>;
+    nextActions: string[];
+  };
+  return {
+    protocolCode: error.code,
+    code: envelope.code,
+    message: envelope.message,
+    data: ("data" in error ? error.data : undefined) ?? null,
+    actions: envelope.nextActions,
+    context: envelope.context,
+  };
 }
 
 async function invoke(

@@ -9,7 +9,7 @@
  * Workflow action that can be taken in the current phase
  */
 export interface WorkflowAction {
-  /** MCP tool command name (e.g., 'gates_run', 'plan_validate') */
+  /** Public MCP tool command name (e.g., 'gates.run', 'status', 'merge-order') */
   command: string;
   /** Human-readable description of what this action does */
   description: string;

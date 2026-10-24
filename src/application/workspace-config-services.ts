@@ -10,7 +10,11 @@ import {
 } from "../core/bootstrap.js";
 import { initLocalOverlay, type LocalOverlayResult } from "../config/localOverlay.js";
 import { resolveConfigPath } from "../config/pathResolver.js";
-import { resolveProfile, type ResolvedProfile } from "../config/profileResolver.js";
+import {
+  resolveProfile,
+  WriteProtectionError,
+  type ResolvedProfile,
+} from "../config/profileResolver.js";
 import { createGitHubAPI } from "../github/api.js";
 import { createGitOperations } from "../git/operations.js";
 import { runEnvironmentQualityCheck } from "../hostility/index.js";
@@ -144,6 +148,7 @@ export class WorkspaceInitializationService {
         copiedFiles: boundedStrings(result.copiedFiles),
       });
     } catch (error) {
+      if (error instanceof WriteProtectionError) throw error;
       const retainedBackupPath = getRetainedBackupPath(error);
       throw new WorkspaceConfigServiceError(
         "WORKSPACE_INIT_FAILED",

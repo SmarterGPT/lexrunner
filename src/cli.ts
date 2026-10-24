@@ -1463,7 +1463,7 @@ export {
   IntegrationRecordCompatibilityError,
   IntegrationRecordCompatibilityService,
 } from "./application/integration-record-compatibility-service.js";
-export { mcpToolError } from "./errors/index.js";
+export { mcpToolError, writeProtectionError } from "./errors/index.js";
 
 // LPR-037: Workflow guidance exports for MCP
 export { createWorkflowGuide } from "./mcp/workflow/state-machine.js";

@@ -13,6 +13,7 @@ import {
   WorkspaceDiagnosticsService,
   WorkspaceInitializationService,
 } from "../../src/application/workspace-config-services.js";
+import { WriteProtectionError } from "../../src/config/profileResolver.js";
 
 const roots: string[] = [];
 
@@ -52,6 +53,17 @@ describe("workspace/config application services", () => {
 
     expect(forced.backupPath).toContain(path.join("runner", "force-backups"));
     expect(fs.readFileSync(path.join(forced.backupPath!, "marker.txt"), "utf8")).toBe("preserve");
+  });
+
+  it("preserves write-protection errors for transport adapters", () => {
+    const root = fixtureRoot();
+    const profile = path.join(root, ".smartergpt.local");
+    fs.mkdirSync(profile, { recursive: true });
+    fs.writeFileSync(path.join(profile, "profile.yml"), "role: example\nname: Protected\n");
+
+    expect(() => new WorkspaceInitializationService().run({ baseDir: root })).toThrow(
+      WriteProtectionError
+    );
   });
 
   it("makes initialization immediately visible to doctor and config queries", async () => {

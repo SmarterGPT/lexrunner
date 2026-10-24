@@ -464,7 +464,7 @@ export function writeProtectionError(message: string, operation?: string): AXErr
     message,
     [
       "Use a local overlay profile (.smartergpt.local/) for write operations",
-      "Set role to 'local' or 'ci' in manifest.yaml",
+      "Set role to 'local' or 'ci' in profile.yml",
       "Run 'local.init' to create a writable profile",
     ],
     { operation }

@@ -219,6 +219,29 @@ describe("init command with --json flag", () => {
     }
   );
 
+  it("should return the same protected-write contract for default and explicit profile routing", async () => {
+    const profileDir = path.join(testDir, ".smartergpt.local");
+    await fs.ensureDir(profileDir);
+    await fs.writeFile(path.join(profileDir, "profile.yml"), "role: example\nname: Protected\n");
+    await fs.writeFile(path.join(profileDir, "gates.yml"), "AUTHORED-GATES-SENTINEL\n");
+    const before = snapshotTree(testDir);
+
+    for (const args of [[], ["--profile-dir", ".smartergpt.local"]]) {
+      const result = await execa(
+        "node",
+        [CLI_PATH, "workspace", "init", "--non-interactive", "--json", ...args],
+        { cwd: testDir, reject: false }
+      );
+
+      expect(result.exitCode).toBe(2);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        success: false,
+        error: { code: "EWRITE_PROTECTED" },
+      });
+      expect(snapshotTree(testDir)).toEqual(before);
+    }
+  });
+
   it.each(PROFILE_ROUTE_CASES)(
     "should reject a $profileCase.name existing profile without mutation in $routeCase.name mode",
     async ({ profileCase, routeCase }) => {

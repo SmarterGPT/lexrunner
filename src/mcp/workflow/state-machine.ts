@@ -88,7 +88,7 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
       },
     ],
     recommendedAction: "gates.run",
-    documentation: "docs/merge-weave-workflow.md",
+    documentation: "README.mcp.md",
     validTransitions: ["post-gates-run", "error-recovery"],
   },
   "post-gates-run": {
@@ -116,7 +116,7 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
       },
     ],
     recommendedAction: "status",
-    documentation: "docs/merge-weave-workflow.md",
+    documentation: "README.mcp.md",
     validTransitions: ["pre-merge", "error-recovery"],
   },
   "pre-merge": {
@@ -139,7 +139,7 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
       },
     ],
     recommendedAction: "merge.apply",
-    documentation: "docs/merge-weave-workflow.md",
+    documentation: "README.mcp.md",
     validTransitions: ["post-merge", "error-recovery"],
   },
   "post-merge": {

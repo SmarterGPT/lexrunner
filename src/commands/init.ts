@@ -607,20 +607,9 @@ description: Auto-generated enterprise workspace with audit and compliance
   const runnerDir = path.join(profileDir, "runner");
   fs.mkdirSync(runnerDir, { recursive: true });
 
-  // Create basic workspace first
-  createMinimalWorkspace(baseDir, profileDir);
-
-  // Create enterprise workspace additions
-  createEnterpriseWorkspace(baseDir, profileDir, enterpriseConfig);
-
-  // Create pull-request-template.md at profile root
-  const templatePath = path.join(profileDir, "pull-request-template.md");
-  if (!fs.existsSync(templatePath)) {
-    const templateContent = getPRTemplateContent();
-    writeFileIfAbsent(templatePath, templateContent);
-  }
-
-  // Update gates.yml with enterprise gates
+  // Install enterprise gates before the standard bootstrap fills missing files.
+  // Without --force, exclusive creation preserves any admitted authored file;
+  // with --force, this enterprise-managed file is deliberately replaced.
   const gatesPath = path.join(profileDir, "gates.yml");
   const gatesContent = `version: 1
 levels:
@@ -632,17 +621,37 @@ ${enterpriseConfig.policy.requiredGates
   )
   .join("\n")}
 `;
-  fs.writeFileSync(gatesPath, gatesContent);
+  if (options.force) {
+    fs.writeFileSync(gatesPath, gatesContent);
+  } else {
+    writeFileIfAbsent(gatesPath, gatesContent);
+  }
+
+  // Create basic workspace first
+  createMinimalWorkspace(baseDir, profileDir);
+
+  // Create enterprise workspace additions
+  createEnterpriseWorkspace(baseDir, profileDir, enterpriseConfig, {
+    force: options.force === true,
+  });
+
+  // Create pull-request-template.md at profile root
+  const templatePath = path.join(profileDir, "pull-request-template.md");
+  if (!fs.existsSync(templatePath)) {
+    const templateContent = getPRTemplateContent();
+    writeFileIfAbsent(templatePath, templateContent);
+  }
 
   // Only show console output if not in JSON mode
   if (!options.jsonMode) {
+    const managedFileDisposition = options.force ? "created or replaced" : "created or preserved";
     console.log(`\n✅ Enterprise workspace initialized successfully!\n`);
     console.log(`📂 Profile directory: ${profileDir}`);
-    console.log(`\n📝 Created structure:`);
+    console.log(`\n📝 Workspace structure after initialization:`);
     console.log(`   ${profileDir}/`);
     console.log(`   ├── .lexrunner/`);
-    console.log(`   │   ├── config.yaml (enterprise configuration)`);
-    console.log(`   │   ├── gate-mapping.yaml (CI integration)`);
+    console.log(`   │   ├── config.yaml (enterprise configuration; ${managedFileDisposition})`);
+    console.log(`   │   ├── gate-mapping.yaml (CI integration; ${managedFileDisposition})`);
     console.log(`   │   ├── personas/ (team personas)`);
     if (enterpriseConfig.audit.profile !== "off") {
       console.log(`   │   └── audit/ (audit logs)`);
@@ -650,14 +659,16 @@ ${enterpriseConfig.policy.requiredGates
     console.log(`   ├── intent.md (project goals)`);
     console.log(`   ├── scope.yml (PR discovery rules)`);
     console.log(`   ├── deps.yml (dependency relationships)`);
-    console.log(`   ├── gates.yml (quality gates - updated)`);
+    console.log(`   ├── gates.yml (quality gates; ${managedFileDisposition})`);
     console.log(`   └── runner/ (working artifacts)`);
 
     if (enterpriseConfig.environment.ciProvider === "github-actions") {
       console.log(`\n   .github/`);
-      console.log(`   ├── copilot-instructions.md (GitHub Copilot setup)`);
+      console.log(
+        `   ├── copilot-instructions.md (GitHub Copilot setup; ${managedFileDisposition})`
+      );
       console.log(`   └── workflows/`);
-      console.log(`       └── merge-weave.yaml (CI workflow template)`);
+      console.log(`       └── merge-weave.yaml (CI workflow template; created or preserved)`);
     }
 
     console.log(`\n📚 Next steps:`);

@@ -623,6 +623,13 @@ const tools = {
           ],
         };
       } catch (error) {
+        if (error?.name === "WriteProtectionError") {
+          const wrapped = new Error(
+            core.canonicalJSONStringify(core.writeProtectionError(error.message, "local.init"))
+          );
+          wrapped.code = "WRITE_PROTECTION_ERROR";
+          throw wrapped;
+        }
         throw sharedServiceError(error, "local.init", "WORKSPACE_INIT_FAILED");
       }
     },
@@ -1228,6 +1235,7 @@ const INVALID_PARAMETER_CODES = new Set([
   "PLAN_NOT_FOUND",
   "PLAN_FILESYSTEM_UNSAFE",
   "PLAN_ARTIFACT_LIMIT_EXCEEDED",
+  "WRITE_PROTECTION_ERROR",
 ]);
 
 async function mutationToolCall(action, call) {

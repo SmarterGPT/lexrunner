@@ -40,6 +40,11 @@ export interface EnvironmentDetectionResult {
   detectedCI: string[];
 }
 
+export interface CreateEnterpriseWorkspaceOptions {
+  /** Replace enterprise-managed files. Existing CI workflows are always preserved. */
+  force?: boolean;
+}
+
 /**
  * Detect project environment (monorepo vs multi-repo, CI provider)
  */
@@ -405,7 +410,8 @@ jobs:
 export function createEnterpriseWorkspace(
   baseDir: string,
   profileDir: string,
-  config: EnterpriseConfig
+  config: EnterpriseConfig,
+  options: CreateEnterpriseWorkspaceOptions = {}
 ): void {
   // Create .lexrunner directory structure
   const lexrunnerDir = path.join(profileDir, ".lexrunner");
@@ -423,13 +429,14 @@ export function createEnterpriseWorkspace(
 
   // Write enterprise config
   const configPath = path.join(lexrunnerDir, "config.yaml");
-  fs.writeFileSync(configPath, generateEnterpriseConfigYAML(config));
+  writeManagedFile(configPath, generateEnterpriseConfigYAML(config), options.force === true);
 
   // Write gate mapping
   const gateMappingPath = path.join(lexrunnerDir, "gate-mapping.yaml");
-  fs.writeFileSync(
+  writeManagedFile(
     gateMappingPath,
-    generateGateMappingConfig(config.environment.ciProvider, config.policy.requiredGates)
+    generateGateMappingConfig(config.environment.ciProvider, config.policy.requiredGates),
+    options.force === true
   );
 
   // Create .github directory if using GitHub Actions
@@ -439,15 +446,37 @@ export function createEnterpriseWorkspace(
 
     // Generate Copilot instructions
     const copilotInstructionsPath = path.join(githubDir, "copilot-instructions.md");
-    fs.writeFileSync(copilotInstructionsPath, generateCopilotInstructions(config));
+    writeManagedFile(
+      copilotInstructionsPath,
+      generateCopilotInstructions(config),
+      options.force === true
+    );
 
     // Generate workflow template
     const workflowsDir = path.join(githubDir, "workflows");
     fs.mkdirSync(workflowsDir, { recursive: true });
 
     const workflowPath = path.join(workflowsDir, "merge-weave.yaml");
-    if (!fs.existsSync(workflowPath)) {
-      fs.writeFileSync(workflowPath, generateCIWorkflowTemplate(config));
-    }
+    writeFileIfAbsent(workflowPath, generateCIWorkflowTemplate(config));
   }
+}
+
+function writeManagedFile(targetPath: string, content: string, force: boolean): void {
+  if (force) {
+    fs.writeFileSync(targetPath, content);
+    return;
+  }
+  writeFileIfAbsent(targetPath, content);
+}
+
+function writeFileIfAbsent(targetPath: string, content: string): void {
+  try {
+    fs.writeFileSync(targetPath, content, { flag: "wx" });
+  } catch (error) {
+    if (!isFileSystemError(error, "EEXIST")) throw error;
+  }
+}
+
+function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === code;
 }

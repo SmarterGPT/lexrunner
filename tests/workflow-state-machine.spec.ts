@@ -126,7 +126,7 @@ describe("WorkflowStateMachine", () => {
       expect(guide.nextSteps.length).toBeGreaterThan(0);
       expect(guide.commonIssues.length).toBeGreaterThan(0);
       expect(guide.recommendedAction).toBe("gates.run");
-      expect(guide.documentation).toBe("docs/merge-weave-workflow.md");
+      expect(guide.documentation).toBe("README.mcp.md");
       expect(guide).toMatchObject({
         authority: "advisory",
         authorizesExecution: false,
@@ -183,7 +183,7 @@ describe("createWorkflowGuide", () => {
     expect(guide.phase).toBe("post-plan-creation");
     expect(guide.nextSteps.length).toBeGreaterThan(1);
     expect(guide.recommendedAction).toBe("gates.run");
-    expect(guide.documentation).toBe("docs/merge-weave-workflow.md");
+    expect(guide.documentation).toBe("README.mcp.md");
   });
 
   it("should create guide for post-gates-run phase", () => {
@@ -228,8 +228,7 @@ describe("createWorkflowGuide", () => {
   it("should include documentation links for relevant phases", () => {
     const guide = createWorkflowGuide("post-plan-creation");
 
-    expect(guide.documentation).toBeDefined();
-    expect(guide.documentation).toContain("docs/");
+    expect(guide.documentation).toBe("README.mcp.md");
   });
 
   it("uses observed doctor readiness without turning guidance into authority", () => {

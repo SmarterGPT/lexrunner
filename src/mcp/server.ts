@@ -1879,6 +1879,9 @@ async function handleLocalInit(
       ],
     };
   } catch (error) {
+    if (error instanceof WriteProtectionError) {
+      throwMcpAXError(ErrorCode.InvalidParams, writeProtectionError(error.message, "local.init"));
+    }
     if (error instanceof WorkspaceConfigServiceError) {
       throwMcpAXError(
         ErrorCode.InternalError,
