@@ -231,7 +231,7 @@ Initialize lexrunner workspace with interactive setup wizard.
 lex-pr init [options]
 
 Options:
-  --force                 Overwrite existing configuration files
+  --force                 Continue initialization for an existing writable profile
   --non-interactive       Run without prompts (use environment variables)
   --github-token <token>  GitHub token for authentication
   --profile-dir <dir>     Profile directory (default: .smartergpt.local)
@@ -272,7 +272,7 @@ lex-pr init
 export GITHUB_TOKEN=your_token_here
 lex-pr init --non-interactive
 
-# Force overwrite existing configuration
+# Continue initialization and create any missing files
 lex-pr init --force
 
 # Use custom profile directory

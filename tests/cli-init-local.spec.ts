@@ -19,6 +19,21 @@ describe("CLI init-local Integration Tests", () => {
     }
   });
 
+  it("scopes recoverable-backup help to local overlay initialization", () => {
+    const workspaceHelp = execSync(`node "${cliPath}" workspace init --help`, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+    const localHelp = execSync(`node "${cliPath}" init-local --help`, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+
+    expect(workspaceHelp).toMatch(/Continue initialization for an existing\s+writable profile/u);
+    expect(workspaceHelp).not.toMatch(/recoverable\s+backup/u);
+    expect(localHelp).toMatch(/recoverable\s+backup/u);
+  });
+
   it("should initialize local overlay with generic project type", () => {
     const output = execSync(`node "${cliPath}" init-local`, {
       cwd: tempDir,

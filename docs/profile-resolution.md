@@ -194,6 +194,15 @@ profile, initialization stops and reports the retained staging path. LexRunner d
 check-then-rename restoration because directory replacement semantics differ across platforms; it
 never deletes or overwrites either writer's data.
 
+The interactive or explicit-`--profile-dir` initializer separately revalidates the observed profile
+role and path identity immediately before mutation, then claims an initially absent profile leaf
+exclusively. The default non-interactive local-overlay route instead uses the exclusive manifest
+admission and forced-recreation staging contract described above. These checks prevent stale or
+concurrent ordinary initialization from being mistaken for permission to share a profile. They are
+point-in-time write guards, not native directory custody or a portable filesystem lock, and do not
+protect against a hostile concurrent process running as the same OS principal. Operations that
+require replacement-resistant path authority must use a qualified `WorkspaceBoundary` backend.
+
 ## Migration Guide
 
 ### From compatibility `runner/` configuration

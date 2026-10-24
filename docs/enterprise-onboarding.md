@@ -281,7 +281,7 @@ After initialization:
 
 ### Configuration already exists
 
-- Use `--force` to overwrite existing configuration
+- Use `--force` to continue initialization for the existing writable profile
 - Or manually remove `.smartergpt.local/` directory
 
 ## See Also

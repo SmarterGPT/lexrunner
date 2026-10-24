@@ -164,7 +164,58 @@ describe("Profile Resolver", () => {
       // No profile.yml created
 
       expect(() => resolveProfile(customDir, tempDir)).toThrow(ProfileResolverError);
-      expect(() => resolveProfile(customDir, tempDir)).toThrow(/is missing profile\.yml manifest/);
+      expect(() => resolveProfile(customDir, tempDir)).toThrow(
+        `Profile directory "${customDir}" (from --profile-dir) is missing profile.yml manifest`
+      );
+    });
+
+    it("reports a syntactically malformed manifest as invalid without exposing its contents", () => {
+      const customDir = path.join(tempDir, "custom");
+      fs.mkdirSync(customDir, { recursive: true });
+      fs.writeFileSync(path.join(customDir, "profile.yml"), "role: [PRIVATE-SENTINEL\n");
+
+      let thrown: unknown;
+      try {
+        resolveProfile(customDir, tempDir);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ProfileResolverError);
+      expect((thrown as Error).message).toBe(
+        `Profile directory "${customDir}" (from --profile-dir) has an invalid profile.yml manifest`
+      );
+      expect((thrown as Error).message).not.toContain("PRIVATE-SENTINEL");
+      expect((thrown as Error).message).not.toContain("missing profile.yml");
+    });
+
+    it("does not default a malformed tracked manifest to the example role", () => {
+      const trackedDir = path.join(tempDir, ".smartergpt");
+      fs.mkdirSync(trackedDir, { recursive: true });
+      fs.writeFileSync(path.join(trackedDir, "profile.yml"), "role: [unterminated\n");
+
+      expect(() => resolveProfile(undefined, tempDir)).toThrow(
+        `Profile directory "${trackedDir}" (from .smartergpt/) has an invalid profile.yml manifest`
+      );
+    });
+
+    it("reports a non-object manifest root as invalid", () => {
+      const customDir = path.join(tempDir, "custom");
+      fs.mkdirSync(customDir, { recursive: true });
+      fs.writeFileSync(path.join(customDir, "profile.yml"), "just-a-scalar\n");
+
+      expect(() => resolveProfile(customDir, tempDir)).toThrow(
+        `Profile directory "${customDir}" (from --profile-dir) has an invalid profile.yml manifest`
+      );
+    });
+
+    it("distinguishes an unreadable manifest entry from an absent manifest", () => {
+      const customDir = path.join(tempDir, "custom");
+      fs.mkdirSync(path.join(customDir, "profile.yml"), { recursive: true });
+
+      expect(() => resolveProfile(customDir, tempDir)).toThrow(
+        `Profile directory "${customDir}" (from --profile-dir) has an unreadable profile.yml manifest`
+      );
     });
 
     it("should throw error for missing manifest from env var", () => {

@@ -71,7 +71,7 @@ This document provides a comprehensive parity matrix showing which LexRunner ope
 | `--required-gates <gates>` | `requiredGates: ["..."]` | List of required gates                                  |
 | `--max-workers <n>`        | `maxWorkers`             | Maximum parallel workers                                |
 | `--target <branch>`        | `target`                 | Target branch for merging PRs                           |
-| `--force`                  | `force: true`            | Force operation (e.g., overwrite existing)              |
+| `--force`                  | `force: true`            | Apply the command's documented existing-state behavior  |
 | `--only-item <item>`       | `onlyItem`               | Run gates for specific item only                        |
 | `--only-gate <gate>`       | `onlyGate`               | Run specific gate only                                  |
 | `--repo-root <dir>`        | `repoRoot`               | Explicit physical Git repository candidate root         |

@@ -80,29 +80,7 @@ export function resolveProfile(
     }
   }
 
-  // Read manifest file if present
-  const manifestPath = path.join(profilePath, "profile.yml");
-  let manifest: ProfileManifest;
-
-  try {
-    const content = fs.readFileSync(manifestPath, "utf8");
-    const parsed = YAML.parse(content);
-    manifest = {
-      role: parsed.role || "example",
-      name: parsed.name,
-      version: parsed.version,
-    };
-  } catch (error) {
-    // Default manifest for .smartergpt/ when no profile.yml exists
-    if (source === ".smartergpt/") {
-      manifest = { role: "example" };
-    } else {
-      // For other sources, missing manifest is an error
-      throw new ProfileResolverError(
-        `Profile directory "${profilePath}" (from ${source}) is missing profile.yml manifest`
-      );
-    }
-  }
+  const manifest = loadProfileManifest(profilePath, source);
 
   // Emit telemetry breadcrumb
   emitTelemetry(profilePath, manifest.role);
@@ -112,6 +90,61 @@ export function resolveProfile(
     source,
     manifest,
   };
+}
+
+function loadProfileManifest(profilePath: string, source: string): ProfileManifest {
+  const manifestPath = path.join(profilePath, "profile.yml");
+  let content: string;
+
+  try {
+    content = fs.readFileSync(manifestPath, "utf8");
+  } catch (error) {
+    if (isFileSystemError(error, "ENOENT")) {
+      // The tracked profile remains optional and defaults to the read-only
+      // example role only when its manifest is genuinely absent.
+      if (source === ".smartergpt/") {
+        return { role: "example" };
+      }
+      throw new ProfileResolverError(
+        `Profile directory "${profilePath}" (from ${source}) is missing profile.yml manifest`
+      );
+    }
+
+    throw new ProfileResolverError(
+      `Profile directory "${profilePath}" (from ${source}) has an unreadable profile.yml manifest`
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = YAML.parse(content);
+  } catch {
+    throw invalidManifestError(profilePath, source);
+  }
+
+  if (!isManifestObject(parsed)) {
+    throw invalidManifestError(profilePath, source);
+  }
+
+  return {
+    role: parsed.role === undefined ? "example" : parsed.role,
+    name: parsed.name,
+    version: parsed.version,
+  };
+}
+
+function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+function isManifestObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function invalidManifestError(profilePath: string, source: string): ProfileResolverError {
+  return new ProfileResolverError(
+    `Profile directory "${profilePath}" (from ${source}) has an invalid profile.yml manifest`
+  );
 }
 
 import { isJsonMode } from "../util/colorControl.js";

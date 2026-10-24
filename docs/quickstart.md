@@ -419,7 +419,7 @@ lex-pr merge plan.json
 **Problem**: "Configuration already exists"
 
 ```bash
-# Solution: Use --force to overwrite
+# Solution: Continue initialization and create any missing files
 lex-pr init --force
 ```
 

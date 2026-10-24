@@ -392,7 +392,7 @@ const workspaceCmd = program
 workspaceCmd
   .command("init")
   .description("Initialize lexrunner workspace with interactive setup wizard")
-  .option("--force", "Recreate after retaining the existing profile as a recoverable backup")
+  .option("--force", "Continue initialization for an existing writable profile")
   .option("--non-interactive", "Run without prompts (use environment variables)")
   .option("--github-token <token>", "GitHub token for authentication")
   .option("--profile-dir <dir>", "Profile directory (default: .smartergpt.local)")
@@ -615,7 +615,7 @@ registerBudgetCommand(program, () => jsonModeActive);
 program
   .command("init")
   .description("Initialize lexrunner workspace with interactive setup wizard")
-  .option("--force", "Overwrite existing configuration files")
+  .option("--force", "Continue initialization for an existing writable profile")
   .option("--non-interactive", "Run without prompts (use environment variables)")
   .option("--github-token <token>", "GitHub token for authentication")
   .option("--profile-dir <dir>", "Profile directory (default: .smartergpt.local)")
@@ -692,7 +692,7 @@ program
 program
   .command("bootstrap")
   .description("Create minimal workspace configuration")
-  .option("--force", "Overwrite existing configuration files")
+  .option("--force", "Create missing files when configuration already exists")
   .option("--json", "Output JSON format")
   .action(async (opts) => {
     try {
@@ -729,7 +729,7 @@ program
           console.log("✓ Configuration already exists");
           console.log(`  ${bootstrap.profileDir}/`);
           console.log("");
-          console.log("Use --force to overwrite existing files");
+          console.log("Use --force to create any missing configuration files");
         } else {
           createMinimalWorkspace();
           console.log("✓ Created minimal configuration:");

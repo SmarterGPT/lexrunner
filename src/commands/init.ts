@@ -14,6 +14,7 @@ import {
   WriteProtectionError,
   resolveProfile,
   logProfileMessage,
+  validateWriteOperation,
 } from "../config/profileResolver.js";
 import { createGitHubClient, GitHubAuthError } from "../github/client.js";
 import {
@@ -44,6 +45,27 @@ export interface InitResult {
   message: string;
 }
 
+interface PathIdentity {
+  realPath: string;
+  link: string;
+  target: string;
+}
+
+interface ExistingProfileState {
+  profileIdentity: PathIdentity;
+  manifestIdentity: PathIdentity;
+  manifestContent: string;
+}
+
+interface AbsentProfileState {
+  ancestorPath: string;
+  ancestorIdentity: PathIdentity;
+}
+
+type ProfileWriteGuard =
+  | { kind: "absent"; profileDir: string; state: AbsentProfileState }
+  | { kind: "existing"; profileDir: string; state: ExistingProfileState };
+
 /**
  * Run interactive initialization wizard
  */
@@ -72,6 +94,13 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
     }
   }
 
+  // Existing profiles must pass central write validation before any initializer
+  // creates runner/, rewrites configuration, or emits enterprise files outside
+  // the profile. The captured state is a point-in-time write guard, not custody
+  // or a portable lock. Missing or malformed manifests fail closed; --force
+  // changes continuation intent but never bypasses write validation.
+  const writeGuard = captureProfileWriteGuard(baseDir, profileDir);
+
   // Check if configuration already exists (only if directory and manifest exist)
   if (fs.existsSync(profileDir) && fs.existsSync(path.join(profileDir, "profile.yml"))) {
     try {
@@ -80,13 +109,15 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
         return {
           success: false,
           profileDir: bootstrap.profileDir,
-          message: `Configuration already exists at ${bootstrap.profileDir}. Use --force to overwrite.`,
+          message: `Configuration already exists at ${bootstrap.profileDir}. Use --force to continue initialization for this writable profile.`,
         };
       }
     } catch (error) {
       // If bootstrap fails, we'll create from scratch (might be missing files)
       if (!options.force && !options.jsonMode) {
-        logProfileMessage(`Profile directory exists but is incomplete. Use --force to recreate.`);
+        logProfileMessage(
+          `Profile directory exists but is incomplete. Use --force to complete it.`
+        );
       }
     }
   }
@@ -99,7 +130,7 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
 
   // Enterprise setup flow
   if (options.enterprise) {
-    return await runEnterpriseInit(baseDir, profileDir, options);
+    return await runEnterpriseInit(baseDir, profileDir, options, writeGuard);
   }
 
   // Interactive setup
@@ -130,72 +161,317 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
     }
   }
 
-  // Create workspace
-  try {
-    // Ensure profile directory exists and has proper manifest
-    if (!fs.existsSync(profileDir)) {
-      fs.mkdirSync(profileDir, { recursive: true });
-    }
+  assertProfileWriteGuard(baseDir, writeGuard);
 
-    // Ensure runner/ subdirectory exists for working artifacts
-    const runnerDir = path.join(profileDir, "runner");
-    fs.mkdirSync(runnerDir, { recursive: true });
+  // Create workspace. An initially absent profile is claimed with a
+  // non-recursive mkdir so a concurrent initializer cannot silently win the
+  // leaf between the final guard check and creation.
+  claimAbsentProfileDirectory(writeGuard);
 
-    // Create or update profile manifest
-    const manifestPath = path.join(profileDir, "profile.yml");
-    if (!fs.existsSync(manifestPath)) {
-      const manifestContent = `role: local
+  // Create the profile manifest before any other content in a newly claimed
+  // profile. Existing profiles were required to have a validated manifest by
+  // captureProfileWriteGuard().
+  const manifestPath = path.join(profileDir, "profile.yml");
+  if (writeGuard.kind === "absent") {
+    const manifestContent = `role: local
 name: Local Development Profile
 description: Auto-generated workspace for local development
 `;
-      fs.writeFileSync(manifestPath, manifestContent);
+    writeNewGuardedFile(manifestPath, manifestContent, profileDir);
+  }
+
+  // Ensure runner/ subdirectory exists for working artifacts
+  const runnerDir = path.join(profileDir, "runner");
+  fs.mkdirSync(runnerDir, { recursive: true });
+
+  // Create minimal workspace (config at root per v1 spec)
+  createMinimalWorkspace(baseDir, profileDir);
+
+  // Create pull-request-template.md at profile root
+  const templatePath = path.join(profileDir, "pull-request-template.md");
+  if (!fs.existsSync(templatePath)) {
+    const templateContent = getPRTemplateContent();
+    writeFileIfAbsent(templatePath, templateContent);
+  }
+
+  // Only show console output if not in JSON mode
+  if (!options.jsonMode) {
+    console.log(`\n✅ Workspace initialized successfully!\n`);
+    console.log(`📂 Profile directory: ${profileDir}`);
+    console.log(`\n📝 Created files:`);
+    console.log(`   - intent.md (project goals and scope)`);
+    console.log(`   - scope.yml (PR discovery rules)`);
+    console.log(`   - deps.yml (dependency relationships)`);
+    console.log(`   - gates.yml (quality gates configuration)`);
+    console.log(`   - pull-request-template.md (PR template with dependency syntax)`);
+    console.log(`   - runner/ (working artifacts directory)`);
+
+    console.log(`\n📚 Next steps:`);
+    console.log(`   1. Edit ${profileDir}/intent.md to describe your project`);
+    console.log(`   2. Configure ${profileDir}/scope.yml for PR discovery`);
+    console.log(`   3. Set up quality gates in ${profileDir}/gates.yml`);
+    console.log(`   4. Run 'lex-pr doctor' to verify your setup`);
+    console.log(`   5. Run 'lex-pr discover' to find open PRs\n`);
+  }
+
+  return {
+    success: true,
+    profileDir,
+    message: "Workspace initialized successfully",
+  };
+}
+
+function captureProfileWriteGuard(baseDir: string, profileDir: string): ProfileWriteGuard {
+  if (!pathEntryExists(profileDir)) {
+    return { kind: "absent", profileDir, state: captureAbsentProfileState(profileDir) };
+  }
+
+  let initialState: ExistingProfileState;
+  try {
+    initialState = captureExistingProfileState(profileDir);
+  } catch (captureError) {
+    try {
+      const resolved = resolveProfile(profileDir, baseDir, { ignoreEnvironment: true });
+      validateWriteOperation(profileDir, resolved.manifest.role, "initialize workspace");
+    } catch (validationError) {
+      if (validationError instanceof WriteProtectionError) throw validationError;
+      throw validationError;
     }
+    throw writeGuardChangedError(profileDir, captureError);
+  }
 
-    // Create minimal workspace (config at root per v1 spec)
-    createMinimalWorkspace(baseDir, profileDir);
-
-    // Create pull-request-template.md at profile root
-    const templatePath = path.join(profileDir, "pull-request-template.md");
-    if (!fs.existsSync(templatePath)) {
-      const templateContent = getPRTemplateContent();
-      fs.writeFileSync(templatePath, templateContent);
-    }
-
-    // Only show console output if not in JSON mode
-    if (!options.jsonMode) {
-      console.log(`\n✅ Workspace initialized successfully!\n`);
-      console.log(`📂 Profile directory: ${profileDir}`);
-      console.log(`\n📝 Created files:`);
-      console.log(`   - intent.md (project goals and scope)`);
-      console.log(`   - scope.yml (PR discovery rules)`);
-      console.log(`   - deps.yml (dependency relationships)`);
-      console.log(`   - gates.yml (quality gates configuration)`);
-      console.log(`   - pull-request-template.md (PR template with dependency syntax)`);
-      console.log(`   - runner/ (working artifacts directory)`);
-
-      console.log(`\n📚 Next steps:`);
-      console.log(`   1. Edit ${profileDir}/intent.md to describe your project`);
-      console.log(`   2. Configure ${profileDir}/scope.yml for PR discovery`);
-      console.log(`   3. Set up quality gates in ${profileDir}/gates.yml`);
-      console.log(`   4. Run 'lex-pr doctor' to verify your setup`);
-      console.log(`   5. Run 'lex-pr discover' to find open PRs\n`);
-    }
-
-    return {
-      success: true,
-      profileDir,
-      message: "Workspace initialized successfully",
-    };
+  try {
+    const resolved = resolveProfile(profileDir, baseDir, { ignoreEnvironment: true });
+    validateWriteOperation(profileDir, resolved.manifest.role, "initialize workspace");
   } catch (error) {
-    if (error instanceof WriteProtectionError) {
-      return {
-        success: false,
-        profileDir,
-        message: `Write protection error: ${error.message}`,
-      };
+    if (error instanceof WriteProtectionError) throw error;
+    throw error;
+  }
+
+  let validatedState: ExistingProfileState;
+  try {
+    validatedState = captureExistingProfileState(profileDir);
+  } catch (error) {
+    throw writeGuardChangedError(profileDir, error);
+  }
+  if (!sameProfileState(initialState, validatedState)) {
+    throw writeGuardChangedError(profileDir);
+  }
+
+  return { kind: "existing", profileDir, state: validatedState };
+}
+
+function assertProfileWriteGuard(baseDir: string, writeGuard: ProfileWriteGuard): void {
+  if (writeGuard.kind === "absent") {
+    let currentState: AbsentProfileState;
+    try {
+      currentState = captureAbsentProfileState(writeGuard.profileDir);
+    } catch (error) {
+      if (error instanceof WriteProtectionError) throw error;
+      throw writeGuardChangedError(writeGuard.profileDir, error);
+    }
+    if (!sameAbsentProfileState(writeGuard.state, currentState)) {
+      throw writeGuardChangedError(writeGuard.profileDir);
+    }
+    return;
+  }
+
+  let beforeValidation: ExistingProfileState;
+  try {
+    beforeValidation = captureExistingProfileState(writeGuard.profileDir);
+  } catch (error) {
+    throw writeGuardChangedError(writeGuard.profileDir, error);
+  }
+  if (!sameProfileState(writeGuard.state, beforeValidation)) {
+    throw writeGuardChangedError(writeGuard.profileDir);
+  }
+
+  try {
+    const resolved = resolveProfile(writeGuard.profileDir, baseDir, { ignoreEnvironment: true });
+    validateWriteOperation(writeGuard.profileDir, resolved.manifest.role, "initialize workspace");
+  } catch (error) {
+    if (error instanceof WriteProtectionError) throw error;
+    throw writeGuardChangedError(writeGuard.profileDir, error);
+  }
+
+  let afterValidation: ExistingProfileState;
+  try {
+    afterValidation = captureExistingProfileState(writeGuard.profileDir);
+  } catch (error) {
+    throw writeGuardChangedError(writeGuard.profileDir, error);
+  }
+  if (!sameProfileState(writeGuard.state, afterValidation)) {
+    throw writeGuardChangedError(writeGuard.profileDir);
+  }
+}
+
+function claimAbsentProfileDirectory(writeGuard: ProfileWriteGuard): void {
+  if (writeGuard.kind === "existing") return;
+
+  const parentDir = path.dirname(writeGuard.profileDir);
+  fs.mkdirSync(parentDir, { recursive: true });
+
+  // Creating missing intermediate parents must not obscure a change to the
+  // existing ancestor observed by the point-in-time guard.
+  let currentAncestor: PathIdentity;
+  try {
+    currentAncestor = capturePathIdentity(writeGuard.state.ancestorPath);
+  } catch (error) {
+    throw writeGuardChangedError(writeGuard.profileDir, error);
+  }
+  if (!samePathIdentity(writeGuard.state.ancestorIdentity, currentAncestor)) {
+    throw writeGuardChangedError(writeGuard.profileDir);
+  }
+
+  try {
+    fs.mkdirSync(writeGuard.profileDir);
+  } catch (error) {
+    if (isFileSystemError(error, "EEXIST")) {
+      throw writeGuardChangedError(writeGuard.profileDir, error);
     }
     throw error;
   }
+}
+
+function writeNewGuardedFile(targetPath: string, content: string, profileDir: string): void {
+  try {
+    fs.writeFileSync(targetPath, content, { flag: "wx" });
+  } catch (error) {
+    if (isFileSystemError(error, "EEXIST")) {
+      throw writeGuardChangedError(profileDir, error);
+    }
+    throw error;
+  }
+}
+
+function writeFileIfAbsent(targetPath: string, content: string): void {
+  try {
+    fs.writeFileSync(targetPath, content, { flag: "wx" });
+  } catch (error) {
+    if (!isFileSystemError(error, "EEXIST")) throw error;
+  }
+}
+
+function captureExistingProfileState(profileDir: string): ExistingProfileState {
+  const manifestPath = path.join(profileDir, "profile.yml");
+  const profileIdentityBefore = capturePathIdentity(profileDir);
+  const manifestIdentityBefore = capturePathIdentity(manifestPath);
+  const manifestContent = fs.readFileSync(manifestPath).toString("base64");
+  const manifestIdentityAfter = capturePathIdentity(manifestPath);
+  const profileIdentityAfter = capturePathIdentity(profileDir);
+
+  if (
+    !samePathIdentity(profileIdentityBefore, profileIdentityAfter) ||
+    !samePathIdentity(manifestIdentityBefore, manifestIdentityAfter)
+  ) {
+    throw writeGuardChangedError(profileDir);
+  }
+
+  return {
+    profileIdentity: profileIdentityAfter,
+    manifestIdentity: manifestIdentityAfter,
+    manifestContent,
+  };
+}
+
+function captureAbsentProfileState(profileDir: string): AbsentProfileState {
+  try {
+    if (pathEntryExists(profileDir)) {
+      throw writeGuardChangedError(profileDir);
+    }
+
+    const ancestorPath = findNearestExistingAncestor(profileDir);
+    const ancestorIdentityBefore = capturePathIdentity(ancestorPath);
+
+    if (pathEntryExists(profileDir)) {
+      throw writeGuardChangedError(profileDir);
+    }
+    const confirmedAncestorPath = findNearestExistingAncestor(profileDir);
+    const ancestorIdentityAfter = capturePathIdentity(confirmedAncestorPath);
+
+    if (
+      confirmedAncestorPath !== ancestorPath ||
+      !samePathIdentity(ancestorIdentityBefore, ancestorIdentityAfter)
+    ) {
+      throw writeGuardChangedError(profileDir);
+    }
+
+    return { ancestorPath, ancestorIdentity: ancestorIdentityAfter };
+  } catch (error) {
+    if (error instanceof WriteProtectionError) throw error;
+    throw writeGuardChangedError(profileDir, error);
+  }
+}
+
+function findNearestExistingAncestor(profileDir: string): string {
+  let candidate = path.dirname(profileDir);
+
+  while (!pathEntryExists(candidate)) {
+    const parent = path.dirname(candidate);
+    if (parent === candidate) {
+      throw writeGuardChangedError(profileDir);
+    }
+    candidate = parent;
+  }
+
+  return candidate;
+}
+
+function capturePathIdentity(targetPath: string): PathIdentity {
+  const link = fs.lstatSync(targetPath, { bigint: true });
+  const target = fs.statSync(targetPath, { bigint: true });
+  return {
+    realPath: fs.realpathSync.native(targetPath),
+    link: statIdentity(link),
+    target: statIdentity(target),
+  };
+}
+
+function statIdentity(stat: fs.BigIntStats): string {
+  return [stat.dev, stat.ino, stat.mode, stat.birthtimeNs].join(":");
+}
+
+function sameProfileState(left: ExistingProfileState, right: ExistingProfileState): boolean {
+  return (
+    samePathIdentity(left.profileIdentity, right.profileIdentity) &&
+    samePathIdentity(left.manifestIdentity, right.manifestIdentity) &&
+    left.manifestContent === right.manifestContent
+  );
+}
+
+function sameAbsentProfileState(left: AbsentProfileState, right: AbsentProfileState): boolean {
+  return (
+    left.ancestorPath === right.ancestorPath &&
+    samePathIdentity(left.ancestorIdentity, right.ancestorIdentity)
+  );
+}
+
+function samePathIdentity(left: PathIdentity, right: PathIdentity): boolean {
+  return (
+    left.realPath === right.realPath && left.link === right.link && left.target === right.target
+  );
+}
+
+function pathEntryExists(targetPath: string): boolean {
+  try {
+    fs.lstatSync(targetPath);
+    return true;
+  } catch (error) {
+    if (isFileSystemError(error, "ENOENT")) return false;
+    throw writeGuardChangedError(targetPath, error);
+  }
+}
+
+function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+function writeGuardChangedError(profileDir: string, cause?: unknown): WriteProtectionError {
+  void cause;
+  return new WriteProtectionError(
+    `Cannot initialize workspace: the point-in-time profile write guard at "${profileDir}" changed. ` +
+      "Restart initialization and review the current profile before retrying; this guard is not a portable lock."
+  );
 }
 
 /**
@@ -262,7 +538,8 @@ function getPRTemplateContent(): string {
 async function runEnterpriseInit(
   baseDir: string,
   profileDir: string,
-  options: InitOptions
+  options: InitOptions,
+  writeGuard: ProfileWriteGuard
 ): Promise<InitResult> {
   if (!options.jsonMode) {
     console.log("\n🏢 Enterprise Setup Wizard\n");
@@ -309,43 +586,43 @@ async function runEnterpriseInit(
     console.log("");
   }
 
-  // Create workspace structure
-  try {
-    // Ensure profile directory exists and has proper manifest
-    if (!fs.existsSync(profileDir)) {
-      fs.mkdirSync(profileDir, { recursive: true });
-    }
+  assertProfileWriteGuard(baseDir, writeGuard);
 
-    // Ensure runner/ subdirectory exists for working artifacts
-    const runnerDir = path.join(profileDir, "runner");
-    fs.mkdirSync(runnerDir, { recursive: true });
+  // Create workspace structure with the same exclusive absent-leaf admission
+  // used by standard initialization.
+  claimAbsentProfileDirectory(writeGuard);
 
-    // Create or update profile manifest
-    const manifestPath = path.join(profileDir, "profile.yml");
-    if (!fs.existsSync(manifestPath)) {
-      const manifestContent = `role: local
+  // Create the profile manifest before any other content in a newly claimed
+  // profile. Existing profiles already passed manifest validation.
+  const manifestPath = path.join(profileDir, "profile.yml");
+  if (writeGuard.kind === "absent") {
+    const manifestContent = `role: local
 name: Enterprise Development Profile
 description: Auto-generated enterprise workspace with audit and compliance
 `;
-      fs.writeFileSync(manifestPath, manifestContent);
-    }
+    writeNewGuardedFile(manifestPath, manifestContent, profileDir);
+  }
 
-    // Create basic workspace first
-    createMinimalWorkspace(baseDir, profileDir);
+  // Ensure runner/ subdirectory exists for working artifacts
+  const runnerDir = path.join(profileDir, "runner");
+  fs.mkdirSync(runnerDir, { recursive: true });
 
-    // Create enterprise workspace additions
-    createEnterpriseWorkspace(baseDir, profileDir, enterpriseConfig);
+  // Create basic workspace first
+  createMinimalWorkspace(baseDir, profileDir);
 
-    // Create pull-request-template.md at profile root
-    const templatePath = path.join(profileDir, "pull-request-template.md");
-    if (!fs.existsSync(templatePath)) {
-      const templateContent = getPRTemplateContent();
-      fs.writeFileSync(templatePath, templateContent);
-    }
+  // Create enterprise workspace additions
+  createEnterpriseWorkspace(baseDir, profileDir, enterpriseConfig);
 
-    // Update gates.yml with enterprise gates
-    const gatesPath = path.join(profileDir, "gates.yml");
-    const gatesContent = `version: 1
+  // Create pull-request-template.md at profile root
+  const templatePath = path.join(profileDir, "pull-request-template.md");
+  if (!fs.existsSync(templatePath)) {
+    const templateContent = getPRTemplateContent();
+    writeFileIfAbsent(templatePath, templateContent);
+  }
+
+  // Update gates.yml with enterprise gates
+  const gatesPath = path.join(profileDir, "gates.yml");
+  const gatesContent = `version: 1
 levels:
   default:
 ${enterpriseConfig.policy.requiredGates
@@ -355,60 +632,50 @@ ${enterpriseConfig.policy.requiredGates
   )
   .join("\n")}
 `;
-    fs.writeFileSync(gatesPath, gatesContent);
+  fs.writeFileSync(gatesPath, gatesContent);
 
-    // Only show console output if not in JSON mode
-    if (!options.jsonMode) {
-      console.log(`\n✅ Enterprise workspace initialized successfully!\n`);
-      console.log(`📂 Profile directory: ${profileDir}`);
-      console.log(`\n📝 Created structure:`);
-      console.log(`   ${profileDir}/`);
-      console.log(`   ├── .lexrunner/`);
-      console.log(`   │   ├── config.yaml (enterprise configuration)`);
-      console.log(`   │   ├── gate-mapping.yaml (CI integration)`);
-      console.log(`   │   ├── personas/ (team personas)`);
-      if (enterpriseConfig.audit.profile !== "off") {
-        console.log(`   │   └── audit/ (audit logs)`);
-      }
-      console.log(`   ├── intent.md (project goals)`);
-      console.log(`   ├── scope.yml (PR discovery rules)`);
-      console.log(`   ├── deps.yml (dependency relationships)`);
-      console.log(`   ├── gates.yml (quality gates - updated)`);
-      console.log(`   └── runner/ (working artifacts)`);
+  // Only show console output if not in JSON mode
+  if (!options.jsonMode) {
+    console.log(`\n✅ Enterprise workspace initialized successfully!\n`);
+    console.log(`📂 Profile directory: ${profileDir}`);
+    console.log(`\n📝 Created structure:`);
+    console.log(`   ${profileDir}/`);
+    console.log(`   ├── .lexrunner/`);
+    console.log(`   │   ├── config.yaml (enterprise configuration)`);
+    console.log(`   │   ├── gate-mapping.yaml (CI integration)`);
+    console.log(`   │   ├── personas/ (team personas)`);
+    if (enterpriseConfig.audit.profile !== "off") {
+      console.log(`   │   └── audit/ (audit logs)`);
+    }
+    console.log(`   ├── intent.md (project goals)`);
+    console.log(`   ├── scope.yml (PR discovery rules)`);
+    console.log(`   ├── deps.yml (dependency relationships)`);
+    console.log(`   ├── gates.yml (quality gates - updated)`);
+    console.log(`   └── runner/ (working artifacts)`);
 
-      if (enterpriseConfig.environment.ciProvider === "github-actions") {
-        console.log(`\n   .github/`);
-        console.log(`   ├── copilot-instructions.md (GitHub Copilot setup)`);
-        console.log(`   └── workflows/`);
-        console.log(`       └── merge-weave.yaml (CI workflow template)`);
-      }
-
-      console.log(`\n📚 Next steps:`);
-      console.log(`   1. Review enterprise configuration in ${profileDir}/.lexrunner/config.yaml`);
-      console.log(`   2. Configure gate mapping in ${profileDir}/.lexrunner/gate-mapping.yaml`);
-      if (enterpriseConfig.environment.ciProvider === "github-actions") {
-        console.log(`   3. Review GitHub Copilot instructions in .github/copilot-instructions.md`);
-        console.log(`   4. Customize CI workflow in .github/workflows/merge-weave.yaml`);
-      }
-      console.log(`   5. Run 'lex-pr doctor' to verify your setup`);
-      console.log(`   6. Run 'lex-pr discover' to find open PRs\n`);
-
-      console.log(`💡 Tip: You can customize personas in ${profileDir}/.lexrunner/personas/\n`);
+    if (enterpriseConfig.environment.ciProvider === "github-actions") {
+      console.log(`\n   .github/`);
+      console.log(`   ├── copilot-instructions.md (GitHub Copilot setup)`);
+      console.log(`   └── workflows/`);
+      console.log(`       └── merge-weave.yaml (CI workflow template)`);
     }
 
-    return {
-      success: true,
-      profileDir,
-      message: "Enterprise workspace initialized successfully",
-    };
-  } catch (error) {
-    if (error instanceof WriteProtectionError) {
-      return {
-        success: false,
-        profileDir,
-        message: `Write protection error: ${error.message}`,
-      };
+    console.log(`\n📚 Next steps:`);
+    console.log(`   1. Review enterprise configuration in ${profileDir}/.lexrunner/config.yaml`);
+    console.log(`   2. Configure gate mapping in ${profileDir}/.lexrunner/gate-mapping.yaml`);
+    if (enterpriseConfig.environment.ciProvider === "github-actions") {
+      console.log(`   3. Review GitHub Copilot instructions in .github/copilot-instructions.md`);
+      console.log(`   4. Customize CI workflow in .github/workflows/merge-weave.yaml`);
     }
-    throw error;
+    console.log(`   5. Run 'lex-pr doctor' to verify your setup`);
+    console.log(`   6. Run 'lex-pr discover' to find open PRs\n`);
+
+    console.log(`💡 Tip: You can customize personas in ${profileDir}/.lexrunner/personas/\n`);
   }
+
+  return {
+    success: true,
+    profileDir,
+    message: "Enterprise workspace initialized successfully",
+  };
 }
