@@ -817,13 +817,15 @@ program
 program
   .command("migrate-profile")
   .description("Migrate profile configuration structure (canonical: lexrunner workspace migrate)")
-  .option("--from-flat", "Migrate from flat structure to runner/ subdirectory")
+  .option("--from-runner", "Move compatibility config from runner/ to the profile root")
+  .option("--from-flat", "Retired: profile-root configuration is already canonical")
   .option("--dry-run", "Show what would be migrated without making changes")
   .option("--profile-dir <path>", "Profile directory to migrate (default: auto-detect)")
   .action(async (opts) => {
     try {
       const result = await runMigrateProfile({
         fromFlat: opts.fromFlat,
+        fromRunner: opts.fromRunner,
         dryRun: opts.dryRun,
         profileDir: opts.profileDir,
       });
@@ -835,7 +837,9 @@ program
             message: result.message,
             migratedFiles: result.migratedFiles,
             backupPath: result.backupPath,
+            backupStatus: result.backupStatus,
             skippedFiles: result.skippedFiles,
+            uncertainFiles: result.uncertainFiles,
           })
         );
       } else {
@@ -865,6 +869,10 @@ program
           console.log("❌ Migration failed");
           console.log("");
           console.log(result.message);
+          if (result.uncertainFiles?.length) {
+            console.log("");
+            console.log(`⚠️  Uncertain files: ${result.uncertainFiles.join(", ")}`);
+          }
         }
       }
 

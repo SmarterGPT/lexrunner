@@ -219,9 +219,11 @@ lex-pr plan --from-github --labels "ready-to-merge" --target main --json
 
 **Output (both):**
 
+<!-- lexrunner-plan-example:mcp-plan-output -->
+
 ```json
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.0.1",
   "target": "main",
   "items": [
     {
@@ -236,6 +238,23 @@ lex-pr plan --from-github --labels "ready-to-merge" --target main --json
   "policy": {
     "requiredGates": ["lint", "typecheck", "test"],
     "maxWorkers": 2
+  },
+  "gitInputs": {
+    "schemaVersion": "1.0.0",
+    "repository": "https://github.com/example/repository.git",
+    "checkoutRemote": "origin",
+    "acquisition": "fetch",
+    "target": {
+      "ref": "refs/heads/main",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "sources": [
+      {
+        "item": "PR-123",
+        "ref": "refs/pull/123/head",
+        "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
   }
 }
 ```

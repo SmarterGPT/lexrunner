@@ -122,21 +122,25 @@ Generates a merge execution plan.
 
 **Success:**
 
+<!-- lexrunner-plan-example:json-output-plan -->
+
 ```json
 {
   "schemaVersion": "1.0.0",
   "target": "main",
   "items": [
     {
-      "name": "PR-123",
-      "branch": "feature/x",
-      "gates": ["lint", "test"],
+      "name": "feature/x",
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "test", "run": "npm test" }
+      ],
       "deps": []
     }
   ],
   "policy": {
     "maxWorkers": 2,
-    "mergeRule": { "type": "all-gates-pass" }
+    "mergeRule": { "type": "strict-required" }
   }
 }
 ```

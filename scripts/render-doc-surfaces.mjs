@@ -67,9 +67,51 @@ const version = await formatMarkdown(
   ].join("\n")
 );
 
+const mcpParityByTool = new Map(matrix.mcp.parity.map((entry) => [entry.tool, entry]));
+const mcpExceptionByTool = new Map(
+  matrix.mcp.intentionalParityExceptions
+    .filter(({ tool }) => tool)
+    .map((entry) => [entry.tool, entry])
+);
+const mcpInventory = await formatMarkdown(
+  [
+    "<!-- BEGIN GENERATED MCP TOOL INVENTORY -->",
+    `Published inventory: **${matrix.mcp.canonical.length} canonical tools** and **${matrix.mcp.deprecated.length} deprecated tools**. This block is generated from \`docs/architecture/cli-mcp-surface.json\`, whose MCP inventory is checked against the published \`tools/list\` surface in \`mcp-server.mjs\`.`,
+    "",
+    "### Canonical tools",
+    "",
+    "| MCP tool | CLI counterpart | Owner or intentional exception |",
+    "| --- | --- | --- |",
+    ...matrix.mcp.canonical.map((tool) => {
+      const parity = mcpParityByTool.get(tool);
+      if (parity) {
+        return `| \`${tool}\` | \`${canonicalCli} ${parity.cli}\` | \`${parity.owner}\` |`;
+      }
+
+      const exception = mcpExceptionByTool.get(tool);
+      if (exception) {
+        return `| \`${tool}\` | — | Intentional exception: ${exception.reason} |`;
+      }
+
+      throw new Error(`${tool}: canonical MCP tool has no parity or exception record`);
+    }),
+    "",
+    "### Deprecated tools",
+    "",
+    "| MCP tool | Replacement | Removal |",
+    "| --- | --- | --- |",
+    ...matrix.mcp.deprecated.map(
+      ({ tool, replacement, removeIn }) =>
+        `| \`${tool}\` | ${replacement} | ${removeIn ?? "separately declared release"} |`
+    ),
+    "<!-- END GENERATED MCP TOOL INVENTORY -->",
+  ].join("\n")
+);
+
 const results = [
   updateBlock("docs/AX.md", "GENERATED AX SURFACE", surface),
   updateBlock("README.md", "GENERATED PACKAGE VERSION", version),
+  updateBlock("README.mcp.md", "GENERATED MCP TOOL INVENTORY", mcpInventory),
 ];
 
 if (check && results.some(({ changed }) => changed)) {

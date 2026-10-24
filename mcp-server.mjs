@@ -1147,7 +1147,46 @@ const tools = {
     call: async (args) => {
       try {
         const { createWorkflowGuide } = await import("./dist/cli.js");
-        const guide = createWorkflowGuide(args.phase);
+        let guide;
+        if (args.phase === "initial") {
+          const doctor = await new core.WorkspaceDiagnosticsService().run({
+            baseDir: serverBaseDir,
+          });
+          const remediation = doctor.suggestions.length
+            ? doctor.suggestions.join("; ")
+            : "Run doctor and resolve every reported workspace issue before proceeding";
+          guide = createWorkflowGuide(args.phase, {
+            canProceed: !doctor.hasErrors,
+            commonIssues:
+              doctor.hasErrors || doctor.configuration.compatibilityFiles.length
+                ? [
+                    {
+                      symptom: doctor.hasErrors
+                        ? doctor.issues.join("; ")
+                        : "Compatibility configuration remains under runner/",
+                      solution: remediation,
+                    },
+                  ]
+                : [],
+            recommendedAction: doctor.hasErrors
+              ? doctor.configuration.missingFiles.length
+                ? "local.init"
+                : "doctor"
+              : undefined,
+            observation: {
+              source: "doctor",
+              hasErrors: doctor.hasErrors,
+              missingFiles: doctor.configuration.missingFiles,
+              compatibilityFiles: doctor.configuration.compatibilityFiles,
+              issues: doctor.issues,
+              suggestions: doctor.suggestions,
+            },
+          });
+        } else {
+          // Doctor can establish onboarding readiness only. It is not evidence
+          // of plan validity, gate success, or merge eligibility.
+          guide = createWorkflowGuide(args.phase);
+        }
 
         return {
           content: [

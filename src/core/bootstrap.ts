@@ -12,6 +12,7 @@ import {
   validateWriteOperation,
   WriteProtectionError,
 } from "../config/profileResolver.js";
+import { resolveConfigPath } from "../config/pathResolver.js";
 
 // Cached Docker availability probe. null = unknown, true = available, false = not available
 let dockerAvailable: boolean | null = null;
@@ -33,6 +34,7 @@ export interface BootstrapConfig {
   profileDir: string;
   hasConfiguration: boolean;
   missingFiles: string[];
+  compatibilityFiles: string[];
   suggestions: string[];
 }
 
@@ -58,44 +60,73 @@ export function bootstrapWorkspace(
   const expectedFiles = ["intent.md", "scope.yml", "deps.yml", "gates.yml"];
 
   const missingFiles: string[] = [];
+  const compatibilityFiles: string[] = [];
+  const compatibilityMoves: Array<{ from: string; to: string }> = [];
+  const configurationTargetDir = fs.existsSync(profileDir)
+    ? profileDir
+    : path.resolve(baseDir, ".smartergpt.local");
   const suggestions: string[] = [];
 
   // Check if profile directory exists
   if (!fs.existsSync(profileDir)) {
-    suggestions.push(`Create .smartergpt.local directory: mkdir ${profileDir}`);
+    suggestions.push(
+      `Initialize the local profile at ${path.resolve(baseDir, ".smartergpt.local")}`
+    );
     missingFiles.push(...expectedFiles);
   } else {
-    // Check for config files at profile root (v1 structure)
+    // Profile-root config is canonical. Continue observing historical runner/
+    // config so existing workspaces fail neither silently nor unnecessarily.
     for (const file of expectedFiles) {
-      const filePath = path.join(profileDir, file);
-
-      if (!fs.existsSync(filePath)) {
-        missingFiles.push(file);
+      const resolved = resolveConfigPath(profileDir, file);
+      if (!resolved.exists) missingFiles.push(file);
+      else if (resolved.source.includes("runner/ (compatibility)")) {
+        compatibilityFiles.push(file);
+        compatibilityMoves.push({
+          from: resolved.path,
+          to: path.join(path.dirname(path.dirname(resolved.path)), file),
+        });
       }
     }
   }
 
   // Generate contextual suggestions
   if (missingFiles.includes("intent.md")) {
-    suggestions.push("Create intent.md to describe project goals and scope");
+    suggestions.push(
+      `Create ${path.join(configurationTargetDir, "intent.md")} to describe project goals and scope`
+    );
   }
 
   if (missingFiles.includes("scope.yml")) {
-    suggestions.push("Create scope.yml to define PR discovery rules");
+    suggestions.push(
+      `Create ${path.join(configurationTargetDir, "scope.yml")} to define PR discovery rules`
+    );
   }
 
   if (missingFiles.includes("deps.yml")) {
-    suggestions.push("Create deps.yml to specify dependency relationships");
+    suggestions.push(
+      `Create ${path.join(configurationTargetDir, "deps.yml")} to specify dependency relationships`
+    );
   }
 
   if (missingFiles.includes("gates.yml")) {
-    suggestions.push("Create gates.yml to define quality gates");
+    suggestions.push(
+      `Create ${path.join(configurationTargetDir, "gates.yml")} to define quality gates`
+    );
+  }
+
+  if (compatibilityFiles.length) {
+    suggestions.push(
+      ...compatibilityMoves.map(
+        ({ from, to }) => `Move compatibility configuration ${from} to ${to}`
+      )
+    );
   }
 
   return {
     profileDir,
     hasConfiguration: missingFiles.length === 0,
     missingFiles,
+    compatibilityFiles,
     suggestions,
   };
 }

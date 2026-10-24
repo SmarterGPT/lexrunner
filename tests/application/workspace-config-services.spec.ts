@@ -33,13 +33,141 @@ describe("workspace/config application services", () => {
       contract: "bounded-ax-v1",
       created: true,
       config: { role: "development" },
-      copiedFiles: ["runner/scope.yml"],
+      copiedFiles: ["scope.yml"],
     });
     expect(replay).toMatchObject({
       contract: "bounded-ax-v1",
       created: false,
       copiedFiles: [],
     });
+  });
+
+  it("makes initialization immediately visible to doctor and config queries", async () => {
+    const root = fixtureRoot();
+    const tracked = path.join(root, ".smartergpt");
+    fs.mkdirSync(tracked);
+    fs.writeFileSync(path.join(tracked, "intent.md"), "# Intent\n");
+    fs.writeFileSync(path.join(tracked, "scope.yml"), "version: 1\ntarget: release\n");
+    fs.writeFileSync(path.join(tracked, "deps.yml"), "version: 1\nitems: []\n");
+    fs.writeFileSync(path.join(tracked, "gates.yml"), "version: 1\ngates: []\n");
+    const initialized = new WorkspaceInitializationService().run({ baseDir: root });
+    const doctor = await withoutProfileEnvironment(() =>
+      new WorkspaceDiagnosticsService().run({ baseDir: root })
+    );
+    const shown = new ConfigurationQueryService().show({ baseDir: root, key: "scope.target" });
+
+    expect(initialized.copiedFiles).toEqual(["intent.md", "scope.yml", "deps.yml", "gates.yml"]);
+    expect(doctor).toMatchObject({
+      configuration: {
+        hasConfiguration: true,
+        missingFiles: [],
+        compatibilityFiles: [],
+      },
+    });
+    expect(shown.configuration[0]).toMatchObject({
+      value: "release",
+      source: ".smartergpt.local/scope.yml",
+    });
+    expect(fs.readdirSync(path.join(root, ".smartergpt.local", "runner"))).toEqual([]);
+  });
+
+  it("reads runner compatibility config with exact root-migration remediation", async () => {
+    const root = fixtureRoot();
+    const profile = path.join(root, ".smartergpt.local");
+    const runner = path.join(profile, "runner");
+    fs.mkdirSync(runner, { recursive: true });
+    fs.writeFileSync(path.join(profile, "profile.yml"), "role: development\n");
+    fs.writeFileSync(path.join(runner, "intent.md"), "# Intent\n");
+    fs.writeFileSync(path.join(runner, "scope.yml"), "version: 1\ntarget: compatibility\n");
+    fs.writeFileSync(path.join(runner, "deps.yml"), "version: 1\nitems: []\n");
+    fs.writeFileSync(path.join(runner, "gates.yml"), "version: 1\ngates: []\n");
+    const doctor = await withoutProfileEnvironment(() =>
+      new WorkspaceDiagnosticsService().run({ baseDir: root })
+    );
+    const shown = new ConfigurationQueryService().show({ baseDir: root, key: "scope.target" });
+
+    expect(doctor).toMatchObject({
+      configuration: {
+        hasConfiguration: true,
+        missingFiles: [],
+        compatibilityFiles: ["intent.md", "scope.yml", "deps.yml", "gates.yml"],
+      },
+    });
+    for (const file of ["intent.md", "scope.yml", "deps.yml", "gates.yml"]) {
+      expect(doctor.suggestions).toContain(
+        `Move compatibility configuration ${path.join(runner, file)} to ${path.join(profile, file)}`
+      );
+    }
+    expect(shown.configuration[0]).toMatchObject({
+      value: "compatibility",
+      source: ".smartergpt.local/runner/scope.yml",
+    });
+  });
+
+  it("fills a partial local overlay file-by-file from the tracked workspace", async () => {
+    const root = fixtureRoot();
+    const workspace = path.join(root, ".smartergpt");
+    const local = path.join(root, ".smartergpt.local");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(local);
+    fs.writeFileSync(path.join(workspace, "intent.md"), "# Workspace intent\n");
+    fs.writeFileSync(path.join(workspace, "scope.yml"), "version: 1\ntarget: workspace\n");
+    fs.writeFileSync(path.join(workspace, "deps.yml"), "version: 1\nitems: []\n");
+    fs.writeFileSync(path.join(workspace, "gates.yml"), "version: 1\ngates: []\n");
+    fs.writeFileSync(path.join(local, "profile.yml"), "role: development\n");
+    fs.writeFileSync(path.join(local, "intent.md"), "# Local intent\n");
+
+    const doctor = await withoutProfileEnvironment(() =>
+      new WorkspaceDiagnosticsService().run({ baseDir: root })
+    );
+    const shown = new ConfigurationQueryService().show({ baseDir: root, key: "scope.target" });
+
+    expect(doctor.configuration).toMatchObject({
+      profileDir: local,
+      hasConfiguration: true,
+      missingFiles: [],
+      compatibilityFiles: [],
+    });
+    expect(shown.configuration[0]).toMatchObject({
+      value: "workspace",
+      source: ".smartergpt/scope.yml",
+    });
+  });
+
+  it("makes missing required configuration an unhealthy doctor result", async () => {
+    const root = fixtureRoot();
+    fs.mkdirSync(path.join(root, ".smartergpt"));
+    fs.writeFileSync(path.join(root, ".smartergpt", "profile.yml"), "role: development\n");
+    const doctor = await withoutProfileEnvironment(() =>
+      new WorkspaceDiagnosticsService().run({ baseDir: root })
+    );
+    expect(doctor.hasErrors).toBe(true);
+    expect(doctor.issues.join(" ")).toContain("intent.md");
+    expect(doctor.suggestions).toContain(
+      `Create ${path.join(root, ".smartergpt", "scope.yml")} to define PR discovery rules`
+    );
+  });
+
+  it("uses shell-neutral initialization remediation when no profile exists", async () => {
+    const root = fixtureRoot();
+
+    const doctor = await withoutProfileEnvironment(() =>
+      new WorkspaceDiagnosticsService().run({ baseDir: root })
+    );
+
+    expect(doctor.hasErrors).toBe(true);
+    expect(doctor.suggestions).toContain(
+      `Initialize the local profile at ${path.join(root, ".smartergpt.local")}`
+    );
+    expect(doctor.suggestions.join(" ")).not.toContain("mkdir ");
+    for (const file of ["intent.md", "scope.yml", "deps.yml", "gates.yml"]) {
+      expect(
+        doctor.suggestions.some((suggestion) =>
+          suggestion.includes(path.join(root, ".smartergpt.local", file))
+        )
+      ).toBe(true);
+      expect(doctor.suggestions.join(" ")).not.toContain(path.join(root, ".smartergpt", file));
+    }
   });
 
   it("resolves bounded precedence once and redacts sensitive values", () => {

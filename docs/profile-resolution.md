@@ -186,6 +186,23 @@ lexrunner mcp
 
 ## Migration Guide
 
+### From compatibility `runner/` configuration
+
+Configuration belongs at the profile root; `runner/` is reserved for generated artifacts. Older
+LexRunner releases could place configuration under `runner/`. Those files remain readable as a
+compatibility fallback, but they never override a same-named profile-root file.
+
+Inspect and migrate a writable profile explicitly:
+
+```bash
+lexrunner migrate-profile --from-runner --profile-dir .smartergpt.local --dry-run
+lexrunner migrate-profile --from-runner --profile-dir .smartergpt.local
+```
+
+The migration creates a backup, refuses to overwrite root files, and reports any file whose
+rollback disposition cannot be confirmed. A tracked `role: example` profile remains write
+protected; update such repository configuration through normal reviewed source changes.
+
 ### From Hardcoded `.smartergpt/`
 
 **Before:**

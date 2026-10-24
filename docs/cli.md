@@ -691,7 +691,8 @@ Example output with `--optimize`:
 
 #### JSON Output Schema (`--json` flag)
 
-**Success Response:**
+**Response shape sketch (non-executable):** The union-like placeholder strings below describe
+possible values; this block is not a literal Plan and must not be copied as `plan.json`.
 
 ```json
 {

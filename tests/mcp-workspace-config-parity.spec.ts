@@ -15,8 +15,8 @@ import { InMemoryRunStore } from "../src/store/inmemory/index.js";
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const roots: string[] = [];
 
-afterEach(() => {
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => removeFixtureRoot(root)));
 });
 
 describe("published MCP workspace/config parity", () => {
@@ -226,6 +226,38 @@ describe("published MCP workspace/config parity", () => {
             message: expect.stringContaining("WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID"),
           });
         }
+
+        const initialGuideResponse = await client.callTool({
+          name: "workflow_guide",
+          arguments: { phase: "initial" },
+        });
+        const initialGuide = JSON.parse((initialGuideResponse.content[0] as { text: string }).text);
+        expect(initialGuide).toMatchObject({
+          authority: "advisory",
+          authorizesExecution: false,
+          authorizesMerge: false,
+          phase: "initial",
+          canProceed: false,
+          recommendedAction: "local.init",
+          readiness: { source: "doctor", hasErrors: true },
+        });
+        expect(initialGuide.readiness.suggestions.join(" ")).toContain(startupRoot);
+        expect(initialGuide.readiness.suggestions.join(" ")).not.toContain(laterRoot);
+
+        const laterGuideResponse = await client.callTool({
+          name: "workflow_guide",
+          arguments: { phase: "post-plan-creation" },
+        });
+        const laterGuide = JSON.parse((laterGuideResponse.content[0] as { text: string }).text);
+        expect(laterGuide).toMatchObject({
+          authority: "advisory",
+          authorizesExecution: false,
+          authorizesMerge: false,
+          phase: "post-plan-creation",
+          canProceed: true,
+          recommendedAction: "gates.run",
+        });
+        expect(laterGuide).not.toHaveProperty("readiness");
       } finally {
         process.chdir(previousCwd);
         await client.close();
@@ -310,6 +342,21 @@ function fixtureRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "lexrunner-mcp-workspace-"));
   roots.push(root);
   return root;
+}
+
+async function removeFixtureRoot(root: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fs.promises.rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= 30 || (code !== "EPERM" && code !== "EBUSY" && code !== "ENOTEMPTY")) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 }
 
 function prepareDiagnosticRoot(root: string, role: string): void {

@@ -1067,14 +1067,16 @@ PR-100 → PR-101 → PR-102
 
 **Plan:**
 
+<!-- lexrunner-plan-example:diffgraph-linear -->
+
 ```json
 {
   "schemaVersion": "1.0.0",
   "target": "main",
   "items": [
-    { "id": "pr-100", "name": "auth-api", "deps": [] },
-    { "id": "pr-101", "name": "auth-ui", "deps": ["auth-api"] },
-    { "id": "pr-102", "name": "auth-tests", "deps": ["auth-ui"] }
+    { "name": "PR-100", "deps": [], "gates": [] },
+    { "name": "PR-101", "deps": ["PR-100"], "gates": [] },
+    { "name": "PR-102", "deps": ["PR-101"], "gates": [] }
   ]
 }
 ```
@@ -1110,12 +1112,16 @@ PR-100    PR-101
 
 **Plan:**
 
+<!-- lexrunner-plan-example:diffgraph-diamond -->
+
 ```json
 {
+  "schemaVersion": "1.0.0",
+  "target": "main",
   "items": [
-    { "id": "pr-100", "name": "auth", "deps": [] },
-    { "id": "pr-101", "name": "api", "deps": [] },
-    { "id": "pr-102", "name": "ui", "deps": ["auth", "api"] }
+    { "name": "PR-100", "deps": [], "gates": [] },
+    { "name": "PR-101", "deps": [], "gates": [] },
+    { "name": "PR-102", "deps": ["PR-100", "PR-101"], "gates": [] }
   ]
 }
 ```

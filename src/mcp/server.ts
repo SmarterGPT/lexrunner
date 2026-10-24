@@ -1248,7 +1248,7 @@ function createServer(options?: McpServerOptions): Server {
         return await handleConfigShow(args as { key?: string });
 
       case "workflow_guide":
-        return await handleWorkflowGuide(args as WorkflowGuideArgs);
+        return await handleWorkflowGuide(args as WorkflowGuideArgs, serverBaseDir);
 
       case "metrics":
         return await handleMetrics(args as { filter?: string; format?: string });
@@ -2640,7 +2640,8 @@ async function handleMetrics(args: {
  * Handle workflow.guide tool - Get context-aware workflow guidance
  */
 async function handleWorkflowGuide(
-  args: WorkflowGuideArgs
+  args: WorkflowGuideArgs,
+  diagnosticBase: string
 ): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
     // Validate phase is a valid WorkflowPhase
@@ -2661,8 +2662,45 @@ async function handleWorkflowGuide(
       );
     }
 
-    // Create workflow guide for the requested phase
-    const guide: WorkflowGuide = createWorkflowGuide(phase);
+    let guide: WorkflowGuide;
+    if (phase === "initial") {
+      const doctor = await new WorkspaceDiagnosticsService().run({ baseDir: diagnosticBase });
+      const remediation = doctor.suggestions.length
+        ? doctor.suggestions.join("; ")
+        : "Run doctor and resolve every reported workspace issue before proceeding";
+
+      // Guidance reports observed onboarding readiness, but remains explicitly
+      // advisory and never grants execution or merge authority.
+      guide = createWorkflowGuide(phase, {
+        canProceed: !doctor.hasErrors,
+        commonIssues:
+          doctor.hasErrors || doctor.configuration.compatibilityFiles.length
+            ? [
+                {
+                  symptom: doctor.hasErrors
+                    ? doctor.issues.join("; ")
+                    : "Compatibility configuration remains under runner/",
+                  solution: remediation,
+                },
+              ]
+            : [],
+        recommendedAction: doctor.hasErrors
+          ? doctor.configuration.missingFiles.length
+            ? "local.init"
+            : "doctor"
+          : undefined,
+        observation: {
+          source: "doctor",
+          hasErrors: doctor.hasErrors,
+          missingFiles: doctor.configuration.missingFiles,
+          compatibilityFiles: doctor.configuration.compatibilityFiles,
+          issues: doctor.issues,
+          suggestions: doctor.suggestions,
+        },
+      });
+    } else {
+      guide = createWorkflowGuide(phase);
+    }
 
     return {
       content: [

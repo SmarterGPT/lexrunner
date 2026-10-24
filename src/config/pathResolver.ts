@@ -1,6 +1,7 @@
 /**
- * Configuration path resolution with runner/ subdirectory support
- * Provides new→legacy fallback pattern for config files
+ * Configuration path resolution with compatibility support for the historical
+ * runner/ configuration layout. Profile-root configuration is canonical;
+ * runner/ is reserved for working artifacts.
  */
 
 import * as fs from "fs";
@@ -11,9 +12,13 @@ export interface ResolvedConfigPath {
   path: string;
   /** Whether the file exists at the resolved path */
   exists: boolean;
-  /** Source pattern used: "runner/" or "flat (legacy)" */
-  source: "runner/" | "flat (legacy)";
-  /** Whether a legacy migration notice should be shown */
+  /** Source pattern used for this observation */
+  source:
+    | "profile-root"
+    | "runner/ (compatibility)"
+    | "workspace fallback"
+    | "workspace runner/ (compatibility)";
+  /** Whether compatibility-layout remediation should be shown */
   shouldNotifyMigration: boolean;
 }
 
@@ -21,43 +26,84 @@ export interface ResolvedConfigPath {
 let migrationNoticeShown = false;
 
 /**
- * Resolve configuration file path with runner/ subdirectory support
+ * Resolve a configuration file from the canonical profile root, with a
+ * compatibility-only fallback for releases that emitted config into runner/.
  *
  * Tries paths in this order:
- * 1. profileDir/runner/{fileName} (new structure)
- * 2. profileDir/{fileName} (legacy flat structure)
+ * 1. profileDir/{fileName} (canonical)
+ * 2. profileDir/runner/{fileName} (compatibility fallback)
+ * 3. sibling .smartergpt/{fileName}, only when profileDir is the local overlay
+ * 4. sibling .smartergpt/runner/{fileName} (compatibility fallback)
  *
  * @param profileDir - Base profile directory
  * @param fileName - Configuration file name
  * @returns Resolved path information
  */
-export function resolveConfigPath(profileDir: string, fileName: string): ResolvedConfigPath {
-  // Try new structure first (runner/)
-  const runnerPath = path.join(profileDir, "runner", fileName);
-  if (fs.existsSync(runnerPath)) {
+export function resolveConfigPath(
+  profileDir: string,
+  fileName: string,
+  options: { allowWorkspaceFallback?: boolean } = {}
+): ResolvedConfigPath {
+  const rootPath = path.join(profileDir, fileName);
+  if (fs.existsSync(rootPath)) {
     return {
-      path: runnerPath,
+      path: rootPath,
       exists: true,
-      source: "runner/",
+      source: "profile-root",
       shouldNotifyMigration: false,
     };
   }
 
-  // Fallback to legacy flat structure
-  const flatPath = path.join(profileDir, fileName);
-  const exists = fs.existsSync(flatPath);
+  // Older releases could place configuration in runner/. Continue reading it,
+  // but never allow it to override a canonical root file.
+  const runnerPath = path.join(profileDir, "runner", fileName);
+  if (fs.existsSync(runnerPath)) {
+    const shouldNotify = !migrationNoticeShown;
+    if (shouldNotify) migrationNoticeShown = true;
+    return {
+      path: runnerPath,
+      exists: true,
+      source: "runner/ (compatibility)",
+      shouldNotifyMigration: shouldNotify,
+    };
+  }
 
-  // Only show migration notice once per process and only if legacy file exists
-  const shouldNotify = exists && !migrationNoticeShown;
-  if (shouldNotify) {
-    migrationNoticeShown = true;
+  // A local overlay is file-level: when it omits a file, read the tracked
+  // workspace profile. Explicit/environment profiles do not silently cross
+  // this boundary because their directory names are not .smartergpt.local.
+  if (
+    options.allowWorkspaceFallback !== false &&
+    path.basename(path.resolve(profileDir)) === ".smartergpt.local"
+  ) {
+    const workspaceDir = path.join(path.dirname(path.resolve(profileDir)), ".smartergpt");
+    const workspaceRootPath = path.join(workspaceDir, fileName);
+    if (fs.existsSync(workspaceRootPath)) {
+      return {
+        path: workspaceRootPath,
+        exists: true,
+        source: "workspace fallback",
+        shouldNotifyMigration: false,
+      };
+    }
+
+    const workspaceRunnerPath = path.join(workspaceDir, "runner", fileName);
+    if (fs.existsSync(workspaceRunnerPath)) {
+      const shouldNotify = !migrationNoticeShown;
+      if (shouldNotify) migrationNoticeShown = true;
+      return {
+        path: workspaceRunnerPath,
+        exists: true,
+        source: "workspace runner/ (compatibility)",
+        shouldNotifyMigration: shouldNotify,
+      };
+    }
   }
 
   return {
-    path: flatPath,
-    exists,
-    source: "flat (legacy)",
-    shouldNotifyMigration: shouldNotify,
+    path: rootPath,
+    exists: false,
+    source: "profile-root",
+    shouldNotifyMigration: false,
   };
 }
 
@@ -68,7 +114,7 @@ export function showMigrationNotice(): void {
   // Don't show notice in test environment
   if (!process.env.VITEST) {
     console.error(
-      "⚠️  Legacy flat structure detected. Consider migrating with: lex-pr migrate-profile --from-flat"
+      "⚠️  Compatibility configuration found under runner/. Move configuration files to the profile root; runner/ is reserved for working artifacts."
     );
   }
 }
@@ -87,15 +133,17 @@ export function resetMigrationNotice(): void {
  * @param resolved - Resolved path information
  */
 export function logPathResolution(operation: string, resolved: ResolvedConfigPath): void {
+  const compatibilitySource = resolved.source.includes("runner/ (compatibility)");
   const logEntry = {
     timestamp: new Date().toISOString(),
-    level: resolved.source === "flat (legacy)" ? "warn" : "info",
+    level: compatibilitySource ? "warn" : "info",
     module: "config/pathResolver",
     operation,
     path_source: resolved.source,
     path: resolved.path,
-    ...(resolved.source === "flat (legacy)" && {
-      message: "Using legacy flat structure. Run 'lex-pr migrate-profile --from-flat' to migrate.",
+    ...(compatibilitySource && {
+      message:
+        "Using compatibility runner/ configuration. Move it to the profile root; runner/ is reserved for working artifacts.",
     }),
   };
 

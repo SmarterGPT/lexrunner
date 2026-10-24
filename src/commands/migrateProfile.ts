@@ -1,13 +1,15 @@
 /**
- * Profile migration command - migrate from flat to runner/ structure
+ * Profile migration command. Profile-root configuration is canonical;
+ * runner/ is reserved for working artifacts.
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import { resolveProfile } from "../config/profileResolver.js";
+import { resolveProfile, validateWriteOperation } from "../config/profileResolver.js";
 
 export interface MigrateProfileOptions {
   fromFlat?: boolean;
+  fromRunner?: boolean;
   dryRun?: boolean;
   profileDir?: string;
 }
@@ -17,19 +19,32 @@ export interface MigrateProfileResult {
   message: string;
   migratedFiles: string[];
   backupPath?: string;
+  backupStatus?: "complete" | "incomplete" | "unavailable";
   skippedFiles: string[];
+  uncertainFiles?: string[];
 }
 
 /**
- * Migrate profile from flat structure to runner/ subdirectory
+ * Move compatibility configuration from runner/ to the profile root without
+ * overwriting an existing canonical file.
  */
 export async function runMigrateProfile(
   options: MigrateProfileOptions = {}
 ): Promise<MigrateProfileResult> {
-  if (!options.fromFlat) {
+  if (options.fromFlat) {
     return {
       success: false,
-      message: "No migration type specified. Use --from-flat to migrate from flat structure.",
+      message:
+        "--from-flat is retired because profile-root configuration is canonical. Use --from-runner to move compatibility files out of runner/.",
+      migratedFiles: [],
+      skippedFiles: [],
+    };
+  }
+  if (!options.fromRunner) {
+    return {
+      success: false,
+      message:
+        "No migration type specified. Use --from-runner to restore canonical profile-root configuration.",
       migratedFiles: [],
       skippedFiles: [],
     };
@@ -42,6 +57,9 @@ export async function runMigrateProfile(
   try {
     const resolved = resolveProfile(options.profileDir, baseDir);
     profileDir = resolved.path;
+    if (!options.dryRun) {
+      validateWriteOperation(profileDir, resolved.manifest.role, "migrate profile configuration");
+    }
   } catch (error) {
     return {
       success: false,
@@ -68,41 +86,23 @@ export async function runMigrateProfile(
     "deps.yml",
     "gates.yml",
     "stack.yml",
+    "merge-policy.yml",
     "pull-request-template.md",
   ];
 
   const migratedFiles: string[] = [];
-  const skippedFiles: string[] = [];
   const runnerDir = path.join(profileDir, "runner");
+  const runnerFiles = configFiles.filter((file) => fs.existsSync(path.join(runnerDir, file)));
+  const conflicts = runnerFiles.filter((file) => fs.existsSync(path.join(profileDir, file)));
+  const filesToMigrate = runnerFiles.filter((file) => !conflicts.includes(file));
+  const skippedFiles = conflicts.map(
+    (file) => `${file} (profile-root file exists; compatibility copy preserved)`
+  );
 
-  // Check if any files need migration
-  const filesToMigrate = configFiles.filter((file) => {
-    const flatPath = path.join(profileDir, file);
-    const runnerPath = path.join(runnerDir, file);
-
-    // Only migrate if file exists in flat structure and doesn't exist in runner/
-    return fs.existsSync(flatPath) && !fs.existsSync(runnerPath);
-  });
-
-  if (filesToMigrate.length === 0) {
-    // Check if files are already in runner/
-    const filesInRunner = configFiles.filter((file) => {
-      const runnerPath = path.join(runnerDir, file);
-      return fs.existsSync(runnerPath);
-    });
-
-    if (filesInRunner.length > 0) {
-      return {
-        success: true,
-        message: "Migration already complete. All config files are in runner/ subdirectory.",
-        migratedFiles: [],
-        skippedFiles: configFiles,
-      };
-    }
-
+  if (!runnerFiles.length) {
     return {
       success: true,
-      message: "No config files found to migrate.",
+      message: "No compatibility configuration files found under runner/.",
       migratedFiles: [],
       skippedFiles: [],
     };
@@ -112,76 +112,92 @@ export async function runMigrateProfile(
   if (options.dryRun) {
     return {
       success: true,
-      message: `Dry run: Would migrate ${filesToMigrate.length} file(s) to runner/ subdirectory`,
+      message: `Dry run: Would migrate ${filesToMigrate.length} file(s) to the profile root`,
       migratedFiles: filesToMigrate.map((f) => `${f} (would migrate)`),
+      skippedFiles,
+    };
+  }
+
+  if (!filesToMigrate.length) {
+    return {
+      success: true,
+      message: "Canonical profile-root configuration already exists; no files were overwritten.",
+      migratedFiles: [],
       skippedFiles,
     };
   }
 
   // Create backup before migration
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupPath = path.join(profileDir, `.backup-${timestamp}`);
+  const backupPath = path.join(profileDir, `.backup-${timestamp}`, "runner-config");
+  let backupCreated = false;
+  let backupComplete = false;
 
   try {
     fs.mkdirSync(backupPath, { recursive: true });
+    backupCreated = true;
 
     // Copy files to backup
     for (const file of filesToMigrate) {
-      const sourcePath = path.join(profileDir, file);
+      const sourcePath = path.join(runnerDir, file);
       const backupFilePath = path.join(backupPath, file);
       fs.copyFileSync(sourcePath, backupFilePath);
     }
+    backupComplete = true;
 
-    // Create runner/ directory
-    fs.mkdirSync(runnerDir, { recursive: true });
-
-    // Move files to runner/
+    // Move compatibility files to the canonical profile root.
     for (const file of filesToMigrate) {
-      const flatPath = path.join(profileDir, file);
       const runnerPath = path.join(runnerDir, file);
-
-      // Move file
-      fs.renameSync(flatPath, runnerPath);
+      const rootPath = path.join(profileDir, file);
+      fs.renameSync(runnerPath, rootPath);
       migratedFiles.push(file);
-    }
-
-    // Record skipped files (files that already exist in runner/)
-    for (const file of configFiles) {
-      if (!filesToMigrate.includes(file)) {
-        const runnerPath = path.join(runnerDir, file);
-        if (fs.existsSync(runnerPath)) {
-          skippedFiles.push(`${file} (already in runner/)`);
-        }
-      }
     }
 
     return {
       success: true,
-      message: `Successfully migrated ${migratedFiles.length} file(s) to runner/ subdirectory`,
+      message: `Successfully migrated ${migratedFiles.length} file(s) to the profile root`,
       migratedFiles,
       backupPath,
+      backupStatus: "complete",
       skippedFiles,
     };
   } catch (error) {
-    // Rollback on error
-    try {
-      for (const file of migratedFiles) {
+    const uncertainFiles: string[] = [];
+    // Roll back every completed move independently so one failure does not
+    // hide the disposition of the remaining files.
+    for (const file of migratedFiles) {
+      try {
         const runnerPath = path.join(runnerDir, file);
-        const flatPath = path.join(profileDir, file);
-        if (fs.existsSync(runnerPath)) {
-          fs.renameSync(runnerPath, flatPath);
+        const rootPath = path.join(profileDir, file);
+        if (fs.existsSync(rootPath) && !fs.existsSync(runnerPath)) {
+          fs.renameSync(rootPath, runnerPath);
         }
+        if (!fs.existsSync(runnerPath) || fs.existsSync(rootPath)) uncertainFiles.push(file);
+      } catch {
+        uncertainFiles.push(file);
       }
-    } catch (rollbackError) {
-      // Rollback failed - backup should still be available
     }
+
+    const moveDisposition = uncertainFiles.length
+      ? `Rollback could not confirm restoration for: ${uncertainFiles.join(", ")}.`
+      : migratedFiles.length
+        ? "Completed moves were restored."
+        : "No files were moved.";
+    const backupStatus = backupComplete ? "complete" : backupCreated ? "incomplete" : "unavailable";
+    const backupDisposition = backupComplete
+      ? `A complete backup is retained at ${backupPath}.`
+      : backupCreated
+        ? `The backup at ${backupPath} is incomplete and must not be relied upon for recovery.`
+        : "No backup was created.";
 
     return {
       success: false,
-      message: `Migration failed: ${error instanceof Error ? error.message : String(error)}. Files restored from backup.`,
+      message: `Migration failed: ${error instanceof Error ? error.message : String(error)}. ${moveDisposition} ${backupDisposition}`,
       migratedFiles: [],
-      backupPath,
+      ...(backupCreated ? { backupPath } : {}),
+      backupStatus,
       skippedFiles,
+      ...(uncertainFiles.length ? { uncertainFiles } : {}),
     };
   }
 }

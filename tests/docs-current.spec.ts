@@ -88,6 +88,31 @@ describe("current documentation", () => {
       );
     }
   });
+
+  it("keeps the MCP README on the generated published tool surface", async () => {
+    const readme = await read("README.mcp.md");
+
+    expect(readme).toContain("<!-- BEGIN GENERATED MCP TOOL INVENTORY -->");
+    expect(readme).toContain("<!-- END GENERATED MCP TOOL INVENTORY -->");
+    expect(readme).toContain("checked against the published `tools/list` surface");
+    expect(readme).toContain("`ALLOW_MUTATIONS=false`");
+    expect(readme).toMatch(/does \*\*not\*\*\s+turn the server into a read-only sandbox/);
+
+    for (const unpublishedName of [
+      "plan_validate",
+      "plan_analyze",
+      "pr_list",
+      "mcp_lexrunner_",
+      "create_task_snapshot",
+      "submit_task_receipt",
+      "get_task_status",
+      "list_pending_tasks",
+    ]) {
+      expect(readme, `README.mcp.md advertises absent tool ${unpublishedName}`).not.toContain(
+        unpublishedName
+      );
+    }
+  });
 });
 
 async function read(path: string): Promise<string> {

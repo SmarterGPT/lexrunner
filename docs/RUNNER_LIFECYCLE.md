@@ -23,7 +23,7 @@ Each log entry contains these stable fields:
 
 ```json
 {"timestamp":"2025-11-09T12:34:56.789Z","level":"info","module":"gates/executor","operation":"executeGate","duration_ms":2341,"metadata":{"gate":"typecheck","result":"pass"}}
-{"timestamp":"2025-11-09T12:34:59.123Z","level":"warn","module":"config/loader","operation":"loadScope","path_source":"flat (legacy)","message":"Using legacy flat structure"}
+{"timestamp":"2025-11-09T12:34:59.123Z","level":"warn","module":"config/loader","operation":"loadScope","path_source":"runner/ (compatibility)","message":"Using compatibility runner/ configuration; move it to the profile root"}
 ```
 
 ### Usage

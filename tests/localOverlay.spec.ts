@@ -28,6 +28,7 @@ describe("Local Overlay Setup", () => {
 
       expect(result.created).toBe(true);
       expect(fs.existsSync(path.join(tempDir, ".smartergpt.local"))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, ".smartergpt.local", "runner"))).toBe(true);
     });
 
     it("should create profile.yml with role: development", () => {
@@ -97,6 +98,20 @@ describe("Local Overlay Setup", () => {
       expect(result2.path).toBe(path.join(tempDir, ".smartergpt.local"));
     });
 
+    it("repairs the artifact-only runner directory without rewriting an existing overlay", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(path.join(localDir, "profile.yml"), "role: development\n");
+      fs.writeFileSync(path.join(localDir, "scope.yml"), "version: 1\ntarget: custom\n");
+
+      const result = initLocalOverlay(tempDir);
+
+      expect(result.created).toBe(false);
+      expect(result.copiedFiles).toEqual([]);
+      expect(fs.existsSync(path.join(localDir, "runner"))).toBe(true);
+      expect(fs.readFileSync(path.join(localDir, "scope.yml"), "utf8")).toContain("target: custom");
+    });
+
     it("should force recreation when force flag is set", () => {
       // First initialization
       const result1 = initLocalOverlay(tempDir);
@@ -119,21 +134,25 @@ describe("Local Overlay Setup", () => {
       fs.writeFileSync(path.join(smartergptDir, "scope.yml"), "version: 1");
       fs.writeFileSync(path.join(smartergptDir, "deps.yml"), "version: 1");
       fs.writeFileSync(path.join(smartergptDir, "gates.yml"), "version: 1");
+      fs.writeFileSync(path.join(smartergptDir, "merge-policy.yml"), "version: 1");
 
       const result = initLocalOverlay(tempDir);
 
       expect(result.copiedFiles.length).toBeGreaterThan(0);
-      expect(result.copiedFiles).toContain("runner/intent.md");
-      expect(result.copiedFiles).toContain("runner/scope.yml");
-      expect(result.copiedFiles).toContain("runner/deps.yml");
-      expect(result.copiedFiles).toContain("runner/gates.yml");
+      expect(result.copiedFiles).toEqual([
+        "intent.md",
+        "scope.yml",
+        "deps.yml",
+        "gates.yml",
+        "merge-policy.yml",
+      ]);
 
-      // Verify files were actually copied to runner/
-      const runnerDir = path.join(tempDir, ".smartergpt.local", "runner");
-      expect(fs.existsSync(path.join(runnerDir, "intent.md"))).toBe(true);
-      expect(fs.existsSync(path.join(runnerDir, "scope.yml"))).toBe(true);
-      expect(fs.existsSync(path.join(runnerDir, "deps.yml"))).toBe(true);
-      expect(fs.existsSync(path.join(runnerDir, "gates.yml"))).toBe(true);
+      // Configuration is copied to the profile root; runner/ remains artifact-only.
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      for (const file of result.copiedFiles) {
+        expect(fs.existsSync(path.join(localDir, file))).toBe(true);
+        expect(fs.existsSync(path.join(localDir, "runner", file))).toBe(false);
+      }
     });
 
     it("should not overwrite existing files in local overlay", () => {
@@ -168,10 +187,26 @@ describe("Local Overlay Setup", () => {
 
       const result = initLocalOverlay(tempDir);
 
-      expect(result.copiedFiles).toContain("runner/pull-request-template.md");
+      expect(result.copiedFiles).toContain("pull-request-template.md");
       expect(
-        fs.existsSync(path.join(tempDir, ".smartergpt.local", "runner", "pull-request-template.md"))
+        fs.existsSync(path.join(tempDir, ".smartergpt.local", "pull-request-template.md"))
       ).toBe(true);
+    });
+
+    it("normalizes compatibility source config into the local profile root", () => {
+      const compatibilityDir = path.join(tempDir, ".smartergpt", "runner");
+      fs.mkdirSync(compatibilityDir, { recursive: true });
+      fs.writeFileSync(path.join(compatibilityDir, "scope.yml"), "version: 1\ntarget: main\n");
+
+      const result = initLocalOverlay(tempDir);
+
+      expect(result.copiedFiles).toEqual(["scope.yml"]);
+      expect(
+        fs.readFileSync(path.join(tempDir, ".smartergpt.local", "scope.yml"), "utf8")
+      ).toContain("target: main");
+      expect(fs.existsSync(path.join(tempDir, ".smartergpt.local", "runner", "scope.yml"))).toBe(
+        false
+      );
     });
 
     it("should not copy runtime artifacts", () => {

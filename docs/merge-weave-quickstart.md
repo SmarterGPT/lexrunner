@@ -35,63 +35,65 @@ Create a `plan.json` file with 2-3 branches. **Important**: Branch names must ma
 
 > **💡 Tip**: Store this plan in `.smartergpt.local/runner/plan.json` (gitignored) or `/tmp/plan.json` to avoid working tree conflicts.
 
+<!-- lexrunner-plan-example:merge-weave-quickstart -->
+
 ```json
 {
   "schemaVersion": "1.0.0",
-  "title": "Quick Merge-Weave Example",
-  "description": "Merge feature branches into main",
+  "target": "main",
   "policy": {
     "requiredGates": ["lint", "typecheck"],
     "optionalGates": [],
-    "mergeRule": "strict-required"
+    "mergeRule": { "type": "strict-required" }
   },
-  "nodes": [
+  "items": [
     {
-      "id": "feature-auth",
-      "title": "Add authentication module",
-      "branch": "feature/auth",
-      "dependsOn": [],
-      "gates": ["lint", "typecheck"]
+      "name": "feature/auth",
+      "deps": [],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" }
+      ]
     },
     {
-      "id": "feature-api",
-      "title": "Add REST API endpoints",
-      "branch": "feature/api",
-      "dependsOn": ["feature-auth"],
-      "gates": ["lint", "typecheck"]
+      "name": "feature/api",
+      "deps": ["feature/auth"],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" }
+      ]
     },
     {
-      "id": "feature-ui",
-      "title": "Add UI components",
-      "branch": "feature/ui",
-      "dependsOn": [],
-      "gates": ["lint", "typecheck"]
+      "name": "feature/ui",
+      "deps": [],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" }
+      ]
     }
-  ],
-  "integrationBranch": "integration/wave-1",
-  "targetBranch": "main"
+  ]
 }
 ```
 
 ### Field Explanations
 
-| Field                  | Description                                          | Example                              |
-| ---------------------- | ---------------------------------------------------- | ------------------------------------ |
-| `schemaVersion`        | Plan schema version (currently "1.0.0")              | `"1.0.0"`                            |
-| `title`                | Human-readable plan title                            | `"Quick Merge-Weave Example"`        |
-| `description`          | Brief description of the merge operation             | `"Merge feature branches into main"` |
-| `policy.requiredGates` | Gates that must pass for all items                   | `["lint", "typecheck"]`              |
-| `policy.mergeRule`     | Merge policy: `"strict-required"` or `"best-effort"` | `"strict-required"`                  |
-| `nodes[].id`           | Unique identifier for the item                       | `"feature-auth"`                     |
-| `nodes[].branch`       | **Exact remote branch name**                         | `"feature/auth"`                     |
-| `nodes[].dependsOn`    | Array of item IDs this depends on                    | `["feature-auth"]`                   |
-| `nodes[].gates`        | Gates to run for this item                           | `["lint", "typecheck"]`              |
-| `integrationBranch`    | Branch to merge all items into                       | `"integration/wave-1"`               |
-| `targetBranch`         | Final merge target (usually `main`)                  | `"main"`                             |
+| Field                  | Description                                               | Example                              |
+| ---------------------- | --------------------------------------------------------- | ------------------------------------ |
+| `schemaVersion`        | Plan schema version                                       | `"1.0.0"`                            |
+| `target`               | Final merge target                                        | `"main"`                             |
+| `policy.requiredGates` | Gate names that must pass                                 | `["lint", "typecheck"]`              |
+| `policy.mergeRule`     | Supported merge rule                                      | `{ "type": "strict-required" }`      |
+| `items[].name`         | Exact remote branch for a legacy-unbound plan             | `"feature/auth"`                     |
+| `items[].deps`         | Item names this item depends on                           | `["feature/auth"]`                   |
+| `items[].gates`        | Gate objects, each with a unique `name` and command `run` | `[{ "name": "lint", "run": "..." }]` |
+
+The integration branch is an execution option, not a Plan Schema field. GitHub-generated plans
+instead bind PR refs and commit IDs in `gitInputs`; see [Frozen Git inputs](./frozen-git-inputs.md).
 
 ### Concurrency Control
 
-Control parallel execution with `policy.maxWorkers`:
+Control parallel execution with `policy.maxWorkers`. This is a policy fragment, not a complete
+executable plan:
 
 ```json
 {
@@ -601,14 +603,19 @@ lex-pr merge --plan ./plan.json --execute --json
    # origin/feature/ui
    ```
 
-2. **Update plan with correct names**:
+2. **Update the item name to the exact branch** (for a legacy-unbound plan):
+
+   <!-- lexrunner-plan-example:merge-weave-correct-branch -->
 
    ```json
    {
-     "nodes": [
+     "schemaVersion": "1.0.0",
+     "target": "main",
+     "items": [
        {
-         "id": "feature-api",
-         "branch": "feature/api-endpoints" // Updated to match remote
+         "name": "feature/api-endpoints",
+         "deps": [],
+         "gates": []
        }
      ]
    }

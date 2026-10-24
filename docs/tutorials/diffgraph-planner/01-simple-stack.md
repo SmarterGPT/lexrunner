@@ -163,47 +163,64 @@ cat plan.json
 
 **Expected content:**
 
+<!-- lexrunner-plan-example:diffgraph-simple-stack-generated -->
+
 ```json
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.0.1",
   "target": "main",
   "items": [
     {
-      "id": "pr-100",
-      "name": "auth-api",
-      "branch": "feature/auth-api",
-      "sha": "abc123...",
+      "name": "PR-100",
       "deps": [],
-      "strategy": "merge-weave",
       "gates": []
     },
     {
-      "id": "pr-101",
-      "name": "auth-ui",
-      "branch": "feature/auth-ui",
-      "sha": "def456...",
-      "deps": ["auth-api"],
-      "strategy": "merge-weave",
+      "name": "PR-101",
+      "deps": ["PR-100"],
       "gates": []
     },
     {
-      "id": "pr-102",
-      "name": "auth-tests",
-      "branch": "feature/auth-tests",
-      "sha": "ghi789...",
-      "deps": ["auth-ui"],
-      "strategy": "merge-weave",
+      "name": "PR-102",
+      "deps": ["PR-101"],
       "gates": []
     }
-  ]
+  ],
+  "gitInputs": {
+    "schemaVersion": "1.0.0",
+    "repository": "https://github.com/example/repository.git",
+    "checkoutRemote": "origin",
+    "acquisition": "fetch",
+    "target": {
+      "ref": "refs/heads/main",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "sources": [
+      {
+        "item": "PR-100",
+        "ref": "refs/pull/100/head",
+        "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      {
+        "item": "PR-101",
+        "ref": "refs/pull/101/head",
+        "commit": "cccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "item": "PR-102",
+        "ref": "refs/pull/102/head",
+        "commit": "dddddddddddddddddddddddddddddddddddddddd"
+      }
+    ]
+  }
 }
 ```
 
 **Key observations:**
 
-- `pr-100` has `deps: []` (no dependencies, Layer 0)
-- `pr-101` depends on `["auth-api"]` (Layer 1)
-- `pr-102` depends on `["auth-ui"]` (Layer 2)
+- `PR-100` has `deps: []` (no dependencies, Layer 0)
+- `PR-101` depends on `["PR-100"]` (Layer 1)
+- `PR-102` depends on `["PR-101"]` (Layer 2)
 - All items are sorted deterministically
 
 ---

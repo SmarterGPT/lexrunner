@@ -321,7 +321,8 @@ A: No. Implementation agents use Issues/specs as usual. The constraint applies o
 ---
 
 **How do I declare PR dependencies?**
-Use a `Depends-on: #<PR>` footer (or labels). The plan generator resolves these into `node.dependsOn`.
+Use a `Depends-on: #<PR>` footer (or labels). The plan generator resolves these into
+`items[].deps` references.
 
 **What if my gates need secrets?**
 Provide them via CI secrets/env; do not let secrets alter gate semantics. Prefer containerized gates.
@@ -374,27 +375,45 @@ Some gates need secrets (e.g., databases, SaaS tokens) or services unavailable l
 
 ### Field Mapping (example)
 
-| Source                | Plan field             |
-| --------------------- | ---------------------- |
-| PR number             | `node.id`              |
-| PR title              | `node.title`           |
-| PR labels             | `node.tags[]`          |
-| `Depends-on:` footer  | `node.dependsOn[]`     |
-| Required checks label | `node.requiredGates[]` |
+| Source                     | Final Plan field              |
+| -------------------------- | ----------------------------- |
+| Selected PR or branch      | `items[].name`                |
+| `Depends-on:` footer       | `items[].deps[]`              |
+| Required checks            | `items[].gates[]`             |
+| Target branch              | `target`                      |
+| Frozen repository and SHAs | `gitInputs` (generated plans) |
 
 ### Minimal `plan.json` example
+
+<!-- lexrunner-plan-example:agents-minimal -->
 
 ```json
 {
   "schemaVersion": "1.0.0",
-  "policy": { "requiredGates": ["lint", "type", "unit"], "maxWorkers": 2 },
-  "nodes": [
-    { "id": "PR-101", "title": "Core utils", "dependsOn": [], "gates": ["lint", "type", "unit"] },
+  "target": "main",
+  "policy": {
+    "requiredGates": ["lint", "type", "unit"],
+    "maxWorkers": 2,
+    "mergeRule": { "type": "strict-required" }
+  },
+  "items": [
     {
-      "id": "PR-202",
-      "title": "Feature A",
-      "dependsOn": ["PR-101"],
-      "gates": ["lint", "type", "unit"]
+      "name": "feature/core-utils",
+      "deps": [],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "type", "run": "npm run typecheck" },
+        { "name": "unit", "run": "npm test" }
+      ]
+    },
+    {
+      "name": "feature/a",
+      "deps": ["feature/core-utils"],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "type", "run": "npm run typecheck" },
+        { "name": "unit", "run": "npm test" }
+      ]
     }
   ]
 }

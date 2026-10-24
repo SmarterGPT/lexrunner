@@ -38,6 +38,9 @@ export function initLocalOverlay(
 
   // Skip if local overlay already exists (unless force flag is set)
   if (fs.existsSync(localDir) && !force) {
+    // Initialization also repairs the artifact directory without rewriting
+    // existing profile configuration.
+    fs.mkdirSync(path.join(localDir, "runner"), { recursive: true });
     const manifestPath = path.join(localDir, "profile.yml");
     let config: LocalOverlayConfig;
 
@@ -73,6 +76,8 @@ export function initLocalOverlay(
     fs.rmSync(localDir, { recursive: true });
   }
   fs.mkdirSync(localDir, { recursive: true });
+  // runner/ is artifact-only. Configuration belongs at the profile root.
+  fs.mkdirSync(path.join(localDir, "runner"), { recursive: true });
 
   // Create profile.yml with detected project type
   const config: LocalOverlayConfig = {
@@ -116,10 +121,6 @@ function copyRelevantFiles(baseDir: string, localDir: string): string[] {
     return copiedFiles; // No .smartergpt to copy from
   }
 
-  // Create runner/ subdirectory
-  const runnerDir = path.join(localDir, "runner");
-  fs.mkdirSync(runnerDir, { recursive: true });
-
   // Files to potentially copy (excluding runtime artifacts)
   const candidateFiles = [
     "intent.md",
@@ -127,18 +128,20 @@ function copyRelevantFiles(baseDir: string, localDir: string): string[] {
     "deps.yml",
     "gates.yml",
     "stack.yml",
+    "merge-policy.yml",
     "pull-request-template.md",
   ];
 
   for (const file of candidateFiles) {
-    // Use resolveConfigPath to check both runner/ and flat structures
+    // Read historical source layouts through the shared resolver, but always
+    // write the canonical profile-root layout.
     const sourceResolved = resolveConfigPath(smartergptDir, file);
-    const destPath = path.join(runnerDir, file);
+    const destPath = path.join(localDir, file);
 
     // Only copy if source exists and destination doesn't
     if (sourceResolved.exists && !fs.existsSync(destPath)) {
       fs.copyFileSync(sourceResolved.path, destPath);
-      copiedFiles.push(`runner/${file}`);
+      copiedFiles.push(file);
     }
   }
 
