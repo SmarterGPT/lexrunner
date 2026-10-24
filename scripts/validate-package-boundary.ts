@@ -65,7 +65,7 @@ const REQUIRED_RUNTIME_ASSETS = [
 ];
 const MAX_FILE_COUNT = 120;
 // The 2.5 line adds reviewed runtime contracts while keeping a fixed, low-growth package budget.
-const MAX_UNPACKED_SIZE = 7_100_000;
+const MAX_UNPACKED_SIZE = 7_125_000;
 
 const CANONICAL_REPOSITORY_URL = "git+https://github.com/SmarterGPT/lexrunner.git";
 

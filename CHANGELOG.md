@@ -39,6 +39,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - CI package qualification activates the exact npm runtime required by its policy
   observer. Packed-process timeout tests track owned timers independently of the
   test runner's ambient timers.
+- Restore the public multi-repository MCP argument schema, including its default
+  priority, and refresh production dependencies for the current Zod, body-parser,
+  fast-uri and transitive advisory fixes.
 
 ## [2.4.0] - 2026-09-09
 

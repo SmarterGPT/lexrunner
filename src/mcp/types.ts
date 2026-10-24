@@ -32,6 +32,13 @@ export function getMCPEnvironment(): MCPEnvironment {
 /**
  * Single repository configuration for multi-repo discovery
  */
+export const RepoTarget = z.object({
+  owner: z.string(),
+  repo: z.string(),
+  priority: z.number().optional().default(1),
+});
+export type RepoTarget = z.infer<typeof RepoTarget>;
+
 export const PlanCreateArgs = z.object({
   json: z.boolean().optional(),
   outDir: z.string().min(1).max(4096).optional(),
@@ -47,6 +54,8 @@ export const PlanCreateArgs = z.object({
   // Single repo mode (backward compatible)
   owner: z.string().optional(),
   repo: z.string().optional(),
+  // Multi-repo mode (issue #677)
+  repos: z.array(RepoTarget).optional(),
   requiredGates: z.array(z.string()).optional(),
   maxWorkers: z.number().optional(),
   target: z.string().optional(),
