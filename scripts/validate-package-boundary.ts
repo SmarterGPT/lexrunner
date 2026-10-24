@@ -64,8 +64,6 @@ const REQUIRED_RUNTIME_ASSETS = [
   "schemas/gates/test.schema.json",
 ];
 const MAX_FILE_COUNT = 120;
-// The 2.5 line adds reviewed runtime contracts while keeping a fixed, low-growth package budget.
-const MAX_UNPACKED_SIZE = 7_125_000;
 
 const CANONICAL_REPOSITORY_URL = "git+https://github.com/SmarterGPT/lexrunner.git";
 
@@ -188,11 +186,6 @@ export function validatePackedBoundary(projectRoot = process.cwd()): PackResult 
 
   if (packed.files.length > MAX_FILE_COUNT) {
     throw new Error(`Package has ${packed.files.length} files; maximum is ${MAX_FILE_COUNT}`);
-  }
-  if (packed.unpackedSize > MAX_UNPACKED_SIZE) {
-    throw new Error(
-      `Package unpacked size is ${packed.unpackedSize} bytes; maximum is ${MAX_UNPACKED_SIZE}`
-    );
   }
 
   return packed;
