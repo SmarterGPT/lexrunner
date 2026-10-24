@@ -169,14 +169,13 @@ export class WriteProtectionError extends Error {
  * @param role - Profile role from manifest (defaults to "example" for .smartergpt/)
  * @returns true if writes are allowed, false otherwise
  */
-export function canWriteToProfile(profilePath: string, role: string): boolean {
-  // Profiles with role "example" are read-only
-  if (role === "example") {
-    return false;
-  }
+export function canWriteToProfile(profilePath: string, role: unknown): boolean {
+  void profilePath;
+  const normalizedRole = normalizeProfileRole(role);
 
-  // All other roles are writable
-  return true;
+  // Missing, malformed, and example roles are all read-only. Authority must
+  // be established by a non-empty scalar role, never inferred from coercion.
+  return normalizedRole !== undefined && normalizedRole !== "example";
 }
 
 /**
@@ -187,11 +186,33 @@ export function canWriteToProfile(profilePath: string, role: string): boolean {
  * @param operation - Description of the operation being attempted (for error message)
  * @throws WriteProtectionError if writes are not allowed
  */
-export function validateWriteOperation(profilePath: string, role: string, operation: string): void {
+export function validateWriteOperation(
+  profilePath: string,
+  role: unknown,
+  operation: string
+): void {
   if (!canWriteToProfile(profilePath, role)) {
+    const normalizedRole = normalizeProfileRole(role);
+    const roleDisposition =
+      normalizedRole === "example"
+        ? 'role="example"'
+        : `an invalid ${describeProfileRole(role)} role`;
     throw new WriteProtectionError(
-      `Cannot ${operation}: profile at "${profilePath}" has role="${role}" (read-only). ` +
+      `Cannot ${operation}: profile at "${profilePath}" has ${roleDisposition} (read-only). ` +
         `Use a local profile (.smartergpt.local/) or set LEX_PR_PROFILE_DIR to a writable location.`
     );
   }
+}
+
+function normalizeProfileRole(role: unknown): string | undefined {
+  if (typeof role !== "string") return undefined;
+  const normalized = role.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function describeProfileRole(role: unknown): string {
+  if (role === null) return "null";
+  if (Array.isArray(role)) return "array";
+  if (typeof role === "string") return "empty";
+  return typeof role;
 }

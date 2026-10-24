@@ -42,6 +42,18 @@ describe("workspace/config application services", () => {
     });
   });
 
+  it("returns a bounded retained-backup path after forced recreation", () => {
+    const root = fixtureRoot();
+    const service = new WorkspaceInitializationService();
+    service.run({ baseDir: root });
+    fs.writeFileSync(path.join(root, ".smartergpt.local", "marker.txt"), "preserve");
+
+    const forced = service.run({ baseDir: root, force: true });
+
+    expect(forced.backupPath).toContain(path.join("runner", "force-backups"));
+    expect(fs.readFileSync(path.join(forced.backupPath!, "marker.txt"), "utf8")).toBe("preserve");
+  });
+
   it("makes initialization immediately visible to doctor and config queries", async () => {
     const root = fixtureRoot();
     const tracked = path.join(root, ".smartergpt");

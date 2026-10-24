@@ -1,77 +1,51 @@
 {
-  "$schema": "https://github.com/Guffawaffle/LexRunner/blob/main/schemas/plan-v1.schema.json",
   "schemaVersion": "1.0.0",
-  "title": "Example Merge-Weave Plan",
-  "description": "Template plan for merging multiple PRs with dependencies",
-
+  "target": "main",
   "policy": {
     "requiredGates": ["lint", "typecheck"],
     "optionalGates": ["test"],
-    "mergeRule": "strict-required",
-    "maxWorkers": 2
-  },
-
-  "nodes": [
-    {
-      "id": "pr-123",
-      "title": "Add authentication module",
-      "branch": "feature/auth",
-      "dependsOn": [],
-      "gates": ["lint", "typecheck"],
-      "metadata": {
-        "prNumber": 123,
-        "author": "developer1",
-        "labels": ["ready-to-merge", "feature"]
-      }
-    },
-    {
-      "id": "pr-124",
-      "title": "Add API endpoints",
-      "branch": "feature/api",
-      "dependsOn": ["pr-123"],
-      "gates": ["lint", "typecheck", "test"],
-      "metadata": {
-        "prNumber": 124,
-        "author": "developer2",
-        "labels": ["ready-to-merge", "feature"],
-        "notes": "Depends on auth module (pr-123)"
-      }
-    },
-    {
-      "id": "pr-125",
-      "title": "Add UI components",
-      "branch": "feature/ui",
-      "dependsOn": [],
-      "gates": ["lint", "typecheck"],
-      "metadata": {
-        "prNumber": 125,
-        "author": "developer3",
-        "labels": ["ready-to-merge", "feature"]
-      }
-    },
-    {
-      "id": "pr-126",
-      "title": "Integration tests",
-      "branch": "feature/integration-tests",
-      "dependsOn": ["pr-124", "pr-125"],
-      "gates": ["lint", "typecheck", "test"],
-      "metadata": {
-        "prNumber": 126,
-        "author": "developer1",
-        "labels": ["ready-to-merge", "test"],
-        "notes": "Depends on API (pr-124) and UI (pr-125)"
-      }
+    "maxWorkers": 2,
+    "retries": {},
+    "overrides": {},
+    "blockOn": [],
+    "mergeRule": {
+      "type": "strict-required"
     }
-  ],
-
-  "integrationBranch": "integration/wave-1",
-  "targetBranch": "main",
-
-  "metadata": {
-    "createdAt": "2024-01-15T10:00:00Z",
-    "createdBy": "merge-weave-discover",
-    "waveNumber": 1,
-    "labels": ["ready-to-merge"],
-    "notes": "First merge wave - authentication and API features"
-  }
+  },
+  "items": [
+    {
+      "name": "pr-123-authentication",
+      "deps": [],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" }
+      ]
+    },
+    {
+      "name": "pr-124-api",
+      "deps": ["pr-123-authentication"],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" },
+        { "name": "test", "run": "npm test" }
+      ]
+    },
+    {
+      "name": "pr-125-ui",
+      "deps": [],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" }
+      ]
+    },
+    {
+      "name": "pr-126-integration",
+      "deps": ["pr-124-api", "pr-125-ui"],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" },
+        { "name": "test", "run": "npm test" }
+      ]
+    }
+  ]
 }

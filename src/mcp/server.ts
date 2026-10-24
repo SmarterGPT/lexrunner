@@ -574,7 +574,8 @@ function createServer(options?: McpServerOptions): Server {
             properties: {
               force: {
                 type: "boolean",
-                description: "Force recreation even if local overlay exists",
+                description:
+                  "Recreate an existing local overlay after retaining a recoverable backup",
                 default: false,
               },
             },

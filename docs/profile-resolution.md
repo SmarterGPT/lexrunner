@@ -181,8 +181,18 @@ lexrunner mcp
   "name": "local.init",
   "arguments": { "force": false }
 }
-// Returns: { "created": true, "path": "...", "config": {...}, "copiedFiles": [...] }
+// Returns: { "created": true, "path": "...", "config": {...}, "copiedFiles": [...], "backupPath"?: "..." }
 ```
+
+Forced recreation never recursively deletes the live overlay. LexRunner atomically stages the
+existing directory, creates the replacement through exclusive file admission, and retains the
+prior profile under the new `.smartergpt.local/runner/force-backups/` directory. The CLI and MCP
+result report its exact `backupPath`. Temporary staging uses the repository's Git metadata when
+available, which cannot be tracked as worktree content, or a same-volume parent directory outside
+the workspace. If a concurrent writer changes the staged manifest to a protected or malformed
+profile, initialization stops and reports the retained staging path. LexRunner does not attempt a
+check-then-rename restoration because directory replacement semantics differ across platforms; it
+never deletes or overwrites either writer's data.
 
 ## Migration Guide
 

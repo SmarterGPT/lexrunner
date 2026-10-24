@@ -7,7 +7,7 @@ import { computeMergeOrder } from "../src/mergeOrder.js";
 import { Plan } from "../src/schema.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
-const expectedExamples: Record<string, string> = {
+const expectedMarkdownExamples: Record<string, string> = {
   "agents-minimal": "AGENTS.md",
   "autopilot-level4-manual": "examples/autopilot-level4-example.md",
   "ci-runtime-gates": "docs/ci-integration-guide.md",
@@ -26,6 +26,11 @@ const expectedExamples: Record<string, string> = {
   "quickstart-manual": "docs/quickstart.md",
   "security-vulnerability-gate": "docs/SECURITY_IMPLEMENTATION.md",
   "working-example": "examples/WORKING_EXAMPLE.md",
+};
+const standaloneExamples: Record<string, string> = {
+  "template-plan-json": "docs/templates/plan.example.json",
+  "github-integration-plan-json": "examples/github-integration/example-plan.json",
+  "sample-plan-json": "examples/sample-plan.json",
 };
 
 const markerPattern = /<!--\s*lexrunner-plan-example:([a-z0-9-]+)\s*-->/g;
@@ -62,9 +67,9 @@ describe("documented Plan examples", () => {
       }
     }
 
-    expect([...found.keys()].sort()).toEqual(Object.keys(expectedExamples).sort());
+    expect([...found.keys()].sort()).toEqual(Object.keys(expectedMarkdownExamples).sort());
 
-    for (const [id, expectedPath] of Object.entries(expectedExamples)) {
+    for (const [id, expectedPath] of Object.entries(expectedMarkdownExamples)) {
       const example = found.get(id);
       expect(example, `missing registered Plan example ${id}`).toBeDefined();
       if (!example) continue;
@@ -72,32 +77,37 @@ describe("documented Plan examples", () => {
         expectedPath
       );
 
-      let decoded: unknown;
-      try {
-        decoded = JSON.parse(example.source);
-      } catch (error) {
-        throw new Error(
-          `${example.path}:${example.line} (${id}) is not valid JSON: ${String(error)}`
-        );
-      }
+      validatePlanExample(id, example.path, example.line, example.source);
+    }
 
-      const parsed = Plan.safeParse(decoded);
-      if (!parsed.success) {
-        const details = parsed.error.issues
-          .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
-          .join("; ");
-        throw new Error(
-          `${example.path}:${example.line} (${id}) violates the Plan schema: ${details}`
-        );
-      }
-
-      expect(
-        () => computeMergeOrder(parsed.data),
-        `${example.path}:${example.line} (${id}) has an invalid dependency graph`
-      ).not.toThrow();
+    for (const [id, examplePath] of Object.entries(standaloneExamples)) {
+      const source = await readFile(resolve(repositoryRoot, examplePath), "utf8");
+      validatePlanExample(id, examplePath, 1, source);
     }
   });
 });
+
+function validatePlanExample(id: string, path: string, line: number, source: string): void {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(source);
+  } catch (error) {
+    throw new Error(`${path}:${line} (${id}) is not valid JSON: ${String(error)}`);
+  }
+
+  const parsed = Plan.safeParse(decoded);
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`${path}:${line} (${id}) violates the Plan schema: ${details}`);
+  }
+
+  expect(
+    () => computeMergeOrder(parsed.data),
+    `${path}:${line} (${id}) has an invalid dependency graph`
+  ).not.toThrow();
+}
 
 async function markdownFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });

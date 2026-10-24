@@ -140,15 +140,34 @@ export class WorkspaceInitializationService {
         contract: "bounded-ax-v1",
         ...result,
         path: bounded(result.path, MAX_PATH_BYTES),
+        ...(result.backupPath ? { backupPath: bounded(result.backupPath, MAX_PATH_BYTES) } : {}),
         copiedFiles: boundedStrings(result.copiedFiles),
       });
-    } catch {
+    } catch (error) {
+      const retainedBackupPath = getRetainedBackupPath(error);
       throw new WorkspaceConfigServiceError(
         "WORKSPACE_INIT_FAILED",
-        "Workspace initialization failed; inspect the selected local profile path"
+        retainedBackupPath
+          ? `Workspace initialization failed; prior overlay retained at ${bounded(
+              retainedBackupPath,
+              MAX_PATH_BYTES
+            )}`
+          : "Workspace initialization failed; inspect the selected local profile path"
       );
     }
   }
+}
+
+function getRetainedBackupPath(error: unknown): string | undefined {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "retainedBackupPath" in error &&
+    typeof error.retainedBackupPath === "string"
+  ) {
+    return error.retainedBackupPath;
+  }
+  return undefined;
 }
 
 /** Transport-neutral owner for workspace and environment diagnostics. */

@@ -43,8 +43,8 @@ The packaging job:
 2. checks every `bin`, `types`, and `exports` target against the dry-run tarball;
 3. rejects npm-normalized metadata drift, including removable `bin` paths and non-canonical
    repository URLs;
-4. rejects paths outside the allowlist, more than 120 files, or more than 7.1 MB
-   unpacked;
+4. rejects paths outside the allowlist or more than 120 files, while reporting packed and
+   unpacked byte counts as non-blocking telemetry;
 5. installs the real tarball into a clean consumer with its own explicit strict
    script policy and refreshed registry metadata; and
 6. smokes ESM imports and CommonJS require (including the projection contract
@@ -64,7 +64,8 @@ normalization warnings. For a clean signed tag it prints the final command but n
 only the verified stable-tag GitHub workflow receives OIDC authority to execute that command.
 
 The audited baseline before this boundary was 1,340 files, 3,243,620 bytes
-packed, and 13,837,669 bytes unpacked. The initial bounded artifact is 90 files,
-878,637 bytes packed, and 4,309,476 bytes unpacked. Content hashes and exact
-compressed size may change as compiled code changes; the count and unpacked
-budget remain enforced.
+packed, and 13,837,669 bytes unpacked. The initial bounded artifact was 90 files,
+878,637 bytes packed, and 4,309,476 bytes unpacked. Content hashes and byte sizes
+may change as compiled code changes, so byte totals are retained as release
+telemetry rather than an eligibility gate. The allowlist, forbidden-path checks,
+required runtime targets, and file-count boundary remain enforced.

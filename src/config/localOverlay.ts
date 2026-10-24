@@ -6,8 +6,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import YAML from "yaml";
-import { detectProjectType } from "../core/bootstrap.js";
+import { createMinimalWorkspace, detectProjectType } from "../core/bootstrap.js";
 import { resolveConfigPath } from "./pathResolver.js";
+import { validateWriteOperation, WriteProtectionError } from "./profileResolver.js";
 
 export interface LocalOverlayConfig {
   role: string;
@@ -21,6 +22,14 @@ export interface LocalOverlayResult {
   path: string;
   config: LocalOverlayConfig;
   copiedFiles: string[];
+  /** Recoverable prior overlay retained by a forced recreation. */
+  backupPath?: string;
+}
+
+interface StagedLocalOverlay {
+  parent: string;
+  root: string;
+  profile: string;
 }
 
 /**
@@ -35,74 +44,77 @@ export function initLocalOverlay(
   force: boolean = false
 ): LocalOverlayResult {
   const localDir = path.resolve(baseDir, ".smartergpt.local");
+  const existed = fs.existsSync(localDir);
+  const projectType = detectProjectType(baseDir);
+  const manifestPath = path.join(localDir, "profile.yml");
 
-  // Skip if local overlay already exists (unless force flag is set)
-  if (fs.existsSync(localDir) && !force) {
-    // Initialization also repairs the artifact directory without rewriting
-    // existing profile configuration.
-    fs.mkdirSync(path.join(localDir, "runner"), { recursive: true });
-    const manifestPath = path.join(localDir, "profile.yml");
-    let config: LocalOverlayConfig;
+  // Read and authorize an existing profile before creating runner/, replacing
+  // the overlay, or writing any repair files. --force changes replacement
+  // intent; it is not an authority bypass for a protected profile.
+  const existingConfig = fs.existsSync(manifestPath)
+    ? readLocalOverlayManifest(manifestPath, projectType)
+    : undefined;
+  if (force && existed && !existingConfig) {
+    throw new LocalOverlayError(
+      `Cannot force recreation of existing local overlay without a validated manifest: ${manifestPath}`
+    );
+  }
+  validateWriteOperation(
+    localDir,
+    existingConfig?.role ?? "development",
+    "initialize local overlay"
+  );
 
+  let stagedOverlay: StagedLocalOverlay | undefined;
+  if (force && existed) {
+    // Atomically detach the live directory instead of recursively deleting it.
+    // Every file admitted before the rename remains recoverable in this stage.
+    stagedOverlay = stageLocalOverlay(localDir);
     try {
-      const content = fs.readFileSync(manifestPath, "utf8");
-      const parsed = YAML.parse(content);
-      config = {
-        role: parsed.role || "development",
-        projectType: parsed.projectType || "generic",
-        name: parsed.name,
-        version: parsed.version,
-      };
-    } catch {
-      config = {
-        role: "development",
-        projectType: "generic",
-      };
+      const stagedConfig = readLocalOverlayManifest(
+        path.join(stagedOverlay.profile, "profile.yml"),
+        projectType
+      );
+      validateWriteOperation(
+        stagedOverlay.profile,
+        stagedConfig.role,
+        "force-recreate local overlay"
+      );
+    } catch (error) {
+      throw withRetainedBackup(error, stagedOverlay.profile);
     }
+  }
+
+  try {
+    fs.mkdirSync(localDir, { recursive: true });
+
+    const config =
+      !force && existingConfig
+        ? existingConfig
+        : createOrReadLocalOverlayManifest(manifestPath, projectType);
+    validateWriteOperation(localDir, config.role, "initialize local overlay");
+    const runnerDir = path.join(localDir, "runner");
+    fs.mkdirSync(runnerDir, { recursive: true });
+
+    // Copy tracked configuration first, then fill any missing required files with
+    // coherent, schema-valid defaults. Existing files are never overwritten.
+    const copiedFiles = copyRelevantFiles(baseDir, localDir);
+    createMinimalWorkspace(baseDir, localDir);
+
+    const backupPath = stagedOverlay ? retainStagedOverlay(stagedOverlay, runnerDir) : undefined;
+    stagedOverlay = undefined;
 
     return {
-      created: false,
+      created: !existed || force,
       path: localDir,
       config,
-      copiedFiles: [],
+      copiedFiles,
+      ...(backupPath ? { backupPath } : {}),
     };
+  } catch (error) {
+    if (stagedOverlay) throw withRetainedBackup(error, stagedOverlay.profile);
+    throw error;
   }
-
-  // Detect project type
-  const projectType = detectProjectType(baseDir);
-
-  // Create local overlay directory
-  if (force && fs.existsSync(localDir)) {
-    fs.rmSync(localDir, { recursive: true });
-  }
-  fs.mkdirSync(localDir, { recursive: true });
-  // runner/ is artifact-only. Configuration belongs at the profile root.
-  fs.mkdirSync(path.join(localDir, "runner"), { recursive: true });
-
-  // Create profile.yml with detected project type
-  const config: LocalOverlayConfig = {
-    role: "development",
-    projectType,
-    name: undefined,
-    version: undefined,
-  };
-
-  const manifestPath = path.join(localDir, "profile.yml");
-  const manifestContent = YAML.stringify({
-    role: config.role,
-    projectType: config.projectType,
-  });
-  fs.writeFileSync(manifestPath, manifestContent);
-
-  // Copy relevant files from fallback profile
-  const copiedFiles = copyRelevantFiles(baseDir, localDir);
-
-  return {
-    created: true,
-    path: localDir,
-    config,
-    copiedFiles,
-  };
 }
 
 /**
@@ -138,10 +150,15 @@ function copyRelevantFiles(baseDir: string, localDir: string): string[] {
     const sourceResolved = resolveConfigPath(smartergptDir, file);
     const destPath = path.join(localDir, file);
 
-    // Only copy if source exists and destination doesn't
-    if (sourceResolved.exists && !fs.existsSync(destPath)) {
-      fs.copyFileSync(sourceResolved.path, destPath);
+    if (!sourceResolved.exists) continue;
+
+    // Admit the copy atomically. If another initializer or editor creates the
+    // destination first, preserve that file and treat this candidate as skipped.
+    try {
+      fs.copyFileSync(sourceResolved.path, destPath, fs.constants.COPYFILE_EXCL);
       copiedFiles.push(file);
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) throw error;
     }
   }
 
@@ -159,12 +176,244 @@ export function hasLocalOverlay(baseDir: string = process.cwd()): boolean {
   return fs.existsSync(localDir);
 }
 
+function createOrReadLocalOverlayManifest(
+  manifestPath: string,
+  projectType: string
+): LocalOverlayConfig {
+  const config: LocalOverlayConfig = { role: "development", projectType };
+  try {
+    fs.writeFileSync(
+      manifestPath,
+      YAML.stringify({ role: config.role, projectType: config.projectType }),
+      { encoding: "utf8", flag: "wx" }
+    );
+    return config;
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+  }
+
+  // A concurrent writer won manifest admission. Its authority and shape now
+  // control whether initialization may proceed; never replace it.
+  return readLocalOverlayManifest(manifestPath, projectType);
+}
+
+function stageLocalOverlay(localDir: string): StagedLocalOverlay {
+  let lastError: unknown;
+  for (const parent of stagingParentCandidates(path.dirname(localDir))) {
+    let root: string | undefined;
+    try {
+      fs.mkdirSync(parent, { recursive: true });
+      root = fs.mkdtempSync(path.join(parent, "overlay-"));
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+
+    const profile = path.join(root, "profile");
+    try {
+      fs.renameSync(localDir, profile);
+      return { parent, root, profile };
+    } catch (error) {
+      lastError = error;
+      cleanEmptyDirectory(root);
+      cleanEmptyDirectory(parent);
+      if (!isCrossDeviceError(error)) {
+        throw new LocalOverlayError(
+          `Unable to atomically stage the existing local overlay: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    }
+  }
+
+  throw new LocalOverlayError(
+    `Unable to atomically stage the existing local overlay: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
+  );
+}
+
+function stagingParentCandidates(baseDir: string): string[] {
+  const candidates: string[] = [];
+  const gitDirectory = findGitMetadataDirectory(baseDir);
+  if (gitDirectory) {
+    candidates.push(path.join(gitDirectory, "lexrunner", "force-stages"));
+  }
+
+  const outsideWorkspace = path.dirname(baseDir);
+  if (outsideWorkspace !== baseDir) {
+    candidates.push(path.join(outsideWorkspace, ".lexrunner-force-stages"));
+  }
+
+  return candidates.filter(
+    (candidate, index) =>
+      candidates.findIndex(
+        (other) => path.resolve(other).toLowerCase() === path.resolve(candidate).toLowerCase()
+      ) === index
+  );
+}
+
+function findGitMetadataDirectory(startDir: string): string | undefined {
+  let current = path.resolve(startDir);
+  while (true) {
+    const marker = path.join(current, ".git");
+    try {
+      const stat = fs.statSync(marker);
+      if (stat.isDirectory()) return marker;
+      if (stat.isFile()) {
+        const match = /^gitdir:\s*(.+)\s*$/imu.exec(fs.readFileSync(marker, "utf8"));
+        if (match?.[1]) {
+          const gitDirectory = path.resolve(current, match[1]);
+          if (fs.statSync(gitDirectory).isDirectory()) return gitDirectory;
+        }
+      }
+    } catch {
+      // This ancestor is not a Git worktree marker.
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+function retainStagedOverlay(staged: StagedLocalOverlay, runnerDir: string): string {
+  const backupsDir = path.join(runnerDir, "force-backups");
+  fs.mkdirSync(backupsDir, { recursive: true });
+  const backupPath = path.join(backupsDir, path.basename(staged.root));
+  fs.renameSync(staged.profile, backupPath);
+  cleanStageDirectories(staged);
+  return backupPath;
+}
+
+function cleanStageDirectories(staged: StagedLocalOverlay): void {
+  cleanEmptyDirectory(staged.root);
+  cleanEmptyDirectory(staged.parent);
+  const lexrunnerDirectory = path.dirname(staged.parent);
+  if (path.basename(lexrunnerDirectory) === "lexrunner") {
+    cleanEmptyDirectory(lexrunnerDirectory);
+  }
+}
+
+function cleanEmptyDirectory(directory: string): void {
+  try {
+    fs.rmdirSync(directory);
+  } catch {
+    // Remove only known-empty directories. Unknown data is always retained.
+  }
+}
+
+function withRetainedBackup(error: unknown, backupPath: string): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  const retainedMessage = `${message} Prior overlay retained at ${backupPath}.`;
+  if (error instanceof WriteProtectionError) {
+    return new RetainedWriteProtectionError(retainedMessage, backupPath);
+  }
+  return new LocalOverlayError(retainedMessage, backupPath);
+}
+
+function readLocalOverlayManifest(
+  manifestPath: string,
+  fallbackProjectType: string
+): LocalOverlayConfig {
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch {
+    throw new LocalOverlayError(`Existing profile manifest is invalid: ${manifestPath}`);
+  }
+
+  if (!isRecord(parsed)) {
+    throw new LocalOverlayError(`Existing profile manifest is invalid: ${manifestPath}`);
+  }
+
+  const role = requiredNonEmptyString(parsed.role, "role", manifestPath);
+  const projectType = optionalNonEmptyString(parsed.projectType, "projectType", manifestPath);
+  const name = optionalString(parsed.name, "name", manifestPath);
+  const version = optionalVersion(parsed.version, manifestPath);
+
+  return {
+    role,
+    projectType: projectType ?? fallbackProjectType,
+    ...(name !== undefined ? { name } : {}),
+    ...(version !== undefined ? { version } : {}),
+  };
+}
+
+function requiredNonEmptyString(value: unknown, field: string, manifestPath: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new LocalOverlayError(`Existing profile manifest has invalid ${field}: ${manifestPath}`);
+  }
+  return value.trim();
+}
+
+function optionalNonEmptyString(
+  value: unknown,
+  field: string,
+  manifestPath: string
+): string | undefined {
+  if (value === undefined) return undefined;
+  return requiredNonEmptyString(value, field, manifestPath);
+}
+
+function optionalString(value: unknown, field: string, manifestPath: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new LocalOverlayError(`Existing profile manifest has invalid ${field}: ${manifestPath}`);
+  }
+  return value;
+}
+
+function optionalVersion(value: unknown, manifestPath: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw new LocalOverlayError(`Existing profile manifest has invalid version: ${manifestPath}`);
+  }
+  return String(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "EEXIST"
+  );
+}
+
+function isCrossDeviceError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "EXDEV"
+  );
+}
+
 /**
  * Local overlay error
  */
 export class LocalOverlayError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly retainedBackupPath?: string
+  ) {
     super(message);
     this.name = "LocalOverlayError";
+  }
+}
+
+class RetainedWriteProtectionError extends WriteProtectionError {
+  constructor(
+    message: string,
+    readonly retainedBackupPath: string
+  ) {
+    super(message);
+    this.name = "RetainedWriteProtectionError";
   }
 }

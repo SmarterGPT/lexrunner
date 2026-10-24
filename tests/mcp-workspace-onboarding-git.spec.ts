@@ -73,6 +73,69 @@ describe("published MCP Git-backed workspace onboarding", () => {
     });
   }, 15_000);
 
+  it("makes a genuinely blank repository doctor-ready before creating an empty plan", async () => {
+    const root = fixtureRoot();
+    await prepareBlankOnboardingRepository(root);
+    const planFile = path.join(root, ".smartergpt.local", "runner", "plan.json");
+
+    const responses = await withoutProfileEnvironment(() =>
+      invokeMany(root, [
+        toolRequest(49, "local.init", {}),
+        toolRequest(50, "doctor", {}),
+        toolRequest(51, "config.show", { key: "scope.target" }),
+        toolRequest(52, "workflow.guide", { phase: "initial" }),
+        toolRequest(53, "plan.create", {}),
+        toolRequest(54, "status", { planFile }),
+      ])
+    );
+
+    for (const response of responses) expect(response.error).toBeUndefined();
+    const [initialized, doctor, config, guide, created, status] = responses.map((response) =>
+      JSON.parse(response.result.content[0].text)
+    );
+
+    expect(initialized).toMatchObject({
+      contract: "bounded-ax-v1",
+      created: true,
+      copiedFiles: [],
+    });
+    for (const file of ["profile.yml", "intent.md", "scope.yml", "deps.yml", "gates.yml"]) {
+      expect(fs.existsSync(path.join(root, ".smartergpt.local", file))).toBe(true);
+    }
+    expect(doctor).toMatchObject({
+      hasErrors: false,
+      git: { status: "ok", isClean: true, currentBranch: "main" },
+      configuration: {
+        hasConfiguration: true,
+        missingFiles: [],
+        compatibilityFiles: [],
+      },
+    });
+    expect(config).toMatchObject({
+      contract: "bounded-ax-v1",
+      key: "scope.target",
+      value: "main",
+      source: ".smartergpt.local/scope.yml",
+    });
+    expect(guide).toMatchObject({
+      authority: "advisory",
+      authorizesExecution: false,
+      authorizesMerge: false,
+      canProceed: true,
+      readiness: { source: "doctor", hasErrors: false, missingFiles: [] },
+    });
+    expect(created).toMatchObject({
+      contract: "bounded-ax-v1",
+      plan: { schemaVersion: "1.0.0", target: "main", items: [] },
+      files: { plan: planFile },
+    });
+    expect(status).toMatchObject({
+      contract: "bounded-ax-v1",
+      plan: { schemaVersion: "1.0.0", target: "main", itemCount: 0 },
+      planArtifact: { kind: "execution-plan", itemCount: 0 },
+    });
+  }, 15_000);
+
   it("keeps published workflow readiness aligned with doctor's exact remediation", async () => {
     const root = fixtureRoot();
     await prepareCleanOnboardingRepository(root);
@@ -229,6 +292,16 @@ async function prepareCleanOnboardingRepository(root: string): Promise<void> {
   fs.writeFileSync(path.join(root, ".nvmrc"), `${process.versions.node.split(".")[0]}\n`);
   fs.writeFileSync(path.join(root, ".gitignore"), ".smartergpt.local/\n");
 
+  await initializeGitRepository(root);
+}
+
+async function prepareBlankOnboardingRepository(root: string): Promise<void> {
+  fs.writeFileSync(path.join(root, ".nvmrc"), `${process.versions.node.split(".")[0]}\n`);
+  fs.writeFileSync(path.join(root, ".gitignore"), ".smartergpt.local/\n");
+  await initializeGitRepository(root);
+}
+
+async function initializeGitRepository(root: string): Promise<void> {
   await execa("git", ["init", "--quiet", "-b", "main"], { cwd: root });
   await execa("git", ["config", "commit.gpgsign", "false"], { cwd: root });
   await execa("git", ["add", "."], { cwd: root });

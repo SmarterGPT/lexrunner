@@ -142,7 +142,7 @@ export function createMinimalWorkspace(baseDir: string = ".", profileDirFlag?: s
   // Resolve the profile directory and check write permissions
   const resolved = resolveProfile(profileDirFlag, baseDir);
   const profileDir = resolved.path;
-  const role = resolved.manifest.role;
+  const role = normalizedWritableRole(resolved.manifest.role, profileDir);
 
   // Validate write operation is allowed
   validateWriteOperation(profileDir, role, "create minimal workspace");
@@ -156,24 +156,42 @@ export function createMinimalWorkspace(baseDir: string = ".", profileDirFlag?: s
 
   // Create config files at profile root (v1 structure)
   const intentPath = path.join(profileDir, "intent.md");
-  if (!fs.existsSync(intentPath)) {
-    fs.writeFileSync(intentPath, getMinimalTemplate("intent"));
-  }
+  writeFileIfAbsent(intentPath, getMinimalTemplate("intent"));
 
   const scopePath = path.join(profileDir, "scope.yml");
-  if (!fs.existsSync(scopePath)) {
-    fs.writeFileSync(scopePath, getMinimalTemplate("scope"));
-  }
+  writeFileIfAbsent(scopePath, getMinimalTemplate("scope"));
 
   const depsPath = path.join(profileDir, "deps.yml");
-  if (!fs.existsSync(depsPath)) {
-    fs.writeFileSync(depsPath, getMinimalTemplate("deps"));
-  }
+  writeFileIfAbsent(depsPath, getMinimalTemplate("deps"));
 
   const gatesPath = path.join(profileDir, "gates.yml");
-  if (!fs.existsSync(gatesPath)) {
-    fs.writeFileSync(gatesPath, getMinimalTemplate("gates"));
+  writeFileIfAbsent(gatesPath, getMinimalTemplate("gates"));
+}
+
+function normalizedWritableRole(role: unknown, profileDir: string): string {
+  if (typeof role !== "string" || role.trim().length === 0) {
+    throw new WriteProtectionError(
+      `Cannot create minimal workspace: profile at "${profileDir}" has an invalid role`
+    );
   }
+  return role.trim();
+}
+
+function writeFileIfAbsent(filePath: string, content: string): void {
+  try {
+    fs.writeFileSync(filePath, content, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+  }
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "EEXIST"
+  );
 }
 
 /**
@@ -202,8 +220,7 @@ function getMinimalTemplate(type: string): string {
     case "scope":
       return `version: 1
 target: main
-sources:
-  - query: "is:pr is:open"
+sources: []
 selectors:
   include_labels: []
   exclude_labels:
@@ -217,32 +234,14 @@ pin_commits: false
 
     case "deps":
       return `version: 1
-target: main
-items: []
-# Example item:
-# - id: feature-a
-#   branch: feature/a
-#   deps: []
-#   strategy: merge-weave
+depends_on: []
+strategies: {}
 `;
 
     case "gates":
       return `version: 1
-gates:
-  - name: typecheck
-    run: npm run typecheck
-    runtime: local
-  - name: test
-    run: npm test
-    runtime: local
-# Example advanced gate:
-# - name: integration-test
-#   run: npm run test:integration
-#   runtime: container
-#   container:
-#     image: node:20
-#   artifacts:
-#     - test-results.xml
+levels:
+  default: []
 `;
 
     default:

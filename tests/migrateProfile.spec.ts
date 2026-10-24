@@ -4,43 +4,42 @@ import * as path from "path";
 import * as os from "os";
 import { runMigrateProfile } from "../src/commands/migrateProfile.js";
 
-const renameFault = vi.hoisted(() => ({
+const rootRace = vi.hoisted(() => ({
   enabled: false,
-  forwardFrom: "",
-  forwardTo: "",
-  rollbackFrom: "",
-  rollbackTo: "",
+  destination: "",
+  content: "",
 }));
 const backupFault = vi.hoisted(() => ({
   enabled: false,
   copyFrom: "",
+}));
+const unlinkFault = vi.hoisted(() => ({
+  enabled: false,
+  file: "",
 }));
 
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
   return {
     ...actual,
-    renameSync(from: fs.PathLike, to: fs.PathLike) {
+    copyFileSync(from: fs.PathLike, to: fs.PathLike, mode?: number) {
       const source = String(from);
       const destination = String(to);
-      if (
-        renameFault.enabled &&
-        ((source === renameFault.forwardFrom && destination === renameFault.forwardTo) ||
-          (source === renameFault.rollbackFrom && destination === renameFault.rollbackTo))
-      ) {
-        throw new Error(
-          source === renameFault.forwardFrom
-            ? "injected forward failure"
-            : "injected rollback failure"
-        );
-      }
-      actual.renameSync(from, to);
-    },
-    copyFileSync(from: fs.PathLike, to: fs.PathLike, mode?: number) {
-      if (backupFault.enabled && String(from) === backupFault.copyFrom) {
+      if (backupFault.enabled && source === backupFault.copyFrom) {
         throw new Error("injected backup copy failure");
       }
+      if (rootRace.enabled && destination === rootRace.destination) {
+        actual.writeFileSync(destination, rootRace.content);
+        rootRace.enabled = false;
+      }
       actual.copyFileSync(from, to, mode);
+    },
+    unlinkSync(target: fs.PathLike) {
+      const selected = String(target).replaceAll("\\", "/");
+      if (unlinkFault.enabled && selected.endsWith(`/staging/${unlinkFault.file}`)) {
+        throw new Error("injected staging unlink failure");
+      }
+      actual.unlinkSync(target);
     },
   };
 });
@@ -55,6 +54,14 @@ describe("Migrate Profile Command", () => {
     profileDir = path.join(tempDir, ".smartergpt.local");
     runnerDir = path.join(profileDir, "runner");
     fs.mkdirSync(runnerDir, { recursive: true });
+
+    rootRace.enabled = false;
+    rootRace.destination = "";
+    rootRace.content = "";
+    backupFault.enabled = false;
+    backupFault.copyFrom = "";
+    unlinkFault.enabled = false;
+    unlinkFault.file = "";
 
     // Create profile manifest
     fs.writeFileSync(path.join(profileDir, "profile.yml"), "role: local\nname: Test Profile\n");
@@ -267,35 +274,79 @@ describe("Migrate Profile Command", () => {
       expect(fs.readdirSync(profileDir).some((name) => name.startsWith(".backup-"))).toBe(false);
     });
 
-    it("reports uncertain files when a failed migration cannot confirm rollback", async () => {
-      fs.writeFileSync(path.join(runnerDir, "scope.yml"), "version: 1");
-      fs.writeFileSync(path.join(runnerDir, "deps.yml"), "version: 1");
-      renameFault.forwardFrom = path.join(runnerDir, "deps.yml");
-      renameFault.forwardTo = path.join(profileDir, "deps.yml");
-      renameFault.rollbackFrom = path.join(profileDir, "scope.yml");
-      renameFault.rollbackTo = path.join(runnerDir, "scope.yml");
-      renameFault.enabled = true;
-      let result: Awaited<ReturnType<typeof runMigrateProfile>> | undefined;
-      try {
-        result = await runMigrateProfile({ fromRunner: true, profileDir });
-      } finally {
-        renameFault.enabled = false;
-      }
-      expect(result).toBeDefined();
-      if (!result) throw new Error("migration result missing");
+    it.each([
+      ["non-scalar", "role: [example]\n"],
+      ["padded example", 'role: " example "\n'],
+      ["empty scalar", 'role: "   "\n'],
+    ])("refuses to migrate with a %s manifest role", async (_name, manifest) => {
+      const runnerPath = path.join(runnerDir, "scope.yml");
+      const rootPath = path.join(profileDir, "scope.yml");
+      fs.writeFileSync(path.join(profileDir, "profile.yml"), manifest);
+      fs.writeFileSync(runnerPath, "version: 1 # preserve\n");
+
+      const result = await runMigrateProfile({ fromRunner: true, profileDir });
 
       expect(result).toMatchObject({
         success: false,
         migratedFiles: [],
-        uncertainFiles: ["scope.yml"],
+        skippedFiles: [],
+      });
+      expect(result.message).toContain("Profile directory error");
+      expect(result.message).toContain("read-only");
+      expect(fs.readFileSync(runnerPath, "utf8")).toContain("# preserve");
+      expect(fs.existsSync(rootPath)).toBe(false);
+      expect(fs.readdirSync(profileDir).some((name) => name.startsWith(".backup-"))).toBe(false);
+    });
+
+    it("preserves both files when a canonical root appears during migration", async () => {
+      const runnerPath = path.join(runnerDir, "scope.yml");
+      const rootPath = path.join(profileDir, "scope.yml");
+      fs.writeFileSync(runnerPath, "version: 1 # compatibility");
+      rootRace.destination = rootPath;
+      rootRace.content = "version: 1 # concurrent canonical";
+      rootRace.enabled = true;
+
+      const result = await runMigrateProfile({ fromRunner: true, profileDir });
+
+      expect(result).toMatchObject({
+        success: true,
+        migratedFiles: [],
         backupStatus: "complete",
       });
-      expect(result.message).toContain("Rollback could not confirm restoration for: scope.yml");
-      expect(result.message).toContain("A complete backup is retained at");
-      expect(result.message).not.toContain("Completed moves were restored");
-      expect(fs.existsSync(path.join(result.backupPath!, "scope.yml"))).toBe(true);
+      expect(result.skippedFiles).toContain(
+        "scope.yml (profile-root file appeared during migration; compatibility copy preserved)"
+      );
+      expect(result.retainedFiles).toBeUndefined();
+      expect(fs.readFileSync(rootPath, "utf8")).toContain("# concurrent canonical");
+      expect(fs.readFileSync(runnerPath, "utf8")).toContain("# compatibility");
+      expect(fs.readFileSync(path.join(result.backupPath!, "scope.yml"), "utf8")).toContain(
+        "# compatibility"
+      );
+    });
+
+    it("retains completed moves and every copy when staging cleanup fails", async () => {
+      fs.writeFileSync(path.join(runnerDir, "scope.yml"), "version: 1 # scope");
+      fs.writeFileSync(path.join(runnerDir, "deps.yml"), "version: 1 # deps");
+      unlinkFault.file = "deps.yml";
+      unlinkFault.enabled = true;
+
+      const result = await runMigrateProfile({ fromRunner: true, profileDir });
+
+      expect(result).toMatchObject({
+        success: false,
+        migratedFiles: ["scope.yml"],
+        uncertainFiles: ["deps.yml"],
+        backupStatus: "complete",
+      });
+      expect(result.retainedFiles).toHaveLength(1);
+      expect(result.message).toContain("Completed safe moves were retained for: scope.yml");
+      expect(result.message).toContain("Reconcile the in-flight file: deps.yml");
       expect(fs.existsSync(path.join(profileDir, "scope.yml"))).toBe(true);
       expect(fs.existsSync(path.join(runnerDir, "scope.yml"))).toBe(false);
+      expect(fs.existsSync(path.join(profileDir, "deps.yml"))).toBe(true);
+      expect(fs.existsSync(path.join(runnerDir, "deps.yml"))).toBe(true);
+      expect(fs.existsSync(result.retainedFiles![0])).toBe(true);
+      expect(fs.existsSync(path.join(result.backupPath!, "deps.yml"))).toBe(true);
     });
 
     it("reports an incomplete backup without moving source files", async () => {
@@ -318,7 +369,7 @@ describe("Migrate Profile Command", () => {
         backupStatus: "incomplete",
       });
       expect(result.uncertainFiles).toBeUndefined();
-      expect(result.message).toContain("No files were moved");
+      expect(result.message).toContain("No files completed migration");
       expect(result.message).toContain("is incomplete and must not be relied upon for recovery");
       expect(result.message).not.toContain("complete backup is retained");
       expect(result.backupPath).toBeDefined();

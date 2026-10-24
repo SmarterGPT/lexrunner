@@ -103,7 +103,11 @@ describe("CLI init-local Integration Tests", () => {
     });
 
     expect(output).toContain("Local overlay initialized successfully");
+    expect(output).toContain("Previous overlay retained:");
     expect(fs.existsSync(path.join(tempDir, ".smartergpt.local", "custom.txt"))).toBe(false);
+    const backupsDir = path.join(tempDir, ".smartergpt.local", "runner", "force-backups");
+    const [backup] = fs.readdirSync(backupsDir);
+    expect(fs.readFileSync(path.join(backupsDir, backup, "custom.txt"), "utf8")).toBe("custom");
   });
 
   it("should copy files from .smartergpt/ if it exists", () => {

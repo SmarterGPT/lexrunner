@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
+  canWriteToProfile,
   resolveProfile,
   ProfileResolverError,
   logProfileMessage,
+  validateWriteOperation,
+  WriteProtectionError,
 } from "../src/config/profileResolver.js";
 import { resetDeprecationNotices } from "../src/util/envUtils.js";
 import * as fs from "fs";
@@ -179,6 +182,39 @@ describe("Profile Resolver", () => {
       // No profile.yml created
 
       expect(() => resolveProfile(undefined, tempDir)).toThrow(ProfileResolverError);
+    });
+  });
+
+  describe("Write Authority", () => {
+    it.each([
+      ["array", ["example"]],
+      ["object", { name: "example" }],
+      ["null", null],
+      ["undefined", undefined],
+      ["empty", ""],
+      ["whitespace-only", " \t\n"],
+    ])("fails closed for a %s role", (_name, role) => {
+      expect(canWriteToProfile(tempDir, role)).toBe(false);
+      expect(() => validateWriteOperation(tempDir, role, "write test artifact")).toThrow(
+        WriteProtectionError
+      );
+    });
+
+    it.each([" example ", "\tEXAMPLE\r\n"])(
+      "normalizes a padded example role before enforcing read-only policy",
+      (role) => {
+        expect(canWriteToProfile(tempDir, role)).toBe(false);
+        expect(() => validateWriteOperation(tempDir, role, "write test artifact")).toThrow(
+          'role="example" (read-only)'
+        );
+      }
+    );
+
+    it("retains custom writable roles after scalar normalization", () => {
+      expect(canWriteToProfile(tempDir, " development ")).toBe(true);
+      expect(() =>
+        validateWriteOperation(tempDir, " DEVELOPMENT ", "write test artifact")
+      ).not.toThrow();
     });
   });
 

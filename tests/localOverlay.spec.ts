@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   initLocalOverlay,
   hasLocalOverlay,
@@ -9,11 +9,104 @@ import * as path from "path";
 import * as os from "os";
 import YAML from "yaml";
 
+const admissionRace = vi.hoisted(() => ({
+  enabled: false,
+  operation: "" as
+    | "write"
+    | "copy"
+    | "manifest-check"
+    | "force-stage-file"
+    | "force-stage-protected"
+    | "force-stage-protected-occupied"
+    | "",
+  destination: "",
+  content: "",
+  renames: [] as Array<{ from: string; to: string }>,
+}));
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  return {
+    ...actual,
+    existsSync(file: fs.PathLike) {
+      if (
+        admissionRace.enabled &&
+        admissionRace.operation === "manifest-check" &&
+        path.resolve(String(file)) === path.resolve(admissionRace.destination)
+      ) {
+        actual.writeFileSync(file, admissionRace.content);
+        admissionRace.enabled = false;
+        return false;
+      }
+      return actual.existsSync(file);
+    },
+    writeFileSync(
+      file: fs.PathOrFileDescriptor,
+      data: string | NodeJS.ArrayBufferView,
+      options?: fs.WriteFileOptions
+    ) {
+      if (
+        admissionRace.enabled &&
+        admissionRace.operation === "write" &&
+        path.resolve(String(file)) === path.resolve(admissionRace.destination)
+      ) {
+        actual.writeFileSync(file, admissionRace.content);
+        admissionRace.enabled = false;
+      }
+      actual.writeFileSync(file, data, options);
+    },
+    copyFileSync(from: fs.PathLike, to: fs.PathLike, mode?: number) {
+      if (
+        admissionRace.enabled &&
+        admissionRace.operation === "copy" &&
+        path.resolve(String(to)) === path.resolve(admissionRace.destination)
+      ) {
+        actual.writeFileSync(to, admissionRace.content);
+        admissionRace.enabled = false;
+      }
+      actual.copyFileSync(from, to, mode);
+    },
+    renameSync(oldPath: fs.PathLike, newPath: fs.PathLike) {
+      admissionRace.renames.push({ from: String(oldPath), to: String(newPath) });
+      if (
+        admissionRace.enabled &&
+        (admissionRace.operation === "force-stage-file" ||
+          admissionRace.operation === "force-stage-protected" ||
+          admissionRace.operation === "force-stage-protected-occupied") &&
+        path.resolve(String(oldPath)) === path.resolve(admissionRace.destination)
+      ) {
+        const operation = admissionRace.operation;
+        actual.writeFileSync(path.join(String(oldPath), "concurrent.txt"), admissionRace.content);
+        if (
+          operation === "force-stage-protected" ||
+          operation === "force-stage-protected-occupied"
+        ) {
+          actual.writeFileSync(path.join(String(oldPath), "profile.yml"), "role: example\n");
+        }
+        admissionRace.enabled = false;
+        actual.renameSync(oldPath, newPath);
+        if (operation === "force-stage-protected-occupied") {
+          actual.mkdirSync(oldPath, { recursive: true });
+          actual.writeFileSync(path.join(String(oldPath), "profile.yml"), "role: development\n");
+          actual.writeFileSync(path.join(String(oldPath), "competing.txt"), "competing");
+        }
+        return;
+      }
+      actual.renameSync(oldPath, newPath);
+    },
+  };
+});
+
 describe("Local Overlay Setup", () => {
   let tempDir: string;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "local-overlay-test-"));
+    admissionRace.enabled = false;
+    admissionRace.operation = "";
+    admissionRace.destination = "";
+    admissionRace.content = "";
+    admissionRace.renames = [];
   });
 
   afterEach(() => {
@@ -124,6 +217,219 @@ describe("Local Overlay Setup", () => {
       const result2 = initLocalOverlay(tempDir, true);
       expect(result2.created).toBe(true);
       expect(fs.existsSync(path.join(tempDir, ".smartergpt.local", "custom.txt"))).toBe(false);
+      expect(result2.backupPath).toBeDefined();
+      expect(fs.readFileSync(path.join(result2.backupPath!, "custom.txt"), "utf8")).toBe("custom");
+    });
+
+    it("retains files admitted immediately before atomic force staging", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      initLocalOverlay(tempDir);
+      fs.writeFileSync(path.join(localDir, "marker.txt"), "original");
+      admissionRace.enabled = true;
+      admissionRace.operation = "force-stage-file";
+      admissionRace.destination = localDir;
+      admissionRace.content = "concurrent";
+
+      const result = initLocalOverlay(tempDir, true);
+
+      expect(admissionRace.enabled).toBe(false);
+      expect(result.backupPath).toBeDefined();
+      expect(result.backupPath).toContain(path.join("runner", "force-backups"));
+      expect(fs.readFileSync(path.join(result.backupPath!, "marker.txt"), "utf8")).toBe("original");
+      expect(fs.readFileSync(path.join(result.backupPath!, "concurrent.txt"), "utf8")).toBe(
+        "concurrent"
+      );
+      expect(fs.readFileSync(path.join(result.backupPath!, "profile.yml"), "utf8")).toContain(
+        "role: development"
+      );
+      expect(fs.existsSync(path.join(localDir, "concurrent.txt"))).toBe(false);
+    });
+
+    it("retains an untrackable profile that becomes protected before force staging", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      fs.mkdirSync(path.join(tempDir, ".git"), { recursive: true });
+      initLocalOverlay(tempDir);
+      fs.writeFileSync(path.join(localDir, "marker.txt"), "original");
+      admissionRace.enabled = true;
+      admissionRace.operation = "force-stage-protected";
+      admissionRace.destination = localDir;
+      admissionRace.content = "concurrent";
+
+      let caught: unknown;
+      try {
+        initLocalOverlay(tempDir, true);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toContain('role="example" (read-only)');
+      const backupPath = (caught as Error & { retainedBackupPath?: string }).retainedBackupPath;
+      expect(backupPath).toBeDefined();
+      expect(path.resolve(backupPath!)).toContain(
+        path.resolve(path.join(tempDir, ".git", "lexrunner", "force-stages"))
+      );
+      expect((caught as Error).message).toContain(backupPath!);
+      expect(fs.readFileSync(path.join(backupPath!, "profile.yml"), "utf8")).toBe(
+        "role: example\n"
+      );
+      expect(fs.readFileSync(path.join(backupPath!, "marker.txt"), "utf8")).toBe("original");
+      expect(fs.readFileSync(path.join(backupPath!, "concurrent.txt"), "utf8")).toBe("concurrent");
+      expect(fs.existsSync(localDir)).toBe(false);
+      expect(admissionRace.renames).toHaveLength(1);
+    });
+
+    it("retains an untrackable stage when another writer reclaims the original path", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      fs.mkdirSync(path.join(tempDir, ".git"), { recursive: true });
+      initLocalOverlay(tempDir);
+      fs.writeFileSync(path.join(localDir, "marker.txt"), "original");
+      admissionRace.enabled = true;
+      admissionRace.operation = "force-stage-protected-occupied";
+      admissionRace.destination = localDir;
+      admissionRace.content = "concurrent";
+
+      let caught: unknown;
+      try {
+        initLocalOverlay(tempDir, true);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toContain('role="example" (read-only)');
+      const backupPath = (caught as Error & { retainedBackupPath?: string }).retainedBackupPath;
+      expect(backupPath).toBeDefined();
+      expect(path.resolve(backupPath!)).toContain(
+        path.resolve(path.join(tempDir, ".git", "lexrunner", "force-stages"))
+      );
+      expect((caught as Error).message).toContain(backupPath!);
+      expect(fs.readFileSync(path.join(backupPath!, "profile.yml"), "utf8")).toBe(
+        "role: example\n"
+      );
+      expect(fs.readFileSync(path.join(backupPath!, "marker.txt"), "utf8")).toBe("original");
+      expect(fs.readFileSync(path.join(backupPath!, "concurrent.txt"), "utf8")).toBe("concurrent");
+      expect(fs.readFileSync(path.join(localDir, "competing.txt"), "utf8")).toBe("competing");
+    });
+
+    it("refuses a read-only overlay without mutating it", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      const manifestPath = path.join(localDir, "profile.yml");
+      const markerPath = path.join(localDir, "marker.txt");
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(manifestPath, "role: example\n");
+      fs.writeFileSync(markerPath, "preserve");
+
+      expect(() => initLocalOverlay(tempDir)).toThrow('role="example" (read-only)');
+
+      expect(fs.readFileSync(manifestPath, "utf8")).toBe("role: example\n");
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("preserve");
+      expect(fs.existsSync(path.join(localDir, "runner"))).toBe(false);
+      expect(fs.existsSync(path.join(localDir, "scope.yml"))).toBe(false);
+    });
+
+    it("does not let force bypass a read-only overlay", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      const manifestPath = path.join(localDir, "profile.yml");
+      const markerPath = path.join(localDir, "marker.txt");
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(manifestPath, "role: example\n");
+      fs.writeFileSync(markerPath, "preserve");
+
+      expect(() => initLocalOverlay(tempDir, true)).toThrow('role="example" (read-only)');
+
+      expect(fs.readFileSync(manifestPath, "utf8")).toBe("role: example\n");
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("preserve");
+      expect(fs.existsSync(path.join(localDir, "runner"))).toBe(false);
+    });
+
+    it("preserves a protected manifest created after a manifestless force check", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      const manifestPath = path.join(localDir, "profile.yml");
+      const markerPath = path.join(localDir, "marker.txt");
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(markerPath, "preserve");
+      admissionRace.enabled = true;
+      admissionRace.operation = "manifest-check";
+      admissionRace.destination = manifestPath;
+      admissionRace.content = "role: example\n";
+
+      expect(() => initLocalOverlay(tempDir, true)).toThrow(
+        "Cannot force recreation of existing local overlay without a validated manifest"
+      );
+
+      expect(admissionRace.enabled).toBe(false);
+      expect(fs.readFileSync(manifestPath, "utf8")).toBe("role: example\n");
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("preserve");
+      expect(fs.existsSync(path.join(localDir, "runner"))).toBe(false);
+    });
+
+    it("rejects malformed manifest fields before mutating the overlay", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      const manifestPath = path.join(localDir, "profile.yml");
+      const markerPath = path.join(localDir, "marker.txt");
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(manifestPath, "role: [example]\n");
+      fs.writeFileSync(markerPath, "preserve");
+
+      expect(() => initLocalOverlay(tempDir)).toThrow(LocalOverlayError);
+
+      expect(fs.readFileSync(manifestPath, "utf8")).toBe("role: [example]\n");
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("preserve");
+      expect(fs.existsSync(path.join(localDir, "runner"))).toBe(false);
+      expect(fs.existsSync(path.join(localDir, "scope.yml"))).toBe(false);
+    });
+
+    it("preserves and authorizes a manifest created during exclusive admission", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      const manifestPath = path.join(localDir, "profile.yml");
+      admissionRace.enabled = true;
+      admissionRace.operation = "write";
+      admissionRace.destination = manifestPath;
+      admissionRace.content = "role: example\n";
+
+      expect(() => initLocalOverlay(tempDir)).toThrow('role="example" (read-only)');
+
+      expect(admissionRace.enabled).toBe(false);
+      expect(fs.readFileSync(manifestPath, "utf8")).toBe("role: example\n");
+      expect(fs.existsSync(path.join(localDir, "runner"))).toBe(false);
+      expect(fs.existsSync(path.join(localDir, "scope.yml"))).toBe(false);
+    });
+
+    it("preserves a config file created during default admission", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      const scopePath = path.join(localDir, "scope.yml");
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(path.join(localDir, "profile.yml"), "role: development\n");
+      admissionRace.enabled = true;
+      admissionRace.operation = "write";
+      admissionRace.destination = scopePath;
+      admissionRace.content = "version: 1\ntarget: concurrent-default\n";
+
+      initLocalOverlay(tempDir);
+
+      expect(admissionRace.enabled).toBe(false);
+      expect(fs.readFileSync(scopePath, "utf8")).toContain("target: concurrent-default");
+    });
+
+    it("preserves a config file created during tracked-copy admission", () => {
+      const trackedDir = path.join(tempDir, ".smartergpt");
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      const scopePath = path.join(localDir, "scope.yml");
+      fs.mkdirSync(trackedDir, { recursive: true });
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(path.join(trackedDir, "scope.yml"), "version: 1\ntarget: tracked\n");
+      fs.writeFileSync(path.join(localDir, "profile.yml"), "role: development\n");
+      admissionRace.enabled = true;
+      admissionRace.operation = "copy";
+      admissionRace.destination = scopePath;
+      admissionRace.content = "version: 1\ntarget: concurrent-copy\n";
+
+      const result = initLocalOverlay(tempDir);
+
+      expect(admissionRace.enabled).toBe(false);
+      expect(result.copiedFiles).not.toContain("scope.yml");
+      expect(fs.readFileSync(scopePath, "utf8")).toContain("target: concurrent-copy");
     });
 
     it("should copy files from .smartergpt/ if it exists", () => {

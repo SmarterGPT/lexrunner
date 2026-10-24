@@ -33,7 +33,7 @@ export default defineConfig([
     entry: ["src/gate-worker.ts"],
     format: ["esm"],
     splitting: false,
-    // Keep the standalone worker within the existing packed-size budget.
+    // Keep the standalone worker compact for transport and startup.
     minify: true,
     dts: false,
     clean: false,

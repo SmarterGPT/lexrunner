@@ -22,6 +22,7 @@ export interface MigrateProfileResult {
   backupStatus?: "complete" | "incomplete" | "unavailable";
   skippedFiles: string[];
   uncertainFiles?: string[];
+  retainedFiles?: string[];
 }
 
 /**
@@ -128,13 +129,20 @@ export async function runMigrateProfile(
   }
 
   // Create backup before migration
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupPath = path.join(profileDir, `.backup-${timestamp}`, "runner-config");
+  let backupRoot: string | undefined;
+  let backupPath: string | undefined;
+  let stagingPath: string | undefined;
   let backupCreated = false;
   let backupComplete = false;
+  let activeFile: string | undefined;
+  const retainedFiles: string[] = [];
 
   try {
+    backupRoot = fs.mkdtempSync(path.join(profileDir, ".backup-"));
+    backupPath = path.join(backupRoot, "runner-config");
+    stagingPath = path.join(backupRoot, "staging");
     fs.mkdirSync(backupPath, { recursive: true });
+    fs.mkdirSync(stagingPath, { recursive: true });
     backupCreated = true;
 
     // Copy files to backup
@@ -145,12 +153,59 @@ export async function runMigrateProfile(
     }
     backupComplete = true;
 
-    // Move compatibility files to the canonical profile root.
+    // Stage each source away from its public path, then admit the canonical
+    // destination with an exclusive create. This prevents a concurrently
+    // created root file from being replaced and prevents a concurrently
+    // recreated runner file from being deleted during cleanup.
     for (const file of filesToMigrate) {
+      activeFile = file;
       const runnerPath = path.join(runnerDir, file);
       const rootPath = path.join(profileDir, file);
-      fs.renameSync(runnerPath, rootPath);
+      const stagedPath = path.join(stagingPath, file);
+      fs.renameSync(runnerPath, stagedPath);
+
+      try {
+        fs.copyFileSync(stagedPath, rootPath, fs.constants.COPYFILE_EXCL);
+      } catch (error) {
+        if (isAlreadyExists(error)) {
+          if (restoreStagedCompatibility(stagedPath, runnerPath)) {
+            addUnique(retainedFiles, stagedPath);
+          }
+          skippedFiles.push(
+            `${file} (profile-root file appeared during migration; compatibility copy preserved)`
+          );
+          activeFile = undefined;
+          continue;
+        }
+        throw error;
+      }
+
+      try {
+        fs.unlinkSync(stagedPath);
+      } catch (error) {
+        if (restoreStagedCompatibility(stagedPath, runnerPath)) {
+          addUnique(retainedFiles, stagedPath);
+        }
+        throw error;
+      }
       migratedFiles.push(file);
+      activeFile = undefined;
+    }
+
+    tryRemoveEmptyDirectory(stagingPath);
+
+    if (retainedFiles.length) {
+      return {
+        success: false,
+        message:
+          `Migration preserved files requiring manual reconciliation: ${retainedFiles.join(", ")}. ` +
+          `A complete backup is retained at ${backupPath}.`,
+        migratedFiles,
+        backupPath,
+        backupStatus: "complete",
+        skippedFiles,
+        retainedFiles,
+      };
     }
 
     return {
@@ -162,42 +217,70 @@ export async function runMigrateProfile(
       skippedFiles,
     };
   } catch (error) {
-    const uncertainFiles: string[] = [];
-    // Roll back every completed move independently so one failure does not
-    // hide the disposition of the remaining files.
-    for (const file of migratedFiles) {
-      try {
-        const runnerPath = path.join(runnerDir, file);
-        const rootPath = path.join(profileDir, file);
-        if (fs.existsSync(rootPath) && !fs.existsSync(runnerPath)) {
-          fs.renameSync(rootPath, runnerPath);
-        }
-        if (!fs.existsSync(runnerPath) || fs.existsSync(rootPath)) uncertainFiles.push(file);
-      } catch {
-        uncertainFiles.push(file);
+    const uncertainFiles = activeFile ? [activeFile] : [];
+    if (activeFile && stagingPath) {
+      const stagedPath = path.join(stagingPath, activeFile);
+      const runnerPath = path.join(runnerDir, activeFile);
+      if (restoreStagedCompatibility(stagedPath, runnerPath)) {
+        addUnique(retainedFiles, stagedPath);
       }
     }
 
-    const moveDisposition = uncertainFiles.length
-      ? `Rollback could not confirm restoration for: ${uncertainFiles.join(", ")}.`
-      : migratedFiles.length
-        ? "Completed moves were restored."
-        : "No files were moved.";
+    const moveDisposition = migratedFiles.length
+      ? `Completed safe moves were retained for: ${migratedFiles.join(", ")}.`
+      : "No files completed migration.";
+    const uncertaintyDisposition = uncertainFiles.length
+      ? `Reconcile the in-flight file: ${uncertainFiles.join(", ")}.`
+      : "";
     const backupStatus = backupComplete ? "complete" : backupCreated ? "incomplete" : "unavailable";
-    const backupDisposition = backupComplete
-      ? `A complete backup is retained at ${backupPath}.`
-      : backupCreated
-        ? `The backup at ${backupPath} is incomplete and must not be relied upon for recovery.`
-        : "No backup was created.";
+    const backupDisposition =
+      backupComplete && backupPath
+        ? `A complete backup is retained at ${backupPath}.`
+        : backupCreated && backupPath
+          ? `The backup at ${backupPath} is incomplete and must not be relied upon for recovery.`
+          : "No backup was created.";
 
     return {
       success: false,
-      message: `Migration failed: ${error instanceof Error ? error.message : String(error)}. ${moveDisposition} ${backupDisposition}`,
-      migratedFiles: [],
-      ...(backupCreated ? { backupPath } : {}),
+      message: `Migration failed: ${error instanceof Error ? error.message : String(error)}. ${moveDisposition} ${uncertaintyDisposition} ${backupDisposition}`,
+      migratedFiles,
+      ...(backupCreated && backupPath ? { backupPath } : {}),
       backupStatus,
       skippedFiles,
       ...(uncertainFiles.length ? { uncertainFiles } : {}),
+      ...(retainedFiles.length ? { retainedFiles } : {}),
     };
+  }
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "EEXIST";
+}
+
+function addUnique(values: string[], value: string): void {
+  if (!values.includes(value)) values.push(value);
+}
+
+/** Restore a staged compatibility source without replacing a recreated path. */
+function restoreStagedCompatibility(stagedPath: string, runnerPath: string): boolean {
+  if (!fs.existsSync(stagedPath)) return false;
+  try {
+    fs.copyFileSync(stagedPath, runnerPath, fs.constants.COPYFILE_EXCL);
+  } catch {
+    return true;
+  }
+  try {
+    fs.unlinkSync(stagedPath);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function tryRemoveEmptyDirectory(directory: string): void {
+  try {
+    fs.rmdirSync(directory);
+  } catch {
+    // The backup remains truthful even if an empty staging directory cannot be removed.
   }
 }

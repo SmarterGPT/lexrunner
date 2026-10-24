@@ -392,7 +392,7 @@ const workspaceCmd = program
 workspaceCmd
   .command("init")
   .description("Initialize lexrunner workspace with interactive setup wizard")
-  .option("--force", "Overwrite existing configuration files")
+  .option("--force", "Recreate after retaining the existing profile as a recoverable backup")
   .option("--non-interactive", "Run without prompts (use environment variables)")
   .option("--github-token <token>", "GitHub token for authentication")
   .option("--profile-dir <dir>", "Profile directory (default: .smartergpt.local)")
@@ -427,6 +427,9 @@ workspaceCmd
               ? `Workspace initialized at ${initialized.path}`
               : `Workspace already initialized at ${initialized.path}`
           );
+          if (initialized.backupPath) {
+            console.log(`Previous workspace retained at ${initialized.backupPath}`);
+          }
         }
         return;
       }
@@ -757,7 +760,7 @@ program
 program
   .command("init-local")
   .description("Initialize local overlay directory with auto-detected project configuration")
-  .option("--force", "Force recreation even if local overlay exists")
+  .option("--force", "Recreate an existing local overlay after retaining a recoverable backup")
   .option("--json", "Output JSON format")
   .action(async (opts) => {
     try {
@@ -768,6 +771,7 @@ program
           canonicalJSONStringify({
             created: result.created,
             path: result.path,
+            backupPath: result.backupPath,
             config: result.config,
             copiedFiles: result.copiedFiles,
           })
@@ -779,6 +783,9 @@ program
           console.log(`📁 Created: ${result.path}/`);
           console.log(`🔧 Project type: ${result.config.projectType}`);
           console.log(`👤 Role: ${result.config.role}`);
+          if (result.backupPath) {
+            console.log(`💾 Previous overlay retained: ${result.backupPath}`);
+          }
           console.log("");
 
           if (result.copiedFiles.length > 0) {
@@ -840,6 +847,7 @@ program
             backupStatus: result.backupStatus,
             skippedFiles: result.skippedFiles,
             uncertainFiles: result.uncertainFiles,
+            retainedFiles: result.retainedFiles,
           })
         );
       } else {
@@ -872,6 +880,10 @@ program
           if (result.uncertainFiles?.length) {
             console.log("");
             console.log(`⚠️  Uncertain files: ${result.uncertainFiles.join(", ")}`);
+          }
+          if (result.retainedFiles?.length) {
+            console.log("");
+            console.log(`⚠️  Retained files: ${result.retainedFiles.join(", ")}`);
           }
         }
       }
