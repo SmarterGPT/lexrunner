@@ -61,26 +61,56 @@ The planner will:
 
 **Plan structure:**
 
+<!-- lexrunner-plan-example:quick-merge-pyramid-generated -->
+
 ```json
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.0.1",
   "target": "main",
   "items": [
     {
-      "id": "pr-42",
-      "name": "auth-system",
-      "branch": "feature/auth",
+      "name": "PR-42",
       "deps": [],
-      "strategy": "rebase-weave"
+      "gates": []
     },
     {
-      "id": "pr-43",
-      "name": "api-endpoints",
-      "branch": "feature/api",
-      "deps": ["auth-system"],
-      "strategy": "merge-weave"
+      "name": "PR-43",
+      "deps": ["PR-42"],
+      "gates": []
+    },
+    {
+      "name": "PR-44",
+      "deps": ["PR-43"],
+      "gates": []
     }
-  ]
+  ],
+  "gitInputs": {
+    "schemaVersion": "1.0.0",
+    "repository": "https://github.com/example/repository.git",
+    "checkoutRemote": "origin",
+    "acquisition": "fetch",
+    "target": {
+      "ref": "refs/heads/main",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "sources": [
+      {
+        "item": "PR-42",
+        "ref": "refs/pull/42/head",
+        "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      {
+        "item": "PR-43",
+        "ref": "refs/pull/43/head",
+        "commit": "cccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "item": "PR-44",
+        "ref": "refs/pull/44/head",
+        "commit": "dddddddddddddddddddddddddddddddddddddddd"
+      }
+    ]
+  }
 }
 ```
 
@@ -99,13 +129,13 @@ lex-pr merge-order plan.json
 📊 Merge order for 3 items:
 
 Level 0 (no dependencies):
-  → auth-system (pr-42)
+  → PR-42
 
 Level 1 (depends on Level 0):
-  → api-endpoints (pr-43)
+  → PR-43
 
 Level 2 (depends on Level 1):
-  → dashboard-ui (pr-44)
+  → PR-44
 ```
 
 **Understanding levels:**
@@ -181,16 +211,10 @@ lex-pr merge --plan plan.json
 
 # Execute merge (requires --execute flag)
 lex-pr merge --plan plan.json --execute
-
-# Use specific strategy (not supported via CLI flag - use plan.json)
-# Strategy is defined in plan.json per item
 ```
 
-**Merge strategies:**
-
-- **`rebase-weave`**: Rebase onto target, then merge (clean linear history)
-- **`merge-weave`**: Merge with merge commit (preserves branch structure)
-- **`squash-weave`**: Squash commits, then merge (single commit per PR)
+The final Plan Schema does not contain a per-item merge strategy. Do not add `strategy` fields to
+Plan items; synthesis configuration and execution options are separate contracts.
 
 **What happens:**
 
@@ -266,6 +290,10 @@ Depends-On: #43, #44
 ```
 
 **In `stack.yml`**, use explicit deps:
+
+This is a legacy stack dependency fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:quick-merge-pyramid-stack-fragment -->
 
 ```yaml
 items:

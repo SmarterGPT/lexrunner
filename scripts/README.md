@@ -124,7 +124,7 @@ A parameterized, repo-agnostic script for executing merge-weave workflows. This 
 
 ```bash
 # Dry run with existing plan
-./scripts/dogfood-merge-weave.sh --plan merge-weave-dogfood.json --dry-run
+./scripts/dogfood-merge-weave.sh --plan plan.json --dry-run
 
 # Execute from GitHub discovery
 ./scripts/dogfood-merge-weave.sh \
@@ -140,11 +140,13 @@ A parameterized, repo-agnostic script for executing merge-weave workflows. This 
 
 **Features:**
 
-- Load plan from file or discover PRs from GitHub
+- Load a Plan from file or generate one through the canonical `weave plan --from-github` route
 - Automated workflow: validation → gates → analysis → merge → report
 - Configurable artifacts directory with timestamps
 - Rich output: JSON, Markdown reports, colored console output
-- Graceful error handling for schema validation failures
+- Fail-closed schema and dependency validation with nonzero merge failure propagation
+- Bash-array argument forwarding for paths and filters containing spaces
+- Prior success-report invalidation when an artifacts directory is reused
 
 ## Adoption Metrics
 

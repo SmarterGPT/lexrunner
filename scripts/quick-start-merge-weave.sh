@@ -80,6 +80,7 @@ echo ""
 echo -e "${BOLD}Step 4: Configuring quality gates...${NC}"
 if [ ! -f ".smartergpt/gates.yml" ]; then
     if [ "$HAS_PACKAGE_JSON" = true ]; then
+        # lexrunner-non-executable-plan:quick-start-gates-config
         cat > .smartergpt/gates.yml << 'EOF'
 # Quality gates for merge-weave
 schemaVersion: "1.0.0"

@@ -15,8 +15,8 @@ import { InMemoryRunStore } from "../src/store/inmemory/index.js";
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const roots: string[] = [];
 
-afterEach(() => {
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => removeFixtureRoot(root)));
 });
 
 describe("published MCP workspace/config parity", () => {
@@ -54,6 +54,87 @@ describe("published MCP workspace/config parity", () => {
 
     expect(mcpComparable).toEqual(cliComparable);
     expect(mcpResult.contract).toBe("bounded-ax-v1");
+  });
+
+  it("preserves protected-write failures across CLI and MCP adapters", async () => {
+    const root = fixtureRoot();
+    const profile = path.join(root, ".smartergpt.local");
+    fs.mkdirSync(profile, { recursive: true });
+    fs.writeFileSync(path.join(profile, "profile.yml"), "role: example\nname: Protected\n");
+    fs.writeFileSync(path.join(profile, "gates.yml"), "AUTHORED-GATES-SENTINEL\n");
+
+    const cli = await execa(
+      "node",
+      [
+        path.join(repositoryRoot, "dist", "cli.js"),
+        "workspace",
+        "init",
+        "--non-interactive",
+        "--json",
+      ],
+      { cwd: root, reject: false }
+    );
+    const published = await invoke(root, {
+      id: 11,
+      method: "tools/call",
+      params: { name: "local.init", arguments: {} },
+    });
+    const source = await withoutProfileEnvironment(() => invokeSourceLocalInitError(root));
+    const publishedError = normalizeMcpError(published.error);
+    const cliError = JSON.parse(cli.stdout).error;
+
+    expect(cli.exitCode).toBe(2);
+    expect(JSON.parse(cli.stdout)).toMatchObject({
+      success: false,
+      error: { code: "EWRITE_PROTECTED" },
+    });
+    expect(source).toEqual(publishedError);
+    expect(source).toEqual({
+      protocolCode: -32602,
+      code: "WRITE_PROTECTION_ERROR",
+      message: cliError.message,
+      data: null,
+      actions: [
+        "Use a local overlay profile (.smartergpt.local/) for write operations",
+        "Set role to 'local' or 'ci' in profile.yml",
+        "Run 'local.init' to create a writable profile",
+      ],
+      context: { operation: "local.init" },
+    });
+    expect(fs.readFileSync(path.join(profile, "gates.yml"), "utf8")).toBe(
+      "AUTHORED-GATES-SENTINEL\n"
+    );
+  });
+
+  it("rejects missing and invalid workflow phases identically across MCP entrypoints", async () => {
+    const root = fixtureRoot();
+    const invalidArguments = [{}, { phase: "not-a-phase" }];
+    const responses = await invokeMany(root, [
+      {
+        id: 12,
+        method: "tools/call",
+        params: { name: "workflow.guide", arguments: {} },
+      },
+      {
+        id: 13,
+        method: "tools/call",
+        params: { name: "workflow.guide", arguments: { phase: "not-a-phase" } },
+      },
+    ]);
+
+    for (const [index, response] of responses.entries()) {
+      const error = normalizeMcpError(response.error);
+      const source = await invokeSourceToolError(root, "workflow_guide", invalidArguments[index]);
+      expect(source).toEqual(error);
+      expect(error).toMatchObject({
+        protocolCode: -32602,
+        code: "WORKFLOW_GUIDE_ARGUMENTS_INVALID",
+        context: { operation: "workflow.guide" },
+      });
+      expect(error.message).toContain("published phase values");
+      expect(JSON.stringify(error)).not.toContain("Cannot read properties");
+      expect(JSON.stringify(error)).not.toContain("not-a-phase");
+    }
   });
 
   it("routes CLI and MCP configuration queries through the same bounded result", async () => {
@@ -226,6 +307,38 @@ describe("published MCP workspace/config parity", () => {
             message: expect.stringContaining("WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID"),
           });
         }
+
+        const initialGuideResponse = await client.callTool({
+          name: "workflow_guide",
+          arguments: { phase: "initial" },
+        });
+        const initialGuide = JSON.parse((initialGuideResponse.content[0] as { text: string }).text);
+        expect(initialGuide).toMatchObject({
+          authority: "advisory",
+          authorizesExecution: false,
+          authorizesMerge: false,
+          phase: "initial",
+          canProceed: false,
+          recommendedAction: "local.init",
+          readiness: { source: "doctor", hasErrors: true },
+        });
+        expect(initialGuide.readiness.suggestions.join(" ")).toContain(startupRoot);
+        expect(initialGuide.readiness.suggestions.join(" ")).not.toContain(laterRoot);
+
+        const laterGuideResponse = await client.callTool({
+          name: "workflow_guide",
+          arguments: { phase: "post-plan-creation" },
+        });
+        const laterGuide = JSON.parse((laterGuideResponse.content[0] as { text: string }).text);
+        expect(laterGuide).toMatchObject({
+          authority: "advisory",
+          authorizesExecution: false,
+          authorizesMerge: false,
+          phase: "post-plan-creation",
+          canProceed: true,
+          recommendedAction: "gates.run",
+        });
+        expect(laterGuide).not.toHaveProperty("readiness");
       } finally {
         process.chdir(previousCwd);
         await client.close();
@@ -254,6 +367,82 @@ describe("published MCP workspace/config parity", () => {
 interface JsonRpcResponse {
   result: any;
   error: any;
+}
+
+interface NormalizedMcpError {
+  protocolCode: number;
+  code: string;
+  message: string;
+  data: unknown;
+  actions: string[];
+  context: Record<string, unknown>;
+}
+
+async function invokeSourceLocalInitError(cwd: string): Promise<NormalizedMcpError> {
+  return invokeSourceToolError(cwd, "local_init", {});
+}
+
+async function invokeSourceToolError(
+  cwd: string,
+  name: string,
+  args: Record<string, unknown>
+): Promise<NormalizedMcpError> {
+  const previousCwd = process.cwd();
+  let server;
+  let client: Client | undefined;
+  let captured: unknown;
+  try {
+    process.chdir(cwd);
+    server = createServer({ runStore: new InMemoryRunStore() });
+    client = new Client({ name: "workspace-config-parity-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      await client.callTool({ name, arguments: args });
+    } catch (error) {
+      captured = error;
+    }
+  } finally {
+    try {
+      if (client) await client.close();
+      if (server) await server.close();
+    } finally {
+      process.chdir(previousCwd);
+    }
+  }
+
+  if (!captured) throw new Error(`Expected source ${name} to reject invalid arguments`);
+  return normalizeMcpError(captured);
+}
+
+function normalizeMcpError(error: unknown): NormalizedMcpError {
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    !("code" in error) ||
+    typeof error.code !== "number" ||
+    !("message" in error) ||
+    typeof error.message !== "string"
+  ) {
+    throw new Error("Expected a structured MCP error");
+  }
+  const envelopeStart = error.message.indexOf("{");
+  if (envelopeStart < 0) throw new Error("Expected an AXError JSON envelope in the MCP error");
+  const envelope = JSON.parse(error.message.slice(envelopeStart)) as {
+    code: string;
+    message: string;
+    context: Record<string, unknown>;
+    nextActions: string[];
+  };
+  return {
+    protocolCode: error.code,
+    code: envelope.code,
+    message: envelope.message,
+    data: ("data" in error ? error.data : undefined) ?? null,
+    actions: envelope.nextActions,
+    context: envelope.context,
+  };
 }
 
 async function invoke(
@@ -310,6 +499,21 @@ function fixtureRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "lexrunner-mcp-workspace-"));
   roots.push(root);
   return root;
+}
+
+async function removeFixtureRoot(root: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fs.promises.rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= 30 || (code !== "EPERM" && code !== "EBUSY" && code !== "ENOTEMPTY")) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 }
 
 function prepareDiagnosticRoot(root: string, role: string): void {

@@ -13,7 +13,7 @@ import "dotenv/config";
  * Environment variables:
  *   GITHUB_TOKEN         - GitHub API token for authentication
  *   LEX_PR_PROFILE_DIR   - Path to profile directory (default: auto-resolve)
- *   ALLOW_MUTATIONS      - Enable write operations (default: false, use with caution)
+ *   ALLOW_MUTATIONS      - Enable protected mutation operations (default: false)
  */
 
 import { resolve, dirname } from "path";
@@ -30,9 +30,7 @@ const config = {
 const serverBaseDir = resolve(process.cwd());
 
 console.error(`[lexrunner] Starting MCP server`);
-console.error(
-  `[lexrunner] Mutations: ${config.allowMutations ? "ENABLED" : "disabled (read-only)"}`
-);
+console.error(`[lexrunner] Protected mutations: ${config.allowMutations ? "ENABLED" : "disabled"}`);
 
 // Import core functionality from built dist
 let core;
@@ -602,7 +600,7 @@ const tools = {
       properties: {
         force: {
           type: "boolean",
-          description: "Force recreation even if local overlay exists",
+          description: "Recreate an existing local overlay after retaining a recoverable backup",
           default: false,
         },
       },
@@ -623,6 +621,13 @@ const tools = {
           ],
         };
       } catch (error) {
+        if (core.isWriteProtectionError(error)) {
+          const wrapped = new Error(
+            core.canonicalJSONStringify(core.writeProtectionError(error.message, "local.init"))
+          );
+          wrapped.code = "WRITE_PROTECTION_ERROR";
+          throw wrapped;
+        }
         throw sharedServiceError(error, "local.init", "WORKSPACE_INIT_FAILED");
       }
     },
@@ -1145,9 +1150,56 @@ const tools = {
       required: ["phase"],
     },
     call: async (args) => {
+      const parsedArgs = core.WorkflowGuideArgs.safeParse(args);
+      if (!parsedArgs.success) {
+        const axError = core.workflowGuideArgumentsError();
+        const wrapped = new Error(core.canonicalJSONStringify(axError));
+        wrapped.code = axError.code;
+        throw wrapped;
+      }
+      const { phase } = parsedArgs.data;
       try {
         const { createWorkflowGuide } = await import("./dist/cli.js");
-        const guide = createWorkflowGuide(args.phase);
+        let guide;
+        if (phase === "initial") {
+          const doctor = await new core.WorkspaceDiagnosticsService().run({
+            baseDir: serverBaseDir,
+          });
+          const remediation = doctor.suggestions.length
+            ? doctor.suggestions.join("; ")
+            : "Run doctor and resolve every reported workspace issue before proceeding";
+          guide = createWorkflowGuide(phase, {
+            canProceed: !doctor.hasErrors,
+            commonIssues:
+              doctor.hasErrors || doctor.configuration.compatibilityFiles.length
+                ? [
+                    {
+                      symptom: doctor.hasErrors
+                        ? doctor.issues.join("; ")
+                        : "Compatibility configuration remains under runner/",
+                      solution: remediation,
+                    },
+                  ]
+                : [],
+            recommendedAction: doctor.hasErrors
+              ? doctor.configuration.missingFiles.length
+                ? "local.init"
+                : "doctor"
+              : undefined,
+            observation: {
+              source: "doctor",
+              hasErrors: doctor.hasErrors,
+              missingFiles: doctor.configuration.missingFiles,
+              compatibilityFiles: doctor.configuration.compatibilityFiles,
+              issues: doctor.issues,
+              suggestions: doctor.suggestions,
+            },
+          });
+        } else {
+          // Doctor can establish onboarding readiness only. It is not evidence
+          // of plan validity, gate success, or merge eligibility.
+          guide = createWorkflowGuide(phase);
+        }
 
         return {
           content: [
@@ -1189,6 +1241,8 @@ const INVALID_PARAMETER_CODES = new Set([
   "PLAN_NOT_FOUND",
   "PLAN_FILESYSTEM_UNSAFE",
   "PLAN_ARTIFACT_LIMIT_EXCEEDED",
+  "WRITE_PROTECTION_ERROR",
+  "WORKFLOW_GUIDE_ARGUMENTS_INVALID",
 ]);
 
 async function mutationToolCall(action, call) {

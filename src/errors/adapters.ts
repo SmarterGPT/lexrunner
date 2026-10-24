@@ -407,6 +407,22 @@ export function mcpToolError(
 }
 
 /**
+ * Create the stable MCP error returned when workflow.guide receives an
+ * absent or unsupported phase. Both MCP entrypoints use this adapter so the
+ * protocol code, AX error code, message, and context cannot drift apart.
+ */
+export function workflowGuideArgumentsError(): AXError {
+  return mcpToolError(
+    "WORKFLOW_GUIDE_ARGUMENTS_INVALID",
+    "Workflow phase is required and must be one of the published phase values",
+    {
+      tool: "workflow.guide",
+      operation: "workflow.guide",
+    }
+  );
+}
+
+/**
  * Create an AXError for plan not found errors
  */
 export function planNotFoundError(planFile?: string): AXError {
@@ -464,7 +480,7 @@ export function writeProtectionError(message: string, operation?: string): AXErr
     message,
     [
       "Use a local overlay profile (.smartergpt.local/) for write operations",
-      "Set role to 'local' or 'ci' in manifest.yaml",
+      "Set role to 'local' or 'ci' in profile.yml",
       "Run 'local.init' to create a writable profile",
     ],
     { operation }

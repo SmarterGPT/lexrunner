@@ -44,7 +44,9 @@ env:
 
 #### `ALLOW_MUTATIONS`
 
-Controls whether the runner can perform write operations (merge operations, PR updates, etc.).
+Controls protected mutation operations that explicitly consult this gate, such as a non-dry-run
+MCP merge. It does not make the MCP server read-only: plan creation can write artifacts, local
+initialization can create a profile overlay, and gate execution can run Plan commands.
 
 - **Type:** Boolean (`true` or `false`)
 - **Default:** `false`
@@ -54,12 +56,12 @@ Controls whether the runner can perform write operations (merge operations, PR u
 **Example:**
 
 ```bash
-# Enable mutations for local development
+# Enable protected mutations for local development
 export ALLOW_MUTATIONS=true
-lex-pr merge plan.json
+lexrunner weave apply --plan plan.json --execute
 
-# Dry run (mutations disabled)
-lex-pr merge plan.json --dry-run
+# Dry-run merge preview does not require protected mutation admission
+lexrunner weave apply --plan plan.json --dry-run
 ```
 
 **MCP Server:**
@@ -339,11 +341,12 @@ jobs:
           version: 1.0.0
           EOF
 
-      - name: Run Gates (Read-Only)
+      - name: Run Gates (Protected Merge Mutations Disabled)
         run: lex-pr gates run plan.json
 ```
 
-**Result:** All operations are read-only. Mutations blocked by default.
+**Result:** Protected mutations are blocked by default. Gate commands and their declared artifact
+writes still execute; this is not a read-only sandbox.
 
 #### GitHub Actions - Explicit Mutations
 
@@ -487,7 +490,7 @@ The MCP server respects all environment variables and CI safety mechanisms.
 ```bash
 # Terminal 1: Start MCP server
 export LEX_PR_PROFILE_DIR=/workspace/.smartergpt.local
-export ALLOW_MUTATIONS=false  # Read-only by default
+export ALLOW_MUTATIONS=false  # Protected mutations disabled; server is not read-only
 lexrunner-mcp
 ```
 

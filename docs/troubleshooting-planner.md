@@ -532,6 +532,10 @@ If other fields differ:
 
 Once supported, pin specific commit SHAs in the plan:
 
+This future-format fragment omits the current Plan document fields and is not executable input.
+
+<!-- lexrunner-non-executable-plan:troubleshooting-future-plan-fragment -->
+
 ```json
 {
   "items": [

@@ -4,8 +4,6 @@
   "items": [
     {
       "name": "item-1",
-      "issue": "#101",
-      "branch": "feature/item-1",
       "deps": [],
       "gates": [
         {
@@ -20,8 +18,6 @@
     },
     {
       "name": "item-2",
-      "issue": "#102",
-      "branch": "feature/item-2",
       "deps": ["item-1"],
       "gates": [
         {
@@ -32,8 +28,6 @@
     },
     {
       "name": "item-3",
-      "issue": "#103",
-      "branch": "feature/item-3",
       "deps": ["item-2"],
       "gates": [
         {

@@ -9,7 +9,12 @@ import {
   getEnvironmentSuggestions,
 } from "../core/bootstrap.js";
 import { initLocalOverlay, type LocalOverlayResult } from "../config/localOverlay.js";
-import { resolveProfile, type ResolvedProfile } from "../config/profileResolver.js";
+import { resolveConfigPath } from "../config/pathResolver.js";
+import {
+  resolveProfile,
+  WriteProtectionError,
+  type ResolvedProfile,
+} from "../config/profileResolver.js";
 import { createGitHubAPI } from "../github/api.js";
 import { createGitOperations } from "../git/operations.js";
 import { runEnvironmentQualityCheck } from "../hostility/index.js";
@@ -139,15 +144,35 @@ export class WorkspaceInitializationService {
         contract: "bounded-ax-v1",
         ...result,
         path: bounded(result.path, MAX_PATH_BYTES),
+        ...(result.backupPath ? { backupPath: bounded(result.backupPath, MAX_PATH_BYTES) } : {}),
         copiedFiles: boundedStrings(result.copiedFiles),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof WriteProtectionError) throw error;
+      const retainedBackupPath = getRetainedBackupPath(error);
       throw new WorkspaceConfigServiceError(
         "WORKSPACE_INIT_FAILED",
-        "Workspace initialization failed; inspect the selected local profile path"
+        retainedBackupPath
+          ? `Workspace initialization failed; prior overlay retained at ${bounded(
+              retainedBackupPath,
+              MAX_PATH_BYTES
+            )}`
+          : "Workspace initialization failed; inspect the selected local profile path"
       );
     }
   }
+}
+
+function getRetainedBackupPath(error: unknown): string | undefined {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "retainedBackupPath" in error &&
+    typeof error.retainedBackupPath === "string"
+  ) {
+    return error.retainedBackupPath;
+  }
+  return undefined;
 }
 
 /** Transport-neutral owner for workspace and environment diagnostics. */
@@ -177,6 +202,15 @@ export class WorkspaceDiagnosticsService {
     }
 
     const configuration = bootstrapWorkspace(diagnosticBase);
+    if (!configuration.hasConfiguration) {
+      hasErrors = true;
+      issues.push(
+        `Configuration is missing required profile-root files: ${configuration.missingFiles.join(", ")}`
+      );
+      suggestions.push(...configuration.suggestions);
+    } else if (configuration.compatibilityFiles.length) {
+      suggestions.push(...configuration.suggestions);
+    }
     let github: BoundedDoctorResult["github"];
     try {
       const api = await createGitHubAPI(diagnosticBase);
@@ -351,7 +385,12 @@ function resolveConfig(baseDir: string): BoundedConfigResult {
   const files = ["scope.yml", "stack.yml", "deps.yml", "gates.yml", "merge-policy.yml"];
   for (const directory of directories) {
     for (const file of files) {
-      const parsed = loadConfig(path.join(directory.path, file));
+      // Each directory is already being traversed in explicit precedence
+      // order; do not apply the local-to-workspace fallback a second time.
+      const resolved = resolveConfigPath(directory.path, file, {
+        allowWorkspaceFallback: false,
+      });
+      const parsed = resolved.exists ? loadConfig(resolved.path) : null;
       if (!parsed) continue;
       for (const [key, rawValue] of Object.entries(flatten(parsed, file.replace(".yml", "")))) {
         if (values.size >= MAX_CONFIG_VALUES && !values.has(key)) {
@@ -362,7 +401,9 @@ function resolveConfig(baseDir: string): BoundedConfigResult {
         }
         const value = redactValue(key, rawValue);
         const previous = values.get(key);
-        const source = `${directory.source}${file}`;
+        const source = `${directory.source}${
+          resolved.source === "runner/ (compatibility)" ? `runner/${file}` : file
+        }`;
         values.set(key, {
           key: bounded(key, MAX_LABEL_BYTES),
           value,

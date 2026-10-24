@@ -22,9 +22,13 @@ lex-pr init-local
 ```bash
 # Generate plan from GitHub PRs
 lex-pr plan --from-github --out plan.json
+```
 
-# Or use a manual plan
-cat > plan.json << 'EOF'
+Or save this manual plan as `plan.json`:
+
+<!-- lexrunner-plan-example:autopilot-level4-manual -->
+
+```json
 {
   "schemaVersion": "1.0.0",
   "target": "main",
@@ -40,13 +44,10 @@ cat > plan.json << 'EOF'
     {
       "name": "PR-102",
       "deps": ["PR-101"],
-      "gates": [
-        { "name": "lint", "run": "npm run lint", "env": {} }
-      ]
+      "gates": [{ "name": "lint", "run": "npm run lint", "env": {} }]
     }
   ]
 }
-EOF
 ```
 
 ### 3. Test at Lower Levels First

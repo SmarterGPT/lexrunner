@@ -132,8 +132,12 @@ The `vuln` gate provides artifact-based vulnerability scanning:
 
 **Example Configuration:**
 
+<!-- lexrunner-plan-example:security-vulnerability-gate -->
+
 ```json
 {
+  "schemaVersion": "1.0.0",
+  "target": "main",
   "policy": {
     "requiredGates": ["vuln"],
     "security": {

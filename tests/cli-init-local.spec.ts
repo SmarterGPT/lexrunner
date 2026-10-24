@@ -19,6 +19,21 @@ describe("CLI init-local Integration Tests", () => {
     }
   });
 
+  it("scopes recoverable-backup help to local overlay initialization", () => {
+    const workspaceHelp = execSync(`node "${cliPath}" workspace init --help`, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+    const localHelp = execSync(`node "${cliPath}" init-local --help`, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+
+    expect(workspaceHelp).toMatch(/Continue initialization for an existing\s+writable profile/u);
+    expect(workspaceHelp).not.toMatch(/recoverable\s+backup/u);
+    expect(localHelp).toMatch(/recoverable\s+backup/u);
+  });
+
   it("should initialize local overlay with generic project type", () => {
     const output = execSync(`node "${cliPath}" init-local`, {
       cwd: tempDir,
@@ -103,7 +118,11 @@ describe("CLI init-local Integration Tests", () => {
     });
 
     expect(output).toContain("Local overlay initialized successfully");
+    expect(output).toContain("Previous overlay retained:");
     expect(fs.existsSync(path.join(tempDir, ".smartergpt.local", "custom.txt"))).toBe(false);
+    const backupsDir = path.join(tempDir, ".smartergpt.local", "runner", "force-backups");
+    const [backup] = fs.readdirSync(backupsDir);
+    expect(fs.readFileSync(path.join(backupsDir, backup, "custom.txt"), "utf8")).toBe("custom");
   });
 
   it("should copy files from .smartergpt/ if it exists", () => {
@@ -119,16 +138,16 @@ describe("CLI init-local Integration Tests", () => {
     });
 
     expect(output).toContain("Copied files from .smartergpt/");
-    expect(output).toContain("runner/intent.md");
-    expect(output).toContain("runner/scope.yml");
+    expect(output).toContain("intent.md");
+    expect(output).toContain("scope.yml");
 
-    // Verify files were copied to runner/
-    expect(fs.existsSync(path.join(tempDir, ".smartergpt.local", "runner", "intent.md"))).toBe(
-      true
-    );
-    expect(fs.existsSync(path.join(tempDir, ".smartergpt.local", "runner", "scope.yml"))).toBe(
-      true
-    );
+    // Configuration is canonical at the profile root; runner/ is artifact-only.
+    const localDir = path.join(tempDir, ".smartergpt.local");
+    expect(fs.existsSync(path.join(localDir, "intent.md"))).toBe(true);
+    expect(fs.existsSync(path.join(localDir, "scope.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(localDir, "runner"))).toBe(true);
+    expect(fs.existsSync(path.join(localDir, "runner", "intent.md"))).toBe(false);
+    expect(fs.existsSync(path.join(localDir, "runner", "scope.yml"))).toBe(false);
   });
 
   it("should have deterministic JSON output", () => {

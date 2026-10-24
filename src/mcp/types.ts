@@ -127,6 +127,7 @@ export interface MergeApplyResult {
 export interface InitLocalResult {
   created: boolean;
   path: string;
+  backupPath?: string;
   config: {
     role: string;
     projectType: string;

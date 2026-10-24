@@ -142,10 +142,10 @@ Test coverage:
 
 The following compatibility shims are documented for removal in v3.0.0:
 
-| Shim                          | Location                     | Removal Timeline |
-| ----------------------------- | ---------------------------- | ---------------- |
-| `LEXRUNNER_*` env var aliases | `src/util/envUtils.ts`       | v3.0.0           |
-| Legacy flat path resolution   | `src/config/pathResolver.ts` | v3.0.0           |
+| Shim                                 | Location                     | Removal Timeline |
+| ------------------------------------ | ---------------------------- | ---------------- |
+| `LEXRUNNER_*` env var aliases        | `src/util/envUtils.ts`       | v3.0.0           |
+| Compatibility `runner/` config reads | `src/config/pathResolver.ts` | v3.0.0           |
 
 ## See Also
 

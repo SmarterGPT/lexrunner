@@ -66,9 +66,11 @@ Next steps:
 
 **Generated Plan (plan.json):**
 
+<!-- lexrunner-plan-example:working-example -->
+
 ```json
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.0.1",
   "target": "main",
   "policy": {
     "requiredGates": ["lint", "typecheck", "test"],
@@ -83,7 +85,7 @@ Next steps:
   },
   "items": [
     {
-      "name": "PR-XXX",
+      "name": "PR-123",
       "deps": [],
       "gates": [
         {
@@ -109,7 +111,24 @@ Next steps:
         }
       ]
     }
-  ]
+  ],
+  "gitInputs": {
+    "schemaVersion": "1.0.0",
+    "repository": "https://github.com/SmarterGPT/lexrunner.git",
+    "checkoutRemote": "origin",
+    "acquisition": "fetch",
+    "target": {
+      "ref": "refs/heads/main",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "sources": [
+      {
+        "item": "PR-123",
+        "ref": "refs/pull/123/head",
+        "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  }
 }
 ```
 

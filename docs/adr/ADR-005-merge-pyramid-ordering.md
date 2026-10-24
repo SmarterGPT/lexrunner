@@ -34,6 +34,8 @@ Merge order: A → B → C → D (or A → C → B → D)
 
 Independent subgraphs may run concurrently **up to the concurrency limits** specified by policy/plan.
 
+<!-- lexrunner-non-executable-plan:adr-merge-order-policy-fragment -->
+
 ```yaml
 policy:
   maxWorkers: 2

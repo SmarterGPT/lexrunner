@@ -10,6 +10,8 @@ The expected source commit comes from PR metadata; the target branch commit is
 queried independently. PRs targeting another branch and dependencies qualified to
 another repository are rejected by this single-repository generator.
 
+<!-- lexrunner-plan-example:frozen-git-inputs -->
+
 ```json
 {
   "schemaVersion": "1.0.1",

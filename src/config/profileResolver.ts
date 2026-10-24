@@ -80,29 +80,7 @@ export function resolveProfile(
     }
   }
 
-  // Read manifest file if present
-  const manifestPath = path.join(profilePath, "profile.yml");
-  let manifest: ProfileManifest;
-
-  try {
-    const content = fs.readFileSync(manifestPath, "utf8");
-    const parsed = YAML.parse(content);
-    manifest = {
-      role: parsed.role || "example",
-      name: parsed.name,
-      version: parsed.version,
-    };
-  } catch (error) {
-    // Default manifest for .smartergpt/ when no profile.yml exists
-    if (source === ".smartergpt/") {
-      manifest = { role: "example" };
-    } else {
-      // For other sources, missing manifest is an error
-      throw new ProfileResolverError(
-        `Profile directory "${profilePath}" (from ${source}) is missing profile.yml manifest`
-      );
-    }
-  }
+  const manifest = loadProfileManifest(profilePath, source);
 
   // Emit telemetry breadcrumb
   emitTelemetry(profilePath, manifest.role);
@@ -112,6 +90,61 @@ export function resolveProfile(
     source,
     manifest,
   };
+}
+
+function loadProfileManifest(profilePath: string, source: string): ProfileManifest {
+  const manifestPath = path.join(profilePath, "profile.yml");
+  let content: string;
+
+  try {
+    content = fs.readFileSync(manifestPath, "utf8");
+  } catch (error) {
+    if (isFileSystemError(error, "ENOENT")) {
+      // The tracked profile remains optional and defaults to the read-only
+      // example role only when its manifest is genuinely absent.
+      if (source === ".smartergpt/") {
+        return { role: "example" };
+      }
+      throw new ProfileResolverError(
+        `Profile directory "${profilePath}" (from ${source}) is missing profile.yml manifest`
+      );
+    }
+
+    throw new ProfileResolverError(
+      `Profile directory "${profilePath}" (from ${source}) has an unreadable profile.yml manifest`
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = YAML.parse(content);
+  } catch {
+    throw invalidManifestError(profilePath, source);
+  }
+
+  if (!isManifestObject(parsed)) {
+    throw invalidManifestError(profilePath, source);
+  }
+
+  return {
+    role: parsed.role === undefined ? "example" : parsed.role,
+    name: parsed.name,
+    version: parsed.version,
+  };
+}
+
+function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+function isManifestObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function invalidManifestError(profilePath: string, source: string): ProfileResolverError {
+  return new ProfileResolverError(
+    `Profile directory "${profilePath}" (from ${source}) has an invalid profile.yml manifest`
+  );
 }
 
 import { isJsonMode } from "../util/colorControl.js";
@@ -158,6 +191,15 @@ export class WriteProtectionError extends Error {
 }
 
 /**
+ * Classify write-protection failures through the shared runtime identity.
+ * Subclasses retain the same authority disposition even when they add
+ * recovery metadata such as a retained backup path.
+ */
+export function isWriteProtectionError(error: unknown): error is WriteProtectionError {
+  return error instanceof WriteProtectionError;
+}
+
+/**
  * Validate if writes are allowed to a profile path
  *
  * Write discipline rules:
@@ -169,14 +211,13 @@ export class WriteProtectionError extends Error {
  * @param role - Profile role from manifest (defaults to "example" for .smartergpt/)
  * @returns true if writes are allowed, false otherwise
  */
-export function canWriteToProfile(profilePath: string, role: string): boolean {
-  // Profiles with role "example" are read-only
-  if (role === "example") {
-    return false;
-  }
+export function canWriteToProfile(profilePath: string, role: unknown): boolean {
+  void profilePath;
+  const normalizedRole = normalizeProfileRole(role);
 
-  // All other roles are writable
-  return true;
+  // Missing, malformed, and example roles are all read-only. Authority must
+  // be established by a non-empty scalar role, never inferred from coercion.
+  return normalizedRole !== undefined && normalizedRole !== "example";
 }
 
 /**
@@ -187,11 +228,33 @@ export function canWriteToProfile(profilePath: string, role: string): boolean {
  * @param operation - Description of the operation being attempted (for error message)
  * @throws WriteProtectionError if writes are not allowed
  */
-export function validateWriteOperation(profilePath: string, role: string, operation: string): void {
+export function validateWriteOperation(
+  profilePath: string,
+  role: unknown,
+  operation: string
+): void {
   if (!canWriteToProfile(profilePath, role)) {
+    const normalizedRole = normalizeProfileRole(role);
+    const roleDisposition =
+      normalizedRole === "example"
+        ? 'role="example"'
+        : `an invalid ${describeProfileRole(role)} role`;
     throw new WriteProtectionError(
-      `Cannot ${operation}: profile at "${profilePath}" has role="${role}" (read-only). ` +
+      `Cannot ${operation}: profile at "${profilePath}" has ${roleDisposition} (read-only). ` +
         `Use a local profile (.smartergpt.local/) or set LEX_PR_PROFILE_DIR to a writable location.`
     );
   }
+}
+
+function normalizeProfileRole(role: unknown): string | undefined {
+  if (typeof role !== "string") return undefined;
+  const normalized = role.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function describeProfileRole(role: unknown): string {
+  if (role === null) return "null";
+  if (Array.isArray(role)) return "array";
+  if (typeof role === "string") return "empty";
+  return typeof role;
 }

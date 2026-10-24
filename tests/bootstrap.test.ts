@@ -136,12 +136,14 @@ describe("Bootstrap Configuration", () => {
       // Check deps.yml has proper YAML structure
       const depsContent = fs.readFileSync(path.join(profileDir, "deps.yml"), "utf-8");
       expect(depsContent).toContain("version: 1");
-      expect(depsContent).toContain("target: main");
+      expect(depsContent).toContain("depends_on: []");
+      expect(depsContent).toContain("strategies: {}");
 
       // Check gates.yml has proper YAML structure
       const gatesContent = fs.readFileSync(path.join(profileDir, "gates.yml"), "utf-8");
       expect(gatesContent).toContain("version: 1");
-      expect(gatesContent).toContain("gates:");
+      expect(gatesContent).toContain("levels:");
+      expect(gatesContent).toContain("default: []");
     });
   });
 
@@ -246,6 +248,28 @@ describe("Bootstrap Configuration", () => {
       expect(() => {
         createMinimalWorkspace(tempDir);
       }).toThrow(WriteProtectionError);
+    });
+
+    it("should reject a non-scalar manifest role before creating files", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(path.join(localDir, "profile.yml"), "role: [example]\n");
+
+      expect(() => createMinimalWorkspace(tempDir)).toThrow(WriteProtectionError);
+
+      expect(fs.existsSync(path.join(localDir, "runner"))).toBe(false);
+      expect(fs.existsSync(path.join(localDir, "scope.yml"))).toBe(false);
+    });
+
+    it("should normalize whitespace before enforcing the example role", () => {
+      const localDir = path.join(tempDir, ".smartergpt.local");
+      fs.mkdirSync(localDir, { recursive: true });
+      fs.writeFileSync(path.join(localDir, "profile.yml"), 'role: " example "\n');
+
+      expect(() => createMinimalWorkspace(tempDir)).toThrow(WriteProtectionError);
+
+      expect(fs.existsSync(path.join(localDir, "runner"))).toBe(false);
+      expect(fs.existsSync(path.join(localDir, "scope.yml"))).toBe(false);
     });
 
     it('should allow writing to role="local" profiles', () => {

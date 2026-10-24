@@ -9,7 +9,7 @@
  * Workflow action that can be taken in the current phase
  */
 export interface WorkflowAction {
-  /** MCP tool command name (e.g., 'gates_run', 'plan_validate') */
+  /** Public MCP tool command name (e.g., 'gates.run', 'status', 'merge-order') */
   command: string;
   /** Human-readable description of what this action does */
   description: string;
@@ -31,6 +31,10 @@ export interface CommonIssue {
  * Guided workflow response from the workflow_guide tool
  */
 export interface WorkflowGuide {
+  /** Guidance is advisory and does not grant execution or merge authority. */
+  authority: "advisory";
+  authorizesExecution: false;
+  authorizesMerge: false;
   /** Current workflow phase identifier */
   phase: string;
   /** Available next steps in this phase */
@@ -43,6 +47,22 @@ export interface WorkflowGuide {
   canProceed: boolean;
   /** Optional recommendation for the most common next action */
   recommendedAction?: string;
+  /** Optional observed workspace readiness used by the published MCP adapter. */
+  readiness?: {
+    source: "doctor";
+    hasErrors: boolean;
+    missingFiles: string[];
+    compatibilityFiles: string[];
+    issues: string[];
+    suggestions: string[];
+  };
+}
+
+export interface WorkflowReadiness {
+  canProceed: boolean;
+  commonIssues?: CommonIssue[];
+  recommendedAction?: string;
+  observation?: WorkflowGuide["readiness"];
 }
 
 /**

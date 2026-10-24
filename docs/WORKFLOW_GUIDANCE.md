@@ -2,20 +2,23 @@
 
 ## Overview
 
-The `workflow.guide` MCP tool provides context-aware guidance for lexrunner workflows, helping agents navigate complex operations by providing:
+The public `workflow.guide` MCP tool returns phase-specific next steps, common issues, a
+recommended action, and an optional documentation pointer. The command names in `nextSteps` use
+the canonical published MCP surface: `plan.create`, `gates.run`, `status`, `merge-order`,
+`merge.apply`, and `doctor`.
 
-- **Next steps**: Available actions in the current workflow phase
-- **Common issues**: Known problems and their solutions
-- **Recommendations**: Suggested next action
-- **Documentation links**: Relevant documentation for the phase
+Every response is explicitly advisory:
 
-## Architecture
+- `authority` is always `"advisory"`.
+- `authorizesExecution` is always `false`.
+- `authorizesMerge` is always `false`.
+- `canProceed` reports only the readiness observation or local workflow bookkeeping described
+  below. It does not prove plan validity, gate success, merge eligibility, or authority.
+- `required: true` identifies a required phase action. It does not mean that command ran or that
+  the caller may run it.
 
-Following Guff's Option 1 approach from the backlog analysis, this feature:
-
-- **Separates concerns**: Deterministic data vs. contextual guidance
-- **Doesn't modify existing responses**: Guidance is opt-in via helper command
-- **Maintains simplicity**: MCP server stays focused on I/O
+Use the generated inventory in [README.mcp.md](../README.mcp.md#published-tool-inventory) as the
+source of truth for all public MCP tool names.
 
 ## Workflow Phases
 
@@ -27,7 +30,12 @@ Starting point before any operations.
 
 - `plan.create` (required) - Create execution plan
 
-**Recommended action:** `plan.create`
+**Default recommended action:** `plan.create`
+
+For the published MCP tool, this phase also runs `doctor` against the server's diagnostic base.
+If required workspace files are missing, the recommendation becomes `local.init`; for other
+doctor errors it becomes `doctor`. See [Initial readiness](#initial-readiness) for the exact
+meaning of that observation.
 
 ### 2. Post-Plan-Creation
 
@@ -36,12 +44,12 @@ Plan has been created, ready for validation and gate execution.
 **Next steps:**
 
 - `gates.run` (required) - Execute gates to validate PRs
-- `plan.validate` (optional) - Check for schema errors
-- `merge.order` (optional) - Calculate dependency-based merge order
+- `status` (optional) - Validate the selected plan and report its current integration status
+- `merge-order` (optional) - Calculate dependency-based merge order
 
 **Common issues:**
 
-- Plan schema validation errors → Use `plan.validate`
+- Plan schema validation errors → Use `status` with an explicit `planFile`
 - Unknown dependencies → Check PR dependency declarations
 
 **Recommended action:** `gates.run`
@@ -53,7 +61,7 @@ Gates have been executed, check results before merge.
 **Next steps:**
 
 - `status` (required) - Check gate execution results
-- `merge.apply` (optional) - Apply merge operations (use dryRun first)
+- `merge.apply` (optional) - Apply merge operations (use `dryRun: true` first)
 
 **Common issues:**
 
@@ -68,7 +76,7 @@ Ready to merge, perform final checks.
 
 **Next steps:**
 
-- `merge.apply` (required) - Apply merge operations
+- `merge.apply` (required) - Apply merge operations (consider `dryRun: true` first)
 
 **Common issues:**
 
@@ -96,6 +104,36 @@ Error occurred, attempting recovery.
 
 - Command execution failed → Check error messages and use `doctor`
 
+## Initial Readiness
+
+The published `workflow.guide` adapter obtains an actual `doctor` result only for the `initial`
+phase and includes it as `readiness`:
+
+```typescript
+{
+  source: "doctor";
+  hasErrors: boolean;
+  missingFiles: string[];
+  compatibilityFiles: string[];
+  issues: string[];
+  suggestions: string[];
+}
+```
+
+For this phase, `canProceed` is `!readiness.hasErrors`. Missing required files recommend
+`local.init`; other errors recommend `doctor`; a healthy workspace keeps the phase default of
+`plan.create`. Compatibility-file observations may add a common issue without changing
+`canProceed` when `doctor` reports no errors.
+
+Other published phases are stateless and do not contain a `readiness` observation. Their default
+`canProceed: true` means only that the guide has no observed readiness blocker. Call the named
+tools and inspect their receipts to establish plan validity, gate results, merge eligibility, and
+any separate execution authority.
+
+The internal `WorkflowStateMachine.getGuide()` instead derives `canProceed` from its in-memory
+completed-step set: all required actions must be marked complete, unless the phase has no actions.
+That local bookkeeping still does not execute a command or create authoritative evidence.
+
 ## Usage
 
 ### MCP Tool
@@ -114,64 +152,66 @@ Error occurred, attempting recovery.
 }
 ```
 
-**Response:**
+The response payload is JSON encoded in `result.content[0].text`. After decoding that text, the
+example above returns:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "content": [{
-      "type": "text",
-      "text": "{
-        \"phase\": \"post-plan-creation\",
-        \"nextSteps\": [
-          {
-            \"command\": \"gates.run\",
-            \"description\": \"Execute gates to validate PRs before merging\",
-            \"required\": true
-          },
-          ...
-        ],
-        \"commonIssues\": [...],
-        \"documentation\": \"docs/merge-weave-workflow.md\",
-        \"canProceed\": true,
-        \"recommendedAction\": \"gates.run\"
-      }"
-    }]
-  }
+  "authority": "advisory",
+  "authorizesExecution": false,
+  "authorizesMerge": false,
+  "phase": "post-plan-creation",
+  "nextSteps": [
+    {
+      "command": "gates.run",
+      "description": "Execute gates to validate PRs before merging",
+      "required": true
+    },
+    {
+      "command": "status",
+      "description": "Validate the selected plan and report its current integration status",
+      "required": false
+    },
+    {
+      "command": "merge-order",
+      "description": "Calculate dependency-based merge order",
+      "required": false
+    }
+  ],
+  "commonIssues": [
+    {
+      "symptom": "Plan schema validation errors",
+      "solution": "Use status with the explicit planFile to check schema compliance"
+    },
+    {
+      "symptom": "Unknown dependencies in plan",
+      "solution": "Check PR dependency declarations and ensure all referenced PRs exist"
+    }
+  ],
+  "documentation": "README.mcp.md",
+  "canProceed": true,
+  "recommendedAction": "gates.run"
 }
 ```
 
+Here `canProceed` is the stateless default, not evidence that `gates.run`, `status`, or
+`merge-order` has executed.
+
 ### Programmatic Usage (TypeScript)
 
-```typescript
-import { WorkflowStateMachine } from "lexrunner/src/mcp/workflow/state-machine.js";
-
-// Create state machine
-const sm = new WorkflowStateMachine("initial");
-
-// Get current guide
-const guide = sm.getGuide();
-console.log(`Recommended: ${guide.recommendedAction}`);
-
-// Complete a step
-sm.completeStep("plan.create");
-
-// Transition to next phase
-sm.transition("post-plan-creation");
-```
-
-### Stateless Helper
+The package root exports the stateless helper:
 
 ```typescript
-import { createWorkflowGuide } from "lexrunner/src/mcp/workflow/state-machine.js";
+import { createWorkflowGuide } from "@smartergpt/lexrunner";
 
-// Get guidance without maintaining state
 const guide = createWorkflowGuide("post-gates-run");
 console.log(guide.nextSteps);
 console.log(guide.commonIssues);
 ```
+
+`WorkflowStateMachine` is an internal implementation class, not a public package export. Do not
+import package-private `src/` paths. The helper does not run `doctor`; the doctor-backed initial
+observation belongs to the published MCP adapter.
 
 ## API Reference
 
@@ -179,22 +219,36 @@ console.log(guide.commonIssues);
 
 ```typescript
 interface WorkflowGuide {
-  phase: string;
+  authority: "advisory";
+  authorizesExecution: false;
+  authorizesMerge: false;
+  phase: WorkflowPhase;
   nextSteps: WorkflowAction[];
   commonIssues: CommonIssue[];
   documentation?: string;
   canProceed: boolean;
   recommendedAction?: string;
+  readiness?: {
+    source: "doctor";
+    hasErrors: boolean;
+    missingFiles: string[];
+    compatibilityFiles: string[];
+    issues: string[];
+    suggestions: string[];
+  };
 }
 ```
+
+The three authority fields are required on every guide. `readiness` is optional and is currently
+populated by the published MCP adapter only for the `initial` phase.
 
 ### WorkflowAction
 
 ```typescript
 interface WorkflowAction {
-  command: string; // MCP tool command name
+  command: string; // Canonical public MCP tool name
   description: string; // What this action does
-  required: boolean; // Must be performed before proceeding
+  required: boolean; // Required by the phase model, not an authority grant
 }
 ```
 
@@ -207,46 +261,28 @@ interface CommonIssue {
 }
 ```
 
-## Implementation Details
+## Implementation Map
 
-### Files Created
-
-- `src/mcp/types/guided-response.ts` - Type definitions
-- `src/mcp/workflow/state-machine.ts` - State machine and guidance logic
-- `tests/workflow-state-machine.spec.ts` - State machine tests (29 tests)
-- `tests/mcp-workflow-guide.spec.ts` - MCP integration tests (5 tests)
-
-### Integration Points
-
-1. **MCP Server** (`src/mcp/server.ts`):
-   - Added `workflow.guide` tool definition
-   - Added `handleWorkflowGuide` handler
-   - Added `WorkflowGuideArgs` validation schema
-
-2. **MCP Server Wrapper** (`mcp-server.mjs`):
-   - Added `workflow.guide` tool entry
-   - Imports `createWorkflowGuide` from built dist
-
-3. **CLI Exports** (`src/cli.ts`):
-   - Exported `createWorkflowGuide` for MCP server usage
+- `src/mcp/types/guided-response.ts` defines the response contracts.
+- `src/mcp/workflow/state-machine.ts` owns phase definitions and the stateless helper.
+- `mcp-server.mjs` is the published MCP adapter and supplies initial doctor readiness.
+- `src/mcp/server.ts` keeps the source-server adapter aligned with the published behavior.
+- `src/cli.ts` exports `createWorkflowGuide` from the package root.
+- `tests/workflow-state-machine.spec.ts`, `tests/mcp-workflow-guide.spec.ts`, and
+  `tests/docs-current.spec.ts` cover the phase, validation, authority, and documentation contracts.
+- `tests/mcp-workspace-onboarding-git.spec.ts` covers the doctor-backed published onboarding path.
 
 ## Testing
 
-```bash
-# Run workflow state machine tests
-npm test -- tests/workflow-state-machine.spec.ts
-
-# Run MCP integration tests
-npm test -- tests/mcp-workflow-guide.spec.ts
-
-# Manual MCP server test
-echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "workflow.guide", "arguments": {"phase": "post-plan-creation"}}}' | \
-  node ./mcp-server.mjs
+```sh
+npx vitest run tests/workflow-state-machine.spec.ts tests/mcp-workflow-guide.spec.ts tests/docs-current.spec.ts
+npx vitest run -c vitest.git.config.ts tests/mcp-workspace-onboarding-git.spec.ts
 ```
 
 ## Future Enhancements
 
-While this implementation provides **stateless guidance** (Option 1 from Guff's analysis), the `GuidedMCPResponse<T>` interface in `guided-response.ts` shows how responses could be enhanced with workflow tracking in the future if needed.
+`GuidedMCPResponse<T>` in `guided-response.ts` is a future response-wrapper shape. It is not part
+of the current published response and must not be documented as active workflow tracking.
 
 This would enable:
 
@@ -254,24 +290,18 @@ This would enable:
 - **Decision points**: Branching workflows with multiple options
 - **Progress tracking**: History of completed steps
 
-However, these enhancements are **not implemented** in this phase to maintain architectural simplicity.
+These enhancements are not implemented.
 
 ## Design Rationale
 
-Per Guff's backlog analysis:
-
-> **The Core Value Proposition:** "Agents waste tokens and time figuring out what to do next. I want the MCP to guide them through correct workflows."
-
-This implementation:
-
-✅ **Separates concerns** - Deterministic data ≠ guidance  
-✅ **Opt-in guidance** - Call `workflow.guide` when needed  
-✅ **Minimal architectural impact** - No changes to existing tools  
-✅ **Deterministic** - Same phase always returns same guidance  
-✅ **Testable** - Comprehensive test coverage
+The phase definitions remain deterministic. The published `initial` response additionally reports
+the current doctor's bounded workspace observation, so that response can change when the workspace
+configuration changes. Guidance stays separate from command receipts and protected authority.
 
 ## Related Documentation
 
-- [Merge Weave Workflow](./MERGE_WEAVE_USAGE_GUIDE.md) - Referenced in guidance
+- [Published MCP Tool Inventory](../README.mcp.md#published-tool-inventory) - Packaged guidance
+  returned by the tool and the canonical public names
+- [Merge-Weave Quickstart](./merge-weave-quickstart.md) - Source-tree walkthrough
 - [MCP CLI Parity](./MCP-CLI-PARITY.md) - MCP tool alignment
 - [Terms](./TERMS.md) - Canonical terminology

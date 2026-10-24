@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runInit } from "../src/commands/init.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -7,15 +7,19 @@ import * as os from "os";
 describe("Init Command - Enterprise Mode", () => {
   let tempDir: string;
   let originalCwd: string;
+  let originalProfileDir: string | undefined;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "enterprise-init-test-"));
     originalCwd = process.cwd();
+    originalProfileDir = process.env.LEX_PR_PROFILE_DIR;
     process.chdir(tempDir);
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
+    if (originalProfileDir === undefined) delete process.env.LEX_PR_PROFILE_DIR;
+    else process.env.LEX_PR_PROFILE_DIR = originalProfileDir;
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true });
     }
@@ -46,6 +50,26 @@ describe("Init Command - Enterprise Mode", () => {
       expect(fs.existsSync(path.join(lexrunnerDir, "config.yaml"))).toBe(true);
       expect(fs.existsSync(path.join(lexrunnerDir, "gate-mapping.yaml"))).toBe(true);
       expect(fs.existsSync(path.join(lexrunnerDir, "personas"))).toBe(true);
+    });
+
+    it("should describe no-force output as created or preserved", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      let output = "";
+      try {
+        const result = await runInit({
+          nonInteractive: true,
+          enterprise: true,
+        });
+        expect(result.success).toBe(true);
+        output = log.mock.calls.flat().join("\n");
+      } finally {
+        log.mockRestore();
+      }
+
+      expect(output).toContain("Workspace structure after initialization");
+      expect(output).toContain("created or preserved");
+      expect(output).not.toContain("Created structure");
+      expect(output).not.toContain("quality gates - updated");
     });
 
     it("should create audit directory for soc2 profile", async () => {
@@ -231,6 +255,134 @@ describe("Init Command - Enterprise Mode", () => {
       }
     });
 
+    it("should repair an incomplete profile without overwriting authored enterprise files", async () => {
+      const profileDir = path.join(tempDir, ".smartergpt.local");
+      const lexrunnerDir = path.join(profileDir, ".lexrunner");
+      const workflowsDir = path.join(tempDir, ".github", "workflows");
+      fs.mkdirSync(lexrunnerDir, { recursive: true });
+      fs.mkdirSync(workflowsDir, { recursive: true });
+      fs.writeFileSync(path.join(profileDir, "profile.yml"), "role: local\nname: Authored\n");
+
+      const preserved = new Map([
+        [path.join(profileDir, "gates.yml"), "AUTHORED-GATES-SENTINEL\n"],
+        [path.join(lexrunnerDir, "config.yaml"), "AUTHORED-CONFIG-SENTINEL\n"],
+        [path.join(lexrunnerDir, "gate-mapping.yaml"), "AUTHORED-MAPPING-SENTINEL\n"],
+        [path.join(tempDir, ".github", "copilot-instructions.md"), "AUTHORED-COPILOT-SENTINEL\n"],
+        [path.join(workflowsDir, "merge-weave.yaml"), "AUTHORED-WORKFLOW-SENTINEL\n"],
+      ]);
+      for (const [file, content] of preserved) fs.writeFileSync(file, content);
+
+      const repaired = await runInit({
+        nonInteractive: true,
+        enterprise: true,
+        jsonMode: true,
+      });
+
+      expect(repaired.success).toBe(true);
+      for (const [file, content] of preserved) {
+        expect(fs.readFileSync(file, "utf8")).toBe(content);
+      }
+      for (const file of ["intent.md", "scope.yml", "deps.yml"]) {
+        expect(fs.existsSync(path.join(profileDir, file))).toBe(true);
+      }
+
+      const forced = await runInit({
+        nonInteractive: true,
+        enterprise: true,
+        force: true,
+        jsonMode: true,
+      });
+
+      expect(forced.success).toBe(true);
+      for (const file of [
+        path.join(profileDir, "gates.yml"),
+        path.join(lexrunnerDir, "config.yaml"),
+        path.join(lexrunnerDir, "gate-mapping.yaml"),
+        path.join(tempDir, ".github", "copilot-instructions.md"),
+      ]) {
+        expect(fs.readFileSync(file, "utf8")).not.toContain("SENTINEL");
+      }
+      expect(fs.readFileSync(path.join(workflowsDir, "merge-weave.yaml"), "utf8")).toBe(
+        "AUTHORED-WORKFLOW-SENTINEL\n"
+      );
+    });
+
+    it.each([
+      { name: "standard", enterprise: false },
+      { name: "enterprise", enterprise: true },
+    ])(
+      "should keep $name preflight and writes bound to the default local target",
+      async ({ enterprise }) => {
+        const localProfileDir = path.join(tempDir, ".smartergpt.local");
+        fs.mkdirSync(localProfileDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(localProfileDir, "profile.yml"),
+          "role: local\nname: Local Target\n"
+        );
+        fs.writeFileSync(path.join(localProfileDir, "gates.yml"), "LOCAL-GATES-SENTINEL\n");
+
+        const environmentProfileDir = path.join(tempDir, "environment-selected-profile");
+        fs.mkdirSync(environmentProfileDir, { recursive: true });
+        const environmentFiles = new Map([
+          [path.join(environmentProfileDir, "profile.yml"), "role: local\nname: Environment\n"],
+          [path.join(environmentProfileDir, "intent.md"), "# ENVIRONMENT-INTENT\n"],
+          [path.join(environmentProfileDir, "scope.yml"), "version: 1\ntarget: environment\n"],
+          [path.join(environmentProfileDir, "deps.yml"), "version: 1\ndepends_on: []\n"],
+          [path.join(environmentProfileDir, "gates.yml"), "ENVIRONMENT-GATES-SENTINEL\n"],
+        ]);
+        for (const [file, content] of environmentFiles) fs.writeFileSync(file, content);
+        const environmentBefore = snapshotTree(environmentProfileDir);
+        process.env.LEX_PR_PROFILE_DIR = environmentProfileDir;
+
+        const repaired = await runInit({
+          nonInteractive: true,
+          enterprise,
+          jsonMode: true,
+        });
+
+        expect(repaired).toMatchObject({ success: true, profileDir: localProfileDir });
+        expect(fs.readFileSync(path.join(localProfileDir, "gates.yml"), "utf8")).toBe(
+          "LOCAL-GATES-SENTINEL\n"
+        );
+        for (const file of ["intent.md", "scope.yml", "deps.yml"]) {
+          expect(fs.existsSync(path.join(localProfileDir, file))).toBe(true);
+        }
+        expect(snapshotTree(environmentProfileDir)).toEqual(environmentBefore);
+
+        if (!enterprise) fs.rmSync(path.join(localProfileDir, "intent.md"));
+        const forced = await runInit({
+          nonInteractive: true,
+          enterprise,
+          force: true,
+          jsonMode: true,
+        });
+
+        expect(forced).toMatchObject({ success: true, profileDir: localProfileDir });
+        if (enterprise) {
+          expect(fs.readFileSync(path.join(localProfileDir, "gates.yml"), "utf8")).not.toContain(
+            "LOCAL-GATES-SENTINEL"
+          );
+        } else {
+          expect(fs.existsSync(path.join(localProfileDir, "intent.md"))).toBe(true);
+          expect(fs.readFileSync(path.join(localProfileDir, "gates.yml"), "utf8")).toBe(
+            "LOCAL-GATES-SENTINEL\n"
+          );
+        }
+        expect(snapshotTree(environmentProfileDir)).toEqual(environmentBefore);
+
+        const existing = await runInit({
+          nonInteractive: true,
+          enterprise,
+          jsonMode: true,
+        });
+        expect(existing.success).toBe(false);
+        expect(existing.profileDir).toBe(localProfileDir);
+        expect(existing.message).toContain(localProfileDir);
+        expect(existing.message).not.toContain(environmentProfileDir);
+        expect(snapshotTree(environmentProfileDir)).toEqual(environmentBefore);
+      }
+    );
+
     it("should respect --force flag in enterprise mode", async () => {
       // Create initial enterprise workspace
       const result1 = await runInit({
@@ -290,5 +442,43 @@ describe("Init Command - Enterprise Mode", () => {
       const lexrunnerDir = path.join(profileDir, ".lexrunner");
       expect(fs.existsSync(lexrunnerDir)).toBe(false);
     });
+
+    it("should describe standard repair output as created or preserved", async () => {
+      const profileDir = path.join(tempDir, ".smartergpt.local");
+      fs.mkdirSync(profileDir, { recursive: true });
+      fs.writeFileSync(path.join(profileDir, "profile.yml"), "role: local\nname: Authored\n");
+      fs.writeFileSync(path.join(profileDir, "gates.yml"), "AUTHORED-GATES-SENTINEL\n");
+
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      let output = "";
+      try {
+        const result = await runInit({ nonInteractive: true });
+        expect(result.success).toBe(true);
+        output = log.mock.calls.flat().join("\n");
+      } finally {
+        log.mockRestore();
+      }
+
+      expect(output).toContain("Workspace files after initialization");
+      expect(output).toContain("created or preserved");
+      expect(output).not.toContain("Created files");
+      expect(fs.readFileSync(path.join(profileDir, "gates.yml"), "utf8")).toBe(
+        "AUTHORED-GATES-SENTINEL\n"
+      );
+    });
   });
 });
+
+function snapshotTree(root: string): Array<[string, string]> {
+  const entries: Array<[string, string]> = [];
+  const visit = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      const relative = path.relative(root, absolute).replaceAll("\\", "/");
+      if (entry.isDirectory()) visit(absolute);
+      else entries.push([relative, fs.readFileSync(absolute, "utf8")]);
+    }
+  };
+  visit(root);
+  return entries.sort(([left], [right]) => left.localeCompare(right));
+}

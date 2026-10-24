@@ -5,7 +5,12 @@
  * Per LPR-037 implementation.
  */
 
-import type { WorkflowGuide, WorkflowAction, CommonIssue } from "../types/guided-response.js";
+import type {
+  WorkflowGuide,
+  WorkflowAction,
+  CommonIssue,
+  WorkflowReadiness,
+} from "../types/guided-response.js";
 
 /**
  * Valid workflow phases
@@ -62,12 +67,12 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
         required: true,
       },
       {
-        command: "plan.validate",
-        description: "Check for schema errors and validation issues",
+        command: "status",
+        description: "Validate the selected plan and report its current integration status",
         required: false,
       },
       {
-        command: "merge.order",
+        command: "merge-order",
         description: "Calculate dependency-based merge order",
         required: false,
       },
@@ -75,7 +80,7 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
     commonIssues: [
       {
         symptom: "Plan schema validation errors",
-        solution: "Use plan.validate to check schema compliance",
+        solution: "Use status with the explicit planFile to check schema compliance",
       },
       {
         symptom: "Unknown dependencies in plan",
@@ -83,7 +88,7 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
       },
     ],
     recommendedAction: "gates.run",
-    documentation: "docs/merge-weave-workflow.md",
+    documentation: "README.mcp.md",
     validTransitions: ["post-gates-run", "error-recovery"],
   },
   "post-gates-run": {
@@ -111,7 +116,7 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
       },
     ],
     recommendedAction: "status",
-    documentation: "docs/merge-weave-workflow.md",
+    documentation: "README.mcp.md",
     validTransitions: ["pre-merge", "error-recovery"],
   },
   "pre-merge": {
@@ -134,7 +139,7 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
       },
     ],
     recommendedAction: "merge.apply",
-    documentation: "docs/merge-weave-workflow.md",
+    documentation: "README.mcp.md",
     validTransitions: ["post-merge", "error-recovery"],
   },
   "post-merge": {
@@ -226,6 +231,9 @@ export class WorkflowStateMachine {
     const allRequiredCompleted = requiredActions.every((a) => this.completedSteps.has(a.command));
 
     return {
+      authority: "advisory",
+      authorizesExecution: false,
+      authorizesMerge: false,
       phase: this.currentPhase,
       nextSteps: def.actions,
       commonIssues: def.commonIssues,
@@ -264,14 +272,21 @@ export class WorkflowStateMachine {
  * This is a stateless helper for the MCP server that doesn't require
  * maintaining a state machine instance.
  */
-export function createWorkflowGuide(phase: WorkflowPhase): WorkflowGuide {
+export function createWorkflowGuide(
+  phase: WorkflowPhase,
+  readiness?: WorkflowReadiness
+): WorkflowGuide {
   const def = PHASE_DEFINITIONS[phase];
   return {
+    authority: "advisory",
+    authorizesExecution: false,
+    authorizesMerge: false,
     phase,
     nextSteps: def.actions,
-    commonIssues: def.commonIssues,
+    commonIssues: [...def.commonIssues, ...(readiness?.commonIssues ?? [])],
     documentation: def.documentation,
-    canProceed: true, // Stateless version assumes can proceed
-    recommendedAction: def.recommendedAction,
+    canProceed: readiness?.canProceed ?? true,
+    recommendedAction: readiness?.recommendedAction ?? def.recommendedAction,
+    ...(readiness?.observation ? { readiness: readiness.observation } : {}),
   };
 }

@@ -231,7 +231,7 @@ Initialize lexrunner workspace with interactive setup wizard.
 lex-pr init [options]
 
 Options:
-  --force                 Overwrite existing configuration files
+  --force                 Continue initialization for an existing writable profile
   --non-interactive       Run without prompts (use environment variables)
   --github-token <token>  GitHub token for authentication
   --profile-dir <dir>     Profile directory (default: .smartergpt.local)
@@ -272,7 +272,7 @@ lex-pr init
 export GITHUB_TOKEN=your_token_here
 lex-pr init --non-interactive
 
-# Force overwrite existing configuration
+# Continue initialization and create any missing files
 lex-pr init --force
 
 # Use custom profile directory
@@ -691,7 +691,10 @@ Example output with `--optimize`:
 
 #### JSON Output Schema (`--json` flag)
 
-**Success Response:**
+**Response shape sketch (non-executable):** The union-like placeholder strings below describe
+possible values; this block is not a literal Plan and must not be copied as `plan.json`.
+
+<!-- lexrunner-non-executable-plan:cli-plan-response-shape -->
 
 ```json
 {
@@ -1202,6 +1205,10 @@ The `vuln` gate is a special built-in gate that scans for security vulnerabiliti
 
 **Policy Configuration:**
 
+This object is only the `policy` fragment of a Plan; it is not executable by itself.
+
+<!-- lexrunner-non-executable-plan:cli-vulnerability-policy-fragment -->
+
 ```json
 {
   "policy": {
@@ -1241,6 +1248,10 @@ See [Gate Report Examples](./gate-report-examples.md#vulnerability-gate-vuln) fo
 #### JSON Output Schema (`--json` flag)
 
 **Success Response:**
+
+This is a gate-execution result envelope, not an executable Plan document.
+
+<!-- lexrunner-non-executable-plan:cli-gate-execution-success -->
 
 ```json
 {
@@ -1552,6 +1563,10 @@ lex-pr report --validate ./gate-results
 #### JSON Output Schema (`--out json`)
 
 **Success Response:**
+
+This is an aggregated gate-report projection, not an executable Plan document.
+
+<!-- lexrunner-non-executable-plan:cli-gate-report-output -->
 
 ```json
 {

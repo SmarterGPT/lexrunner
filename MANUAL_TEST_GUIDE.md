@@ -102,6 +102,11 @@ node /path/to/lexrunner/mcp-server.mjs
 
 ### Expected Response
 
+The nested `plan` string below is an abridged response sketch with ellipses, not an executable Plan
+fixture.
+
+<!-- lexrunner-non-executable-plan:manual-mcp-plan-response -->
+
 ```json
 {
   "jsonrpc": "2.0",

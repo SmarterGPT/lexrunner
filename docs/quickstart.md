@@ -283,17 +283,17 @@ lex-pr plan --from-github --no-suggestions
 
 Create `plan.json` manually for full control:
 
+<!-- lexrunner-plan-example:quickstart-manual -->
+
 ```json
 {
   "schemaVersion": "1.0.0",
   "target": "main",
   "items": [
     {
-      "id": "pr-42",
-      "name": "auth-system",
-      "branch": "feature/auth",
+      "name": "feature/auth",
       "deps": [],
-      "strategy": "merge-weave"
+      "gates": []
     }
   ]
 }
@@ -419,7 +419,7 @@ lex-pr merge plan.json
 **Problem**: "Configuration already exists"
 
 ```bash
-# Solution: Use --force to overwrite
+# Solution: Continue initialization and create any missing files
 lex-pr init --force
 ```
 

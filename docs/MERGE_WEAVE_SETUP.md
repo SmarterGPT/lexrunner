@@ -164,33 +164,34 @@ lex-pr merge --plan plan.json --execute
 
 Create `plan.json` manually:
 
+<!-- lexrunner-plan-example:merge-weave-setup-manual -->
+
 ```json
 {
   "schemaVersion": "1.0.0",
-  "title": "Merge Wave 1",
-  "description": "Merge independent feature PRs",
+  "target": "main",
   "policy": {
     "requiredGates": ["lint", "typecheck"],
-    "mergeRule": "strict-required"
+    "mergeRule": { "type": "strict-required" }
   },
-  "nodes": [
+  "items": [
     {
-      "id": "pr-123",
-      "title": "Add feature A",
-      "branch": "feature/a",
-      "dependsOn": [],
-      "gates": ["lint", "typecheck"]
+      "name": "feature/a",
+      "deps": [],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" }
+      ]
     },
     {
-      "id": "pr-124",
-      "title": "Add feature B",
-      "branch": "feature/b",
-      "dependsOn": [],
-      "gates": ["lint", "typecheck"]
+      "name": "feature/b",
+      "deps": [],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" }
+      ]
     }
-  ],
-  "integrationBranch": "integration/wave-1",
-  "targetBranch": "main"
+  ]
 }
 ```
 
@@ -317,31 +318,31 @@ lex-pr merge \
 
 ### Example: lexsona repository
 
-```bash
-# In lexsona repo root
-cd /path/to/lexsona
+In the LexSona repository root, save this as `plan.json`:
 
-# Manual plan for specific PRs
-cat > plan.json << 'EOF'
+<!-- lexrunner-plan-example:merge-weave-setup-lexsona -->
+
+```json
 {
   "schemaVersion": "1.0.0",
-  "title": "Lexsona Feature Wave",
+  "target": "main",
   "policy": {
     "requiredGates": ["lint", "typecheck"]
   },
-  "nodes": [
+  "items": [
     {
-      "id": "governance-update",
-      "branch": "feature/governance-v2",
-      "dependsOn": [],
-      "gates": ["lint", "typecheck"]
+      "name": "feature/governance-v2",
+      "deps": [],
+      "gates": [
+        { "name": "lint", "run": "npm run lint" },
+        { "name": "typecheck", "run": "npm run typecheck" }
+      ]
     }
-  ],
-  "integrationBranch": "integration/governance-wave",
-  "targetBranch": "main"
+  ]
 }
-EOF
+```
 
+```bash
 # Execute with cleanup
 lex-pr merge --plan plan.json --execute --cleanup
 ```

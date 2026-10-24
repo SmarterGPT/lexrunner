@@ -181,10 +181,46 @@ lexrunner mcp
   "name": "local.init",
   "arguments": { "force": false }
 }
-// Returns: { "created": true, "path": "...", "config": {...}, "copiedFiles": [...] }
+// Returns: { "created": true, "path": "...", "config": {...}, "copiedFiles": [...], "backupPath"?: "..." }
 ```
 
+Forced recreation never recursively deletes the live overlay. LexRunner atomically stages the
+existing directory, creates the replacement through exclusive file admission, and retains the
+prior profile under the new `.smartergpt.local/runner/force-backups/` directory. The CLI and MCP
+result report its exact `backupPath`. Temporary staging uses the repository's Git metadata when
+available, which cannot be tracked as worktree content, or a same-volume parent directory outside
+the workspace. If a concurrent writer changes the staged manifest to a protected or malformed
+profile, initialization stops and reports the retained staging path. LexRunner does not attempt a
+check-then-rename restoration because directory replacement semantics differ across platforms; it
+never deletes or overwrites either writer's data.
+
+The interactive or explicit-`--profile-dir` initializer separately revalidates the observed profile
+role and path identity immediately before mutation, then claims an initially absent profile leaf
+exclusively. The default non-interactive local-overlay route instead uses the exclusive manifest
+admission and forced-recreation staging contract described above. These checks prevent stale or
+concurrent ordinary initialization from being mistaken for permission to share a profile. They are
+point-in-time write guards, not native directory custody or a portable filesystem lock, and do not
+protect against a hostile concurrent process running as the same OS principal. Operations that
+require replacement-resistant path authority must use a qualified `WorkspaceBoundary` backend.
+
 ## Migration Guide
+
+### From compatibility `runner/` configuration
+
+Configuration belongs at the profile root; `runner/` is reserved for generated artifacts. Older
+LexRunner releases could place configuration under `runner/`. Those files remain readable as a
+compatibility fallback, but they never override a same-named profile-root file.
+
+Inspect and migrate a writable profile explicitly:
+
+```bash
+lexrunner migrate-profile --from-runner --profile-dir .smartergpt.local --dry-run
+lexrunner migrate-profile --from-runner --profile-dir .smartergpt.local
+```
+
+The migration creates a backup, refuses to overwrite root files, and reports any file whose
+rollback disposition cannot be confirmed. A tracked `role: example` profile remains write
+protected; update such repository configuration through normal reviewed source changes.
 
 ### From Hardcoded `.smartergpt/`
 

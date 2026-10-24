@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
+  canWriteToProfile,
+  isWriteProtectionError,
   resolveProfile,
   ProfileResolverError,
   logProfileMessage,
+  validateWriteOperation,
+  WriteProtectionError,
 } from "../src/config/profileResolver.js";
 import { resetDeprecationNotices } from "../src/util/envUtils.js";
 import * as fs from "fs";
@@ -161,7 +165,58 @@ describe("Profile Resolver", () => {
       // No profile.yml created
 
       expect(() => resolveProfile(customDir, tempDir)).toThrow(ProfileResolverError);
-      expect(() => resolveProfile(customDir, tempDir)).toThrow(/is missing profile\.yml manifest/);
+      expect(() => resolveProfile(customDir, tempDir)).toThrow(
+        `Profile directory "${customDir}" (from --profile-dir) is missing profile.yml manifest`
+      );
+    });
+
+    it("reports a syntactically malformed manifest as invalid without exposing its contents", () => {
+      const customDir = path.join(tempDir, "custom");
+      fs.mkdirSync(customDir, { recursive: true });
+      fs.writeFileSync(path.join(customDir, "profile.yml"), "role: [PRIVATE-SENTINEL\n");
+
+      let thrown: unknown;
+      try {
+        resolveProfile(customDir, tempDir);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ProfileResolverError);
+      expect((thrown as Error).message).toBe(
+        `Profile directory "${customDir}" (from --profile-dir) has an invalid profile.yml manifest`
+      );
+      expect((thrown as Error).message).not.toContain("PRIVATE-SENTINEL");
+      expect((thrown as Error).message).not.toContain("missing profile.yml");
+    });
+
+    it("does not default a malformed tracked manifest to the example role", () => {
+      const trackedDir = path.join(tempDir, ".smartergpt");
+      fs.mkdirSync(trackedDir, { recursive: true });
+      fs.writeFileSync(path.join(trackedDir, "profile.yml"), "role: [unterminated\n");
+
+      expect(() => resolveProfile(undefined, tempDir)).toThrow(
+        `Profile directory "${trackedDir}" (from .smartergpt/) has an invalid profile.yml manifest`
+      );
+    });
+
+    it("reports a non-object manifest root as invalid", () => {
+      const customDir = path.join(tempDir, "custom");
+      fs.mkdirSync(customDir, { recursive: true });
+      fs.writeFileSync(path.join(customDir, "profile.yml"), "just-a-scalar\n");
+
+      expect(() => resolveProfile(customDir, tempDir)).toThrow(
+        `Profile directory "${customDir}" (from --profile-dir) has an invalid profile.yml manifest`
+      );
+    });
+
+    it("distinguishes an unreadable manifest entry from an absent manifest", () => {
+      const customDir = path.join(tempDir, "custom");
+      fs.mkdirSync(path.join(customDir, "profile.yml"), { recursive: true });
+
+      expect(() => resolveProfile(customDir, tempDir)).toThrow(
+        `Profile directory "${customDir}" (from --profile-dir) has an unreadable profile.yml manifest`
+      );
     });
 
     it("should throw error for missing manifest from env var", () => {
@@ -179,6 +234,54 @@ describe("Profile Resolver", () => {
       // No profile.yml created
 
       expect(() => resolveProfile(undefined, tempDir)).toThrow(ProfileResolverError);
+    });
+  });
+
+  describe("Write Authority", () => {
+    it("classifies subclasses as write-protection failures", () => {
+      class RetainedWriteProtectionError extends WriteProtectionError {
+        constructor(message: string) {
+          super(message);
+          this.name = "RetainedWriteProtectionError";
+        }
+      }
+
+      expect(isWriteProtectionError(new WriteProtectionError("protected"))).toBe(true);
+      expect(
+        isWriteProtectionError(new RetainedWriteProtectionError("protected and retained"))
+      ).toBe(true);
+      expect(isWriteProtectionError(new Error("unrelated"))).toBe(false);
+    });
+
+    it.each([
+      ["array", ["example"]],
+      ["object", { name: "example" }],
+      ["null", null],
+      ["undefined", undefined],
+      ["empty", ""],
+      ["whitespace-only", " \t\n"],
+    ])("fails closed for a %s role", (_name, role) => {
+      expect(canWriteToProfile(tempDir, role)).toBe(false);
+      expect(() => validateWriteOperation(tempDir, role, "write test artifact")).toThrow(
+        WriteProtectionError
+      );
+    });
+
+    it.each([" example ", "\tEXAMPLE\r\n"])(
+      "normalizes a padded example role before enforcing read-only policy",
+      (role) => {
+        expect(canWriteToProfile(tempDir, role)).toBe(false);
+        expect(() => validateWriteOperation(tempDir, role, "write test artifact")).toThrow(
+          'role="example" (read-only)'
+        );
+      }
+    );
+
+    it("retains custom writable roles after scalar normalization", () => {
+      expect(canWriteToProfile(tempDir, " development ")).toBe(true);
+      expect(() =>
+        validateWriteOperation(tempDir, " DEVELOPMENT ", "write test artifact")
+      ).not.toThrow();
     });
   });
 

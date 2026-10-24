@@ -33,6 +33,7 @@ echo "✅ Demo repository created"
 echo ""
 
 # Create a sample plan.json with gates
+# lexrunner-plan-example:cluster-gates-demo
 cat > plan.json << 'EOF'
 {
   "schemaVersion": "1.0.0",

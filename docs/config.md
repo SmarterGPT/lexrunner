@@ -73,6 +73,10 @@ The `--json` flag outputs deterministic JSON with sorted keys:
 $ lex-pr config:inspect --json
 ```
 
+This is a configuration-inspection envelope, not a Plan input.
+
+<!-- lexrunner-non-executable-plan:config-inspect-envelope -->
+
 ```json
 {
   "config": {
@@ -97,7 +101,10 @@ $ lex-pr config:inspect --json
 
 ### Example 1: Stack-Only Configuration
 
-When only `stack.yml` exists:
+When only historical `stack.yml` exists. This is a legacy layered-configuration example, not a
+current executable Plan:
+
+<!-- lexrunner-non-executable-plan:legacy-stack-only-config -->
 
 ```yaml
 # .smartergpt/stack.yml
@@ -142,6 +149,10 @@ When both files exist, `stack.yml` takes precedence:
 version: 2
 target: staging
 ```
+
+The overriding `stack.yml` remains a legacy configuration fragment, not a current Plan:
+
+<!-- lexrunner-non-executable-plan:legacy-stack-override-config -->
 
 ```yaml
 # .smartergpt/stack.yml

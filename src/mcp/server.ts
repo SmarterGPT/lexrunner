@@ -2,7 +2,8 @@
 
 /**
  * MCP server adapter for lexrunner
- * Exposes read-only tools for plan creation, gate execution, and merge operations
+ * Exposes bounded tools for plans, gates, queries, and protected merge operations.
+ * ALLOW_MUTATIONS gates only declared protected mutations; it does not make the server read-only.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -117,6 +118,7 @@ import { getGlobalMetricsCollector, METRIC_DEFINITIONS } from "../metrics/export
 import {
   type AXError,
   mcpToolError,
+  workflowGuideArgumentsError,
   planNotFoundError,
   writeProtectionError,
   githubApiError,
@@ -574,7 +576,8 @@ function createServer(options?: McpServerOptions): Server {
             properties: {
               force: {
                 type: "boolean",
-                description: "Force recreation even if local overlay exists",
+                description:
+                  "Recreate an existing local overlay after retaining a recoverable backup",
                 default: false,
               },
             },
@@ -1248,7 +1251,7 @@ function createServer(options?: McpServerOptions): Server {
         return await handleConfigShow(args as { key?: string });
 
       case "workflow_guide":
-        return await handleWorkflowGuide(args as WorkflowGuideArgs);
+        return await handleWorkflowGuide(args as WorkflowGuideArgs, serverBaseDir);
 
       case "metrics":
         return await handleMetrics(args as { filter?: string; format?: string });
@@ -1878,6 +1881,9 @@ async function handleLocalInit(
       ],
     };
   } catch (error) {
+    if (error instanceof WriteProtectionError) {
+      throwMcpAXError(ErrorCode.InvalidParams, writeProtectionError(error.message, "local.init"));
+    }
     if (error instanceof WorkspaceConfigServiceError) {
       throwMcpAXError(
         ErrorCode.InternalError,
@@ -2640,29 +2646,55 @@ async function handleMetrics(args: {
  * Handle workflow.guide tool - Get context-aware workflow guidance
  */
 async function handleWorkflowGuide(
-  args: WorkflowGuideArgs
+  args: WorkflowGuideArgs,
+  diagnosticBase: string
 ): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
-    // Validate phase is a valid WorkflowPhase
-    const validPhases: WorkflowPhase[] = [
-      "initial",
-      "post-plan-creation",
-      "post-gates-run",
-      "pre-merge",
-      "post-merge",
-      "error-recovery",
-    ];
-
-    const phase = args.phase as WorkflowPhase;
-    if (!validPhases.includes(phase)) {
-      throw new McpError(
-        ErrorCode.InvalidParams,
-        `Invalid workflow phase: ${args.phase}. Valid phases: ${validPhases.join(", ")}`
-      );
+    const parsedArgs = WorkflowGuideArgs.safeParse(args);
+    if (!parsedArgs.success) {
+      throwMcpAXError(ErrorCode.InvalidParams, workflowGuideArgumentsError());
     }
+    const phase = parsedArgs.data.phase as WorkflowPhase;
 
-    // Create workflow guide for the requested phase
-    const guide: WorkflowGuide = createWorkflowGuide(phase);
+    let guide: WorkflowGuide;
+    if (phase === "initial") {
+      const doctor = await new WorkspaceDiagnosticsService().run({ baseDir: diagnosticBase });
+      const remediation = doctor.suggestions.length
+        ? doctor.suggestions.join("; ")
+        : "Run doctor and resolve every reported workspace issue before proceeding";
+
+      // Guidance reports observed onboarding readiness, but remains explicitly
+      // advisory and never grants execution or merge authority.
+      guide = createWorkflowGuide(phase, {
+        canProceed: !doctor.hasErrors,
+        commonIssues:
+          doctor.hasErrors || doctor.configuration.compatibilityFiles.length
+            ? [
+                {
+                  symptom: doctor.hasErrors
+                    ? doctor.issues.join("; ")
+                    : "Compatibility configuration remains under runner/",
+                  solution: remediation,
+                },
+              ]
+            : [],
+        recommendedAction: doctor.hasErrors
+          ? doctor.configuration.missingFiles.length
+            ? "local.init"
+            : "doctor"
+          : undefined,
+        observation: {
+          source: "doctor",
+          hasErrors: doctor.hasErrors,
+          missingFiles: doctor.configuration.missingFiles,
+          compatibilityFiles: doctor.configuration.compatibilityFiles,
+          issues: doctor.issues,
+          suggestions: doctor.suggestions,
+        },
+      });
+    } else {
+      guide = createWorkflowGuide(phase);
+    }
 
     return {
       content: [

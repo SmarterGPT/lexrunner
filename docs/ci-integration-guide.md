@@ -178,10 +178,14 @@ lex-pr weave status
 
 ### Example Configuration
 
-In your plan.json, specify which gates should run locally vs. remotely:
+In your `plan.json`, specify which gates should run locally vs. remotely:
+
+<!-- lexrunner-plan-example:ci-runtime-gates -->
 
 ```json
 {
+  "schemaVersion": "1.0.0",
+  "target": "main",
   "items": [
     {
       "name": "pr-123",

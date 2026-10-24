@@ -67,8 +67,10 @@ describe("WorkflowStateMachine", () => {
       expect(actions.length).toBeGreaterThan(1);
       const commands = actions.map((a) => a.command);
       expect(commands).toContain("gates.run");
-      expect(commands).toContain("plan.validate");
-      expect(commands).toContain("merge.order");
+      expect(commands).toContain("status");
+      expect(commands).toContain("merge-order");
+      expect(commands).not.toContain("plan.validate");
+      expect(commands).not.toContain("merge.order");
     });
 
     it("should return empty actions for post-merge phase", () => {
@@ -100,10 +102,10 @@ describe("WorkflowStateMachine", () => {
     it("should handle multiple completed steps", () => {
       const sm = new WorkflowStateMachine("post-plan-creation");
       sm.completeStep("gates.run");
-      sm.completeStep("plan.validate");
+      sm.completeStep("status");
       const completed = sm.getCompletedSteps();
       expect(completed).toContain("gates.run");
-      expect(completed).toContain("plan.validate");
+      expect(completed).toContain("status");
       expect(completed).toHaveLength(2);
     });
 
@@ -124,7 +126,12 @@ describe("WorkflowStateMachine", () => {
       expect(guide.nextSteps.length).toBeGreaterThan(0);
       expect(guide.commonIssues.length).toBeGreaterThan(0);
       expect(guide.recommendedAction).toBe("gates.run");
-      expect(guide.documentation).toBe("docs/merge-weave-workflow.md");
+      expect(guide.documentation).toBe("README.mcp.md");
+      expect(guide).toMatchObject({
+        authority: "advisory",
+        authorizesExecution: false,
+        authorizesMerge: false,
+      });
     });
 
     it("should set canProceed to true when all required actions completed", () => {
@@ -176,7 +183,7 @@ describe("createWorkflowGuide", () => {
     expect(guide.phase).toBe("post-plan-creation");
     expect(guide.nextSteps.length).toBeGreaterThan(1);
     expect(guide.recommendedAction).toBe("gates.run");
-    expect(guide.documentation).toBe("docs/merge-weave-workflow.md");
+    expect(guide.documentation).toBe("README.mcp.md");
   });
 
   it("should create guide for post-gates-run phase", () => {
@@ -221,8 +228,64 @@ describe("createWorkflowGuide", () => {
   it("should include documentation links for relevant phases", () => {
     const guide = createWorkflowGuide("post-plan-creation");
 
-    expect(guide.documentation).toBeDefined();
-    expect(guide.documentation).toContain("docs/");
+    expect(guide.documentation).toBe("README.mcp.md");
+  });
+
+  it("uses observed doctor readiness without turning guidance into authority", () => {
+    const guide = createWorkflowGuide("initial", {
+      canProceed: false,
+      commonIssues: [
+        {
+          symptom: "Configuration is missing required profile-root files: gates.yml",
+          solution: "Create C:\\repo\\.smartergpt.local\\gates.yml to define quality gates",
+        },
+      ],
+      recommendedAction: "local.init",
+      observation: {
+        source: "doctor",
+        hasErrors: true,
+        missingFiles: ["gates.yml"],
+        compatibilityFiles: [],
+        issues: ["Configuration is missing required profile-root files: gates.yml"],
+        suggestions: ["Create C:\\repo\\.smartergpt.local\\gates.yml to define quality gates"],
+      },
+    });
+
+    expect(guide).toMatchObject({
+      authority: "advisory",
+      authorizesExecution: false,
+      authorizesMerge: false,
+      canProceed: false,
+      recommendedAction: "local.init",
+      readiness: {
+        source: "doctor",
+        hasErrors: true,
+        missingFiles: ["gates.yml"],
+      },
+    });
+    expect(guide.commonIssues.at(-1)?.solution).toContain("gates.yml");
+  });
+
+  it("allows an observed healthy workspace to proceed while remaining advisory", () => {
+    const guide = createWorkflowGuide("initial", {
+      canProceed: true,
+      observation: {
+        source: "doctor",
+        hasErrors: false,
+        missingFiles: [],
+        compatibilityFiles: [],
+        issues: [],
+        suggestions: [],
+      },
+    });
+
+    expect(guide).toMatchObject({
+      authority: "advisory",
+      authorizesExecution: false,
+      authorizesMerge: false,
+      canProceed: true,
+      readiness: { source: "doctor", hasErrors: false },
+    });
   });
 });
 
@@ -245,6 +308,11 @@ describe("WorkflowGuide structure", () => {
       expect(guide).toHaveProperty("nextSteps");
       expect(guide).toHaveProperty("commonIssues");
       expect(guide).toHaveProperty("canProceed");
+      expect(guide).toMatchObject({
+        authority: "advisory",
+        authorizesExecution: false,
+        authorizesMerge: false,
+      });
 
       // Validate types
       expect(typeof guide.phase).toBe("string");

@@ -346,5 +346,69 @@ describe("Enterprise Onboarding", () => {
       const content = fs.readFileSync(workflowPath, "utf-8");
       expect(content).toBe(existingContent);
     });
+
+    it("should preserve existing enterprise-managed files without force", () => {
+      const profileDir = path.join(tempDir, ".smartergpt.local");
+      const lexrunnerDir = path.join(profileDir, ".lexrunner");
+      const workflowsDir = path.join(tempDir, ".github", "workflows");
+      fs.mkdirSync(lexrunnerDir, { recursive: true });
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      const sentinels = new Map([
+        [path.join(lexrunnerDir, "config.yaml"), "# authored enterprise config\n"],
+        [path.join(lexrunnerDir, "gate-mapping.yaml"), "# authored gate mapping\n"],
+        [path.join(tempDir, ".github", "copilot-instructions.md"), "# authored instructions\n"],
+        [path.join(workflowsDir, "merge-weave.yaml"), "# authored workflow\n"],
+      ]);
+      for (const [file, content] of sentinels) fs.writeFileSync(file, content);
+
+      const config = {
+        audit: getAuditProfileConfig("soc2"),
+        policy: getPolicyTemplateConfig("enterprise-standard"),
+        environment: {
+          projectStructure: "single-repo" as const,
+          ciProvider: "github-actions" as const,
+        },
+      };
+
+      createEnterpriseWorkspace(tempDir, profileDir, config);
+
+      for (const [file, content] of sentinels) {
+        expect(fs.readFileSync(file, "utf8")).toBe(content);
+      }
+    });
+
+    it("should replace managed files with force while preserving the existing workflow", () => {
+      const profileDir = path.join(tempDir, ".smartergpt.local");
+      const lexrunnerDir = path.join(profileDir, ".lexrunner");
+      const workflowsDir = path.join(tempDir, ".github", "workflows");
+      fs.mkdirSync(lexrunnerDir, { recursive: true });
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      const managedFiles = [
+        path.join(lexrunnerDir, "config.yaml"),
+        path.join(lexrunnerDir, "gate-mapping.yaml"),
+        path.join(tempDir, ".github", "copilot-instructions.md"),
+      ];
+      for (const file of managedFiles) fs.writeFileSync(file, "AUTHORED-MANAGED-SENTINEL\n");
+      const workflowPath = path.join(workflowsDir, "merge-weave.yaml");
+      fs.writeFileSync(workflowPath, "AUTHORED-WORKFLOW-SENTINEL\n");
+
+      const config = {
+        audit: getAuditProfileConfig("soc2"),
+        policy: getPolicyTemplateConfig("enterprise-standard"),
+        environment: {
+          projectStructure: "single-repo" as const,
+          ciProvider: "github-actions" as const,
+        },
+      };
+
+      createEnterpriseWorkspace(tempDir, profileDir, config, { force: true });
+
+      for (const file of managedFiles) {
+        expect(fs.readFileSync(file, "utf8")).not.toContain("AUTHORED-MANAGED-SENTINEL");
+      }
+      expect(fs.readFileSync(workflowPath, "utf8")).toBe("AUTHORED-WORKFLOW-SENTINEL\n");
+    });
   });
 });

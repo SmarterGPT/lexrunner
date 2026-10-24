@@ -392,7 +392,7 @@ const workspaceCmd = program
 workspaceCmd
   .command("init")
   .description("Initialize lexrunner workspace with interactive setup wizard")
-  .option("--force", "Overwrite existing configuration files")
+  .option("--force", "Continue initialization for an existing writable profile")
   .option("--non-interactive", "Run without prompts (use environment variables)")
   .option("--github-token <token>", "GitHub token for authentication")
   .option("--profile-dir <dir>", "Profile directory (default: .smartergpt.local)")
@@ -427,6 +427,9 @@ workspaceCmd
               ? `Workspace initialized at ${initialized.path}`
               : `Workspace already initialized at ${initialized.path}`
           );
+          if (initialized.backupPath) {
+            console.log(`Previous workspace retained at ${initialized.backupPath}`);
+          }
         }
         return;
       }
@@ -612,7 +615,7 @@ registerBudgetCommand(program, () => jsonModeActive);
 program
   .command("init")
   .description("Initialize lexrunner workspace with interactive setup wizard")
-  .option("--force", "Overwrite existing configuration files")
+  .option("--force", "Continue initialization for an existing writable profile")
   .option("--non-interactive", "Run without prompts (use environment variables)")
   .option("--github-token <token>", "GitHub token for authentication")
   .option("--profile-dir <dir>", "Profile directory (default: .smartergpt.local)")
@@ -689,7 +692,7 @@ program
 program
   .command("bootstrap")
   .description("Create minimal workspace configuration")
-  .option("--force", "Overwrite existing configuration files")
+  .option("--force", "Create missing files when configuration already exists")
   .option("--json", "Output JSON format")
   .action(async (opts) => {
     try {
@@ -726,7 +729,7 @@ program
           console.log("✓ Configuration already exists");
           console.log(`  ${bootstrap.profileDir}/`);
           console.log("");
-          console.log("Use --force to overwrite existing files");
+          console.log("Use --force to create any missing configuration files");
         } else {
           createMinimalWorkspace();
           console.log("✓ Created minimal configuration:");
@@ -757,7 +760,7 @@ program
 program
   .command("init-local")
   .description("Initialize local overlay directory with auto-detected project configuration")
-  .option("--force", "Force recreation even if local overlay exists")
+  .option("--force", "Recreate an existing local overlay after retaining a recoverable backup")
   .option("--json", "Output JSON format")
   .action(async (opts) => {
     try {
@@ -768,6 +771,7 @@ program
           canonicalJSONStringify({
             created: result.created,
             path: result.path,
+            backupPath: result.backupPath,
             config: result.config,
             copiedFiles: result.copiedFiles,
           })
@@ -779,6 +783,9 @@ program
           console.log(`📁 Created: ${result.path}/`);
           console.log(`🔧 Project type: ${result.config.projectType}`);
           console.log(`👤 Role: ${result.config.role}`);
+          if (result.backupPath) {
+            console.log(`💾 Previous overlay retained: ${result.backupPath}`);
+          }
           console.log("");
 
           if (result.copiedFiles.length > 0) {
@@ -817,13 +824,15 @@ program
 program
   .command("migrate-profile")
   .description("Migrate profile configuration structure (canonical: lexrunner workspace migrate)")
-  .option("--from-flat", "Migrate from flat structure to runner/ subdirectory")
+  .option("--from-runner", "Move compatibility config from runner/ to the profile root")
+  .option("--from-flat", "Retired: profile-root configuration is already canonical")
   .option("--dry-run", "Show what would be migrated without making changes")
   .option("--profile-dir <path>", "Profile directory to migrate (default: auto-detect)")
   .action(async (opts) => {
     try {
       const result = await runMigrateProfile({
         fromFlat: opts.fromFlat,
+        fromRunner: opts.fromRunner,
         dryRun: opts.dryRun,
         profileDir: opts.profileDir,
       });
@@ -835,7 +844,10 @@ program
             message: result.message,
             migratedFiles: result.migratedFiles,
             backupPath: result.backupPath,
+            backupStatus: result.backupStatus,
             skippedFiles: result.skippedFiles,
+            uncertainFiles: result.uncertainFiles,
+            retainedFiles: result.retainedFiles,
           })
         );
       } else {
@@ -865,6 +877,14 @@ program
           console.log("❌ Migration failed");
           console.log("");
           console.log(result.message);
+          if (result.uncertainFiles?.length) {
+            console.log("");
+            console.log(`⚠️  Uncertain files: ${result.uncertainFiles.join(", ")}`);
+          }
+          if (result.retainedFiles?.length) {
+            console.log("");
+            console.log(`⚠️  Retained files: ${result.retainedFiles.join(", ")}`);
+          }
         }
       }
 
@@ -1443,7 +1463,9 @@ export {
   IntegrationRecordCompatibilityError,
   IntegrationRecordCompatibilityService,
 } from "./application/integration-record-compatibility-service.js";
-export { mcpToolError } from "./errors/index.js";
+export { mcpToolError, workflowGuideArgumentsError, writeProtectionError } from "./errors/index.js";
+export { isWriteProtectionError, WriteProtectionError } from "./config/profileResolver.js";
+export { WorkflowGuideArgs } from "./mcp/types.js";
 
 // LPR-037: Workflow guidance exports for MCP
 export { createWorkflowGuide } from "./mcp/workflow/state-machine.js";

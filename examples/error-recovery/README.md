@@ -1,10 +1,14 @@
 # Error Recovery Configuration Examples
 
-This directory contains example configurations demonstrating error recovery patterns in lexrunner.
+This directory preserves legacy split `stack.yml` plus `policy.json` sketches demonstrating error
+recovery concepts. They are not executable current Plans: they omit `schemaVersion` and use the
+historical `id`/`branch` item shape. Use the retry fields in a schema-valid Plan instead.
 
 ## Example 1: Basic Retry Configuration
 
-A simple plan with retry logic for flaky tests:
+A legacy split-config sketch with retry logic for flaky tests:
+
+<!-- lexrunner-non-executable-plan:error-recovery-legacy-basic-stack -->
 
 ```yaml
 # .smartergpt/stack.yml
@@ -26,6 +30,8 @@ items:
       - name: integration
         run: npm run test:integration
 ```
+
+<!-- lexrunner-non-executable-plan:error-recovery-legacy-basic-policy -->
 
 ```json
 // .smartergpt/policy.json
@@ -58,7 +64,9 @@ items:
 
 ## Example 2: External Service Dependencies
 
-Handle external service failures gracefully:
+Legacy split-config sketch for external service failures:
+
+<!-- lexrunner-non-executable-plan:error-recovery-legacy-service-stack -->
 
 ```yaml
 # .smartergpt/stack.yml
@@ -78,6 +86,8 @@ items:
         run: npm run test:e2e
         runtime: ci-service # Will gracefully degrade if unavailable
 ```
+
+<!-- lexrunner-non-executable-plan:error-recovery-legacy-service-policy -->
 
 ```json
 // .smartergpt/policy.json
@@ -112,6 +122,8 @@ items:
 ## Example 3: Progressive Retry Strategy
 
 Different retry strategies for different gate types:
+
+<!-- lexrunner-non-executable-plan:error-recovery-progressive-policy -->
 
 ```json
 // .smartergpt/policy.json

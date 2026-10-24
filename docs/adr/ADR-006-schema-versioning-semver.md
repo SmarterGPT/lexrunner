@@ -20,6 +20,11 @@ We adopt **SemVer** for schema versioning.
 
 Plans must include a schema version:
 
+The following is a minimal structural fragment, not an executable Plan; target and policy details,
+plus complete item definitions, are intentionally omitted.
+
+<!-- lexrunner-non-executable-plan:adr-schema-version-fragment -->
+
 ```json
 {
   "schemaVersion": "1.0.0",

@@ -31,6 +31,7 @@ export {
   toAXError,
   // MCP-specific adapters
   mcpToolError,
+  workflowGuideArgumentsError,
   planNotFoundError,
   profileNotFoundError,
   configInvalidError,
@@ -232,6 +233,8 @@ export const ErrorCodes = {
   INTERNAL_ERROR: "INTERNAL_ERROR",
   /** Invalid input parameters */
   INVALID_INPUT: "INVALID_INPUT",
+  /** workflow.guide received a missing or unsupported phase */
+  WORKFLOW_GUIDE_ARGUMENTS_INVALID: "WORKFLOW_GUIDE_ARGUMENTS_INVALID",
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

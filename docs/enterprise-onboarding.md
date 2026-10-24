@@ -218,7 +218,11 @@ To reinitialize an existing workspace:
 npx lex-pr workspace init --enterprise --force
 ```
 
-**Warning**: This will overwrite existing configuration files.
+Without `--force`, enterprise initialization may fill missing files in an incomplete writable
+profile, but it preserves existing authored files. With `--force`, it replaces the
+enterprise-managed `gates.yml`, `.lexrunner/config.yaml`, `.lexrunner/gate-mapping.yaml`, and (for
+GitHub Actions) `.github/copilot-instructions.md`. An existing
+`.github/workflows/merge-weave.yaml` is always preserved.
 
 ## Examples
 
@@ -281,7 +285,7 @@ After initialization:
 
 ### Configuration already exists
 
-- Use `--force` to overwrite existing configuration
+- Use `--force` to replace the documented enterprise-managed files in the existing writable profile
 - Or manually remove `.smartergpt.local/` directory
 
 ## See Also

@@ -282,7 +282,10 @@ Monitor these event types:
 
 ## Policy Configuration
 
-Configure retry behavior in your plan policy:
+Configure retry behavior in your plan policy. The following block is a non-executable fragment;
+replace the ellipsis with complete Plan items before validation:
+
+<!-- lexrunner-non-executable-plan:error-recovery-policy-fragment -->
 
 ```json
 {

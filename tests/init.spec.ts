@@ -1,8 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { runInit } from "../src/commands/init.js";
+import { WriteProtectionError } from "../src/config/profileResolver.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+
+const mutableNodeFs = createRequire(import.meta.url)("node:fs") as {
+  mkdirSync: typeof fs.mkdirSync;
+};
 
 describe("Init Command", () => {
   let tempDir: string;
@@ -79,13 +85,12 @@ describe("Init Command", () => {
       expect(result.message).toContain("already exists");
     });
 
-    it("should overwrite configuration with --force", async () => {
+    it("should continue initialization with --force without overwriting existing files", async () => {
       // Create initial configuration
       const result1 = await runInit({ nonInteractive: true });
 
       // Modify a file in root config
       const intentPath = path.join(result1.profileDir, "intent.md");
-      const originalContent = fs.readFileSync(intentPath, "utf-8");
       fs.writeFileSync(intentPath, "# Modified content");
 
       // Create again with force
@@ -96,10 +101,32 @@ describe("Init Command", () => {
 
       expect(result2.success).toBe(true);
 
-      // Check that file was reset (or left alone - depends on implementation)
+      // Standard force initialization fills missing files but preserves authored content.
       const currentContent = fs.readFileSync(intentPath, "utf-8");
-      // File should either be reset or remain modified
-      expect(currentContent).toBeDefined();
+      expect(currentContent).toBe("# Modified content");
+    });
+
+    it("should reject a concurrent winner of an initially absent profile leaf", async () => {
+      const profileDir = path.join(tempDir, ".smartergpt.local");
+      const originalMkdir = mutableNodeFs.mkdirSync;
+      const injectedMkdir = ((...args: Parameters<typeof fs.mkdirSync>) => {
+        if (path.resolve(String(args[0])) === profileDir && args[1] === undefined) {
+          Reflect.apply(originalMkdir, fs, [profileDir, { recursive: true }]);
+          fs.writeFileSync(path.join(profileDir, "profile.yml"), "role: local\nname: Other\n");
+          fs.writeFileSync(path.join(profileDir, "sentinel.txt"), "preserve-me\n");
+        }
+        return Reflect.apply(originalMkdir, fs, args);
+      }) as typeof fs.mkdirSync;
+      mutableNodeFs.mkdirSync = injectedMkdir;
+      syncBuiltinESMExports();
+      try {
+        await expect(runInit({ nonInteractive: true })).rejects.toThrow(WriteProtectionError);
+      } finally {
+        mutableNodeFs.mkdirSync = originalMkdir;
+        syncBuiltinESMExports();
+      }
+      expect(fs.readFileSync(path.join(profileDir, "sentinel.txt"), "utf8")).toBe("preserve-me\n");
+      expect(fs.existsSync(path.join(profileDir, "runner"))).toBe(false);
     });
   });
 
@@ -151,16 +178,15 @@ describe("Init Command", () => {
       expect(content).toContain("sources:");
     });
 
-    it("should create gates.yml with example gates", async () => {
+    it("should create gates.yml with the schema-valid default level", async () => {
       const result = await runInit({ nonInteractive: true });
 
       const gatesPath = path.join(result.profileDir, "gates.yml");
       const content = fs.readFileSync(gatesPath, "utf-8");
 
       expect(content).toContain("version: 1");
-      expect(content).toContain("gates:");
-      expect(content).toContain("typecheck");
-      expect(content).toContain("test");
+      expect(content).toContain("levels:");
+      expect(content).toContain("default: []");
     });
 
     it("should create pull-request-template.md with dependency syntax", async () => {
@@ -229,13 +255,12 @@ describe("Init Command", () => {
       );
 
       // Try to init with explicit read-only dir (should fail)
-      const result = await runInit({
-        nonInteractive: true,
-        profileDir: trackedDir,
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain("Write protection");
+      await expect(
+        runInit({
+          nonInteractive: true,
+          profileDir: trackedDir,
+        })
+      ).rejects.toBeInstanceOf(WriteProtectionError);
     });
   });
 

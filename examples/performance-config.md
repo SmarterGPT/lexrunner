@@ -1,6 +1,13 @@
 # Performance Configuration Examples
 
+> **Illustrative legacy sketches only.** The Plan-shaped YAML blocks in this file are not
+> executable inputs. They use the unsupported `schemaVersion: "v1"`, historical
+> `policy.performance` fields, or ellipses/incomplete required gates. Validate real Plan files
+> against the current schema and use supported `maxWorkers`, gate runtime, and process controls.
+
 ## Small Project (< 20 PRs)
+
+<!-- lexrunner-non-executable-plan:performance-small-legacy -->
 
 ```yaml
 # plan-small.yml
@@ -29,6 +36,8 @@ items:
 ```
 
 ## Medium Project (20-50 PRs)
+
+<!-- lexrunner-non-executable-plan:performance-medium-legacy -->
 
 ```yaml
 # plan-medium.yml
@@ -69,6 +78,8 @@ items:
 ```
 
 ## Large Project (50-100 PRs)
+
+<!-- lexrunner-non-executable-plan:performance-large-legacy -->
 
 ```yaml
 # plan-large.yml
@@ -119,6 +130,8 @@ items:
 ```
 
 ## Very Large Project (100+ PRs)
+
+<!-- lexrunner-non-executable-plan:performance-xlarge-legacy -->
 
 ```yaml
 # plan-xlarge.yml
@@ -287,6 +300,10 @@ docker run \
 
 ### Enable Metrics Export
 
+This is another non-executable legacy performance-policy sketch.
+
+<!-- lexrunner-non-executable-plan:performance-metrics-legacy -->
+
 ```yaml
 # plan-with-metrics.yml
 schemaVersion: "v1"
@@ -338,6 +355,10 @@ sum(rate(lex_pr_merge_success_total[5m])) /
 
 ### Issue: High Memory Usage
 
+This troubleshooting object is a Plan policy fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:performance-example-high-memory-policy -->
+
 ```yaml
 # Reduce memory footprint
 policy:
@@ -350,6 +371,10 @@ policy:
 ```
 
 ### Issue: Slow Execution
+
+This troubleshooting object is a Plan policy fragment, not an executable Plan.
+
+<!-- lexrunner-non-executable-plan:performance-example-slow-execution-policy -->
 
 ```yaml
 # Increase parallelism (if memory allows)

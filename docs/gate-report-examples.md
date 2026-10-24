@@ -176,6 +176,8 @@ The `vuln` gate is a special built-in gate that automatically scans for vulnerab
 
 ### Example Configuration
 
+<!-- lexrunner-plan-example:gate-report-vulnerability -->
+
 ```json
 {
   "schemaVersion": "1.0.0",
