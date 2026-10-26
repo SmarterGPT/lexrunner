@@ -115,9 +115,11 @@ internal static class Program
       var root = document.RootElement;
       if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException();
       if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String &&
-          kind.GetString() is "directory_request" or "file_request" or "file_create_request" or "process_request")
+          kind.GetString() is "directory_request" or "file_request" or "file_create_request" or "process_request" or "removal_request")
       {
-        var directoryReply = kind.GetString() == "process_request" ?
+        var directoryReply = kind.GetString() == "removal_request" ?
+          directories.Remove(root, bytes, nonce, sessionNonce, requests, operations) :
+          kind.GetString() == "process_request" ?
           directories.RunProcess(root, bytes, nonce, sessionNonce, requests, operations) :
           kind.GetString() == "file_create_request" ?
           directories.CreateFile(root, bytes, nonce, sessionNonce, requests, operations) :

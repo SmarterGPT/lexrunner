@@ -7,5 +7,7 @@
   <ItemGroup>
     <Compile Include="../../src/LexRunner.WindowsBoundary.Helper/DirectoryLease.cs" Link="DirectoryLease.cs" />
     <Compile Include="../../src/LexRunner.WindowsBoundary.Helper/OwnedDirectoryRemoval.cs" Link="OwnedDirectoryRemoval.cs" />
+    <Compile Include="../../src/LexRunner.WindowsBoundary.Helper/NativeRemovalTree.cs" Link="NativeRemovalTree.cs" />
+    <Compile Include="../../src/LexRunner.WindowsBoundary.Helper/NativeRelativeFiles.cs" Link="NativeRelativeFiles.cs" />
   </ItemGroup>
 </Project>

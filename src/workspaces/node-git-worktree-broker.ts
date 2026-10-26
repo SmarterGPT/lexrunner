@@ -62,6 +62,20 @@ export interface NodeGitWorktreeBrokerOptions {
   maxDirtyPaths?: number;
   /** Enables synthetic lineage only for direct broker tests outside the coordinator. */
   testOnlyAllowUnboundBoundaryAuthority?: boolean;
+  /** Explicit native transition injection. Production resolution must separately
+   * qualify the boundary; supplying this port never makes a backend ready. */
+  nativeRemoval?: NativeWorktreeRemovalTransition;
+}
+
+export interface NativeWorktreeRemovalTransition {
+  remove(
+    target: WorktreeTarget,
+    selection: {
+      root: WorkspaceBoundaryDirectoryIdentity_v1;
+      repositoryGit: WorkspaceBoundaryDirectoryIdentity_v1;
+    },
+    options: BrokerOperationOptions
+  ): Promise<{ ok: true } | BrokerFailure>;
 }
 
 interface GitExecutionSuccess {
@@ -127,9 +141,11 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
   private readonly repositoryIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
   private readonly repositoryGitIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
   private readonly worktreeRootIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
+  private readonly nativeRemoval?: NativeWorktreeRemovalTransition;
 
   constructor(options: NodeGitWorktreeBrokerOptions, bootstrap?: BrokerBootstrap) {
     validateBrokerOptions(options);
+    this.nativeRemoval = options.nativeRemoval;
     if (bootstrap && bootstrap.token !== brokerBootstrapToken)
       throw new Error("Invalid broker bootstrap");
     const resolution = bootstrap
@@ -595,6 +611,34 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       // Git can unregister and empty the worktree before failing to delete a held
       // directory. Do not begin that partial mutation under an incompatible lease.
       if (this.boundary.capability.claims.rename_delete_exclusion) {
+        if (this.nativeRemoval && this.boundary.capability.backend_kind === "windows-native") {
+          const selection = {
+            root: structuredClone(targetDirectory.identity),
+            repositoryGit: structuredClone(boundary.repositoryGit.identity),
+          };
+          const closed = await boundary.lease.close("completed");
+          if (closed.phase !== "released")
+            return this.failure(
+              "remove",
+              "containment_violation",
+              "Native removal requires confirmed release of ordinary target scopes",
+              undefined,
+              observation
+            );
+          const effect = await this.nativeRemoval.remove(target, selection, options);
+          if (!effect.ok) return effect;
+          const after = await this.observe(target, options);
+          if (!after.ok) return { ...after, operation: "remove" };
+          if (after.observation.registered || after.observation.exists)
+            return this.failure(
+              "remove",
+              "identity_mismatch",
+              "Native removal completed but fresh broker observation still finds the worktree or registration",
+              undefined,
+              after.observation
+            );
+          return { ok: true, outcome: "removed", observation: after.observation };
+        }
         return this.failure(
           "remove",
           "containment_violation",

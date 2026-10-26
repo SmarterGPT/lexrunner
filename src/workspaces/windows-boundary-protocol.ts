@@ -2,6 +2,11 @@ import { TextDecoder } from "node:util";
 import { z } from "zod";
 
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
+import {
+  WINDOWS_REMOVAL_VERSION,
+  WindowsRemovalPayload,
+  WindowsRemovalResultPayload,
+} from "./windows-removal-protocol.js";
 
 /** Negotiation only. Parsing these messages never qualifies a production helper. */
 export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "2.0.0" as const;
@@ -196,6 +201,18 @@ export const WindowsBoundaryProcessResult = z.strictObject({
   stdout_truncated: z.boolean(),
   stderr_truncated: z.boolean(),
 });
+export const WindowsBoundaryRemovalRequest = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("removal_request"),
+  removal_version: z.literal(WINDOWS_REMOVAL_VERSION),
+  payload: WindowsRemovalPayload,
+});
+export const WindowsBoundaryRemovalResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("removal_result"),
+  removal_version: z.literal(WINDOWS_REMOVAL_VERSION),
+  payload: WindowsRemovalResultPayload,
+});
 const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryHello,
   WindowsBoundaryHelloResult,
@@ -209,6 +226,8 @@ const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryFileCreateResult,
   WindowsBoundaryProcessRequest,
   WindowsBoundaryProcessResult,
+  WindowsBoundaryRemovalRequest,
+  WindowsBoundaryRemovalResult,
 ]);
 type SessionMessage = z.infer<typeof SessionMessage>;
 
