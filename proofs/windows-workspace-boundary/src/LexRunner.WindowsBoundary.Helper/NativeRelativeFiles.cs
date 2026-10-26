@@ -3,8 +3,8 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 
-// Relative opens and enumeration use the retained directory object even during
-// the read-only preparation phase. No caller pathname is followed beneath it.
+// Removal preparation and general capability I/O resolve a single component
+// against its retained parent object, never against a reconstructed pathname.
 internal static class NativeRelativeFiles
 {
   internal static IEnumerable<(string Name, bool Directory)> Entries(DirectoryLease.DirectoryHandle parent)
@@ -46,28 +46,59 @@ internal static class NativeRelativeFiles
   internal static DirectoryLease.DirectoryHandle OpenChild(DirectoryLease.DirectoryHandle parent,
       string component, bool directory, bool deletion = false, bool exclusive = false)
   {
+    var access = deletion ? (directory ? 0x110081u : 0x110080u) : (directory ? 0x100081u : 0x80100080u);
+    var share = exclusive ? 0u : deletion ? (directory ? 3u : 1u) : (directory ? 7u : 5u);
+    return Open(parent, component, directory, access, share, 1, 0);
+  }
+
+  internal static DirectoryLease.DirectoryHandle OpenCapabilityDirectory(
+      DirectoryLease.DirectoryHandle parent, string component, bool create) =>
+    Open(parent, component, true, 0x100081, 3, create ? 2u : 1u, create ? 0x10u : 0u);
+
+  internal static DirectoryLease.DirectoryHandle OpenCapabilityFile(
+      DirectoryLease.DirectoryHandle parent, string component, bool create) =>
+    Open(parent, component, false, create ? 0xc0100080u : 0x80100080u,
+      create ? 0u : 1u, create ? 2u : 1u, create ? 0x80u : 0u);
+
+  internal static DirectoryLease.DirectoryHandle OpenGlobalDriveRoot(string drive)
+  {
+    if (drive.Length != 3 || !char.IsAsciiLetter(drive[0]) || drive[1] != ':' || drive[2] != '\\')
+      throw new InvalidDataException();
+    // Native absolute object-manager name: never the per-process DOS aliases
+    // named GLOBALROOT or GLOBAL??. Only the OS-managed drive link is followed.
+    return OpenNative(null, @"\GLOBAL??\" + drive, true, 0x100081, 3, 1, 0);
+  }
+
+  private static DirectoryLease.DirectoryHandle Open(DirectoryLease.DirectoryHandle parent,
+      string component, bool directory, uint access, uint share, uint disposition, uint fileAttributes)
+  {
     DirectoryLease.ValidateComponent(component);
+    return OpenNative(parent, component, directory, access, share, disposition, fileAttributes);
+  }
+
+  private static DirectoryLease.DirectoryHandle OpenNative(DirectoryLease.DirectoryHandle? parent,
+      string component, bool directory, uint access, uint share, uint disposition, uint fileAttributes)
+  {
     var text = Marshal.StringToHGlobalUni(component);
     var name = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>());
     var retained = false;
     try
     {
-      parent.DangerousAddRef(ref retained);
+      parent?.DangerousAddRef(ref retained);
       Marshal.StructureToPtr(new UnicodeString { Length = checked((ushort)(component.Length * 2)),
           MaximumLength = checked((ushort)(component.Length * 2)), Buffer = text }, name, false);
       var attributes = new ObjectAttributes { Length = Marshal.SizeOf<ObjectAttributes>(),
-          RootDirectory = parent.DangerousGetHandle(), ObjectName = name, Attributes = 0x1040 };
-      var access = deletion ? (directory ? 0x110081u : 0x110080u) : (directory ? 0x100081u : 0x80100080u);
-      var share = exclusive ? 0u : deletion ? (directory ? 3u : 1u) : (directory ? 7u : 5u);
+          RootDirectory = parent?.DangerousGetHandle() ?? IntPtr.Zero, ObjectName = name,
+          Attributes = parent == null ? 0x40u : 0x1040u };
       var status = NtCreateFile(out var handle, access,
-          ref attributes, out _, IntPtr.Zero, 0, share, 1,
+          ref attributes, out _, IntPtr.Zero, fileAttributes, share, disposition,
           0x200020u | (directory ? 1u : 0x40u), IntPtr.Zero, 0);
       if (status >= 0) return handle;
       handle.Dispose(); throw new Win32Exception((int)RtlNtStatusToDosError(status));
     }
     finally
     {
-      if (retained) parent.DangerousRelease();
+      if (retained) parent!.DangerousRelease();
       Marshal.FreeHGlobal(name); Marshal.FreeHGlobal(text);
     }
   }
