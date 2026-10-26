@@ -9,6 +9,12 @@ import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { isAbsolute, win32 } from "node:path";
 import { z } from "zod";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
+import { registerWindowsRemovalChannel } from "./windows-removal-channel.js";
+import {
+  WINDOWS_REMOVAL_VERSION,
+  type WindowsRemovalPayload,
+  type WindowsRemovalResultPayload,
+} from "./windows-removal-protocol.js";
 import {
   WindowsBoundaryExchange,
   type WindowsBoundaryExchangeFailure,
@@ -25,6 +31,8 @@ import {
   WindowsBoundaryDirectoryResult,
   WindowsBoundaryProcessRequest,
   WindowsBoundaryProcessResult,
+  WindowsBoundaryRemovalRequest,
+  WindowsBoundaryRemovalResult,
 } from "./windows-boundary-protocol.js";
 
 const AbsolutePath = z
@@ -224,6 +232,7 @@ type ScopeReply =
   | OwnedWindowsFileRead
   | OwnedWindowsFileCreated
   | OwnedWindowsProcessResult
+  | { kind: "removal_completed"; payload: WindowsRemovalResultPayload }
   | null;
 function directoryValue(reply: ScopeReply): DirectoryReply {
   if (!reply || reply.kind !== "directory_result") throw new Error("Unexpected directory response");
@@ -385,6 +394,7 @@ async function runOwnedWindowsBoundary(
     const processBoundaryLeaseId = randomUUID();
     const scopes = new WeakMap<OwnedWindowsDirectoryScope, DirectoryReply>();
     let pendingProcess: { index: number; target: DirectoryReply; limit: number } | undefined;
+    let pendingRemoval: WindowsRemovalPayload | undefined;
     let bytesRead = 0;
     let readLimit: number | undefined;
     let releaseAcknowledged = false;
@@ -866,6 +876,70 @@ async function runOwnedWindowsBoundary(
           ),
       });
       scopes.set(scope, target);
+      registerWindowsRemovalChannel(scope, {
+        owner: scopes,
+        token: target.lease_token,
+        invoke: (payload) => {
+          const pending = new Promise<ScopeReply>((resolve, reject) => {
+            try {
+              const budget =
+                WINDOWS_BOUNDARY_COMMAND_TIMEOUT_MS + WINDOWS_BOUNDARY_REPLY_RESERVE_MS;
+              if (
+                !working ||
+                finished ||
+                failure ||
+                closing ||
+                assertion ||
+                directoryOperation ||
+                pendingProcess ||
+                pendingRemoval ||
+                !liveDirectories.includes(target) ||
+                performance.now() + budget >= workDeadline ||
+                sentCount + 1 + liveDirectories.length > WINDOWS_BOUNDARY_SESSION_REQUESTS
+              )
+                throw new Error("Removal session unavailable");
+              const body = {
+                client_nonce: request.client_nonce,
+                session_nonce: sessionNonce!,
+                protocol_version: WINDOWS_BOUNDARY_PROTOCOL_VERSION,
+                removal_version: WINDOWS_REMOVAL_VERSION,
+                request_id: randomUUID(),
+                operation_id: randomUUID(),
+                kind: "removal_request" as const,
+                payload,
+              };
+              const digest = `sha256:${createHash("sha256").update(canonicalJSONStringify(body)).digest("hex")}`;
+              const wire = WindowsBoundaryRemovalRequest.parse({ ...body, request_digest: digest });
+              const frame = encodeWindowsBoundarySession(wire);
+              if (stopExpiredGrace()) throw new Error("Removal session expired");
+              exchange!.reserve(
+                {
+                  request_id: body.request_id,
+                  operation_id: body.operation_id,
+                  request_digest: digest,
+                },
+                budget
+              );
+              assertion = { resolve, reject };
+              pendingRemoval = wire.payload;
+              sentCount++;
+              clearTimeout(handshakeTimer);
+              handshakeTimer = setTimeout(() => fail("operation_timeout"), budget);
+              child.stdin.write(frame);
+            } catch {
+              reject(new Error("Removal request failed"));
+              fail("work_failed");
+            }
+          });
+          const converted = pending.then((reply) => {
+            if (!reply || reply.kind !== "removal_completed")
+              throw new Error("Unexpected removal response");
+            return reply.payload;
+          });
+          void converted.catch(() => {});
+          return converted;
+        },
+      });
       return scope;
     };
     const releaseNext = () =>
@@ -992,6 +1066,40 @@ async function runOwnedWindowsBoundary(
       try {
         const messages = decoder.push(chunk);
         for (const message of messages) {
+          if (seenReply && directory && message.kind === "removal_result") {
+            if (!pendingRemoval || !assertion || directoryOperation || pendingProcess)
+              throw new Error("Unexpected removal result");
+            const result = WindowsBoundaryRemovalResult.parse(message);
+            if (
+              result.payload.operation !== pendingRemoval.operation ||
+              ("removal_token" in pendingRemoval &&
+                result.payload.removal_token !== pendingRemoval.removal_token) ||
+              (pendingRemoval.operation === "commit" &&
+                result.payload.operation === "commit" &&
+                result.payload.admission_digest !== pendingRemoval.admission_digest)
+            )
+              throw new Error("Removal result mismatch");
+            if (stopExpiredGrace()) return;
+            const match = exchange!.correlate({
+              client_nonce: result.client_nonce,
+              session_nonce: result.session_nonce,
+              request_id: result.request_id,
+              operation_id: result.operation_id,
+              request_digest: result.request_digest,
+            });
+            if (!match.correlated) {
+              fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
+              return;
+            }
+            clearTimeout(handshakeTimer);
+            operationCount++;
+            pendingRemoval = undefined;
+            const waiter = assertion;
+            assertion = undefined;
+            waiter.resolve({ kind: "removal_completed", payload: Object.freeze(result.payload) });
+            drainDeadline();
+            continue;
+          }
           if (seenReply && directory && message.kind === "process_result") {
             if (!pendingProcess || !assertion || directoryOperation)
               throw new Error("Unexpected process result");

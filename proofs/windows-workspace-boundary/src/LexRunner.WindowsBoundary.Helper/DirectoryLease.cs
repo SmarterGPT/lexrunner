@@ -14,6 +14,7 @@ internal sealed class DirectoryLease : IDisposable
   private readonly List<Identity> identities = [];
   internal IReadOnlyList<Identity> Identities => identities;
   internal Identity Leaf => identities[^1];
+  internal DirectoryHandle LeafHandle => !closed ? handles[^1] : throw new ObjectDisposedException(nameof(DirectoryLease));
   private bool closed;
 
   internal static DirectoryLease Acquire(string path)

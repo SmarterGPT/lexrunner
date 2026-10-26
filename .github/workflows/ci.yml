@@ -227,6 +227,9 @@ jobs:
       - name: Run native Windows handle-authority proof
         shell: pwsh
         run: ./proofs/windows-workspace-boundary/verify.ps1
+      - name: Qualify actual native removal and recovery
+        shell: pwsh
+        run: ./proofs/windows-workspace-boundary/verify-removal.ps1
       - name: Upload native Windows proof receipts
         if: always()
         uses: actions/upload-artifact@v7
@@ -235,6 +238,9 @@ jobs:
           path: |
             proofs/windows-workspace-boundary/artifacts/proof-receipt.json
             proofs/windows-workspace-boundary/artifacts/signing-receipt.json
+            proofs/windows-workspace-boundary/artifacts/removal/**/qualification-receipt.json
+            proofs/windows-workspace-boundary/artifacts/removal/**/*.log
+            proofs/windows-workspace-boundary/artifacts/removal/**/native-tests.json
           if-no-files-found: warn
 
   # Full manual-only determinism and license gate.

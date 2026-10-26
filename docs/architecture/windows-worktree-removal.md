@@ -1,7 +1,12 @@
 # Windows worktree removal qualification
 
-Status: current broker guard implemented; removal transition remains unqualified.
+Status: broker guard retained; explicit native executor/recovery connection implemented for qualification.
 Tracking: [#997](https://github.com/SmarterGPT/lexrunner/issues/997).
+
+The [actual native executor and recovery](windows-native-removal-executor.md) now connect the
+prepared tree selection, stable slot, broker transition and durable journal. The historical probes
+below remain evidence for their stated fixture scope. Production discovery remains unavailable;
+the new connection does not convert those earlier fixtures into deployment acceptance.
 
 ## Removal evidence and recovery assessment
 

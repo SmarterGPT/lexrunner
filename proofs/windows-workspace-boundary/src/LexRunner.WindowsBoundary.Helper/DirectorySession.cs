@@ -4,6 +4,10 @@ using System.Text.Json;
 internal sealed class DirectorySession : IDisposable
 {
   private readonly Dictionary<string, DirectoryLease> leases = [];
+  private readonly RemovalSession removals = new();
+  internal byte[] Remove(JsonElement root, byte[] bytes, string nonce, string sessionNonce,
+      HashSet<string> requests, HashSet<string> operations) =>
+      removals.Execute(root, bytes, nonce, sessionNonce, requests, operations, leases);
 
   internal byte[] RunProcess(JsonElement root, byte[] bytes, string nonce, string sessionNonce,
       HashSet<string> requests, HashSet<string> operations)
@@ -351,6 +355,7 @@ internal sealed class DirectorySession : IDisposable
   public void Dispose()
   {
     var uncertain = false;
+    try { removals.Dispose(); } catch (IOException) { uncertain = true; }
     foreach (var lease in leases.Values)
       try { lease.Dispose(); } catch (IOException) { uncertain = true; }
     leases.Clear();
