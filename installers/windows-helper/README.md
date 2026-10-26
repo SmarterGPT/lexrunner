@@ -96,6 +96,22 @@ fixture signer. The temporary key is not enrolled into any certificate store.
 Commands, cwd, commit, duration, exit and bounded output are retained. No MSI is
 installed by this lane. The required Windows CI job runs it natively.
 
+The separate `Test-WindowsHelperMsiInstall.ps1 -EphemeralCi` lane performs actual
+installation on an existing administrative, disposable GitHub-hosted Windows
+runner. It refuses local hosts or existing application/catalog state before any
+mutation. It checks installed payload/owner/DACL, native image loading, refusal of
+repair, marker-removing uninstall and refusal to reprovision a retained generation.
+Its fixture remains unqualified and has no active selection. It neither deletes
+retained generations nor establishes ordinary-worker denial or production trust.
+The runner is discarded by CI. Logs/receipts are retained, including failures.
+
+The actual first local install exposed missing required `Signature` table metadata
+for `AppSearch`, despite passing offline inspection. The recipe now includes that
+empty standard table; it must contain no file-signature rows for the raw registry
+lookup. The offline missing-table negative control and hosted real installation
+lane cover this boundary. Offline metadata checks alone never establish that the
+Windows Installer engine can execute the package.
+
 The manual main-only signing workflow signs the helper first, builds/inspects the
 MSI around those exact signed bytes, signs only the named MSI with the existing
 Azure identity, and verifies its publisher/EKUs/timestamp/one embedded signer and

@@ -102,7 +102,7 @@ $clock = [Diagnostics.Stopwatch]::StartNew()
 $held = [IO.File]::Open($artifact, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
 try {
     $tables = @(Query 'SELECT `Name` FROM `_Tables`' | ForEach-Object { $_[0] })
-    $allowedTables = @('Property','Directory','Component','Feature','FeatureComponents','CreateFolder','MsiLockPermissionsEx','File','MsiFileHash','Media','Registry','AppSearch','RegLocator','LaunchCondition','InstallExecuteSequence','InstallUISequence')
+    $allowedTables = @('Property','Directory','Component','Feature','FeatureComponents','CreateFolder','MsiLockPermissionsEx','File','MsiFileHash','Media','Registry','AppSearch','Signature','RegLocator','LaunchCondition','InstallExecuteSequence','InstallUISequence')
     Require ($tables.Count -eq $allowedTables.Count -and @($tables | Where-Object { $_ -notin $allowedTables }).Count -eq 0) 'Unexpected MSI table surface'
     foreach ($forbidden in @('CustomAction', 'ServiceInstall', 'ServiceControl', 'Upgrade', 'Environment', 'Shortcut')) {
         Require ($forbidden -notin $tables) 'Unexpected active installer mechanism'
@@ -149,6 +149,7 @@ try {
     }
     $search = @(Query 'SELECT `Property`,`Signature_` FROM `AppSearch`')
     Require ($search.Count -eq 1 -and $search[0][0] -ceq 'EXISTINGGENERATION' -and $search[0][1] -ceq 'ExistingGeneration') 'Generation discovery property binding missing'
+    Require (@(Query 'SELECT `Signature` FROM `Signature`').Count -eq 0) 'Raw registry discovery must not become a file-signature search'
     $locator = @(Query 'SELECT `Signature_`,`Root`,`Key`,`Name`,`Type` FROM `RegLocator`')
     Require ($locator.Count -eq 1 -and $locator[0][0] -ceq 'ExistingGeneration' -and $locator[0][1] -ceq '2' -and $locator[0][2] -ceq $generationKey -and $locator[0][3] -ceq 'ManifestDigest' -and $locator[0][4] -ceq '18') 'Generation discovery must read the exact x64 HKLM catalog value'
     $directories = @(Query 'SELECT `Directory`,`Directory_Parent`,`DefaultDir` FROM `Directory`')

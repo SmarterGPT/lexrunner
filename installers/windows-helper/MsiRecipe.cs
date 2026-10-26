@@ -40,6 +40,9 @@ internal static class MsiRecipe
     db.Insert("Registry", "GenerationState", 2, root + "\\Generations\\" + generation, "State", "provisioned-unqualified", "RetainedGenerationCatalog");
     db.Insert("Registry", "GenerationProduct", 2, root + "\\Generations\\" + generation, "ProductCode", "[ProductCode]", "RetainedGenerationCatalog");
     db.Create("AppSearch", "`Property` CHAR(72) NOT NULL, `Signature_` CHAR(72) NOT NULL", "`Property`, `Signature_`"); db.Insert("AppSearch", "EXISTINGGENERATION", "ExistingGeneration");
+    // AppSearch requires this table even for a raw registry lookup. No row may
+    // turn ExistingGeneration into a file-signature search.
+    db.Create("Signature", "`Signature` CHAR(72) NOT NULL, `FileName` CHAR(255) NOT NULL, `MinVersion` CHAR(20), `MaxVersion` CHAR(20), `MinSize` LONG, `MaxSize` LONG, `MinDate` LONG, `MaxDate` LONG, `Languages` CHAR(255)", "`Signature`");
     db.Create("RegLocator", "`Signature_` CHAR(72) NOT NULL, `Root` SHORT, `Key` CHAR(255) NOT NULL, `Name` CHAR(255), `Type` SHORT", "`Signature_`");
     db.Insert("RegLocator", "ExistingGeneration", 2, root + "\\Generations\\" + generation, "ManifestDigest", 18);
     db.Create("LaunchCondition", "`Condition` CHAR(255) NOT NULL, `Description` CHAR(255) NOT NULL LOCALIZABLE", "`Condition`");
