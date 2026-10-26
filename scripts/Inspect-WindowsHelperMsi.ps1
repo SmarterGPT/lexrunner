@@ -164,8 +164,8 @@ try {
     $directorySddl = 'O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'
     $fileSddl = 'O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;BU)'
     $registrySddl = 'O:SYG:SYD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)'
-    $permissionBindings = @{ ProtectApplicationRoot = @('HelperApplicationRoot','CreateFolder',$directorySddl); ProtectGenerationsRoot = @('HelperGenerationsRoot','CreateFolder',$directorySddl); ProtectGenerationRoot = @('HelperGenerationRoot','CreateFolder',$directorySddl); HelperImage = @('HelperImage','File',$fileSddl); GenerationManifest = @('GenerationManifest','File',$fileSddl); InstalledMarker = @('InstalledMarker','File',$fileSddl); CatalogRoot = @('CatalogRoot','Registry',$registrySddl); CatalogGenerations = @('CatalogGenerations','Registry',$registrySddl); CatalogGeneration = @('CatalogGeneration','Registry',$registrySddl) }
-    Require ($permissions.Count -eq 9) 'Required permission rows missing'
+    $permissionBindings = @{ ProtectApplicationRoot = @('HelperApplicationRoot','CreateFolder',$directorySddl); ProtectGenerationsRoot = @('HelperGenerationsRoot','CreateFolder',$directorySddl); ProtectGenerationRoot = @('HelperGenerationRoot','CreateFolder',$directorySddl); HelperImage = @('HelperImage','File',$fileSddl); GenerationManifest = @('GenerationManifest','File',$fileSddl); InstalledMarker = @('InstalledMarker','File',$fileSddl); CatalogRoot = @('CatalogRoot','Registry',$registrySddl); CatalogGenerations = @('CatalogGenerations','Registry',$registrySddl); CatalogGeneration = @('CatalogGeneration','Registry',$registrySddl); ManifestDigest = @('ManifestDigest','Registry',$registrySddl); GenerationState = @('GenerationState','Registry',$registrySddl); GenerationProduct = @('GenerationProduct','Registry',$registrySddl) }
+    Require ($permissions.Count -eq 12) 'Required permission rows missing'
     foreach ($row in $permissions) {
         Require ($permissionBindings.ContainsKey($row[0])) 'Unexpected permission object'
         $expected = $permissionBindings[$row[0]]

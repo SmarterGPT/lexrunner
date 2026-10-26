@@ -112,6 +112,12 @@ lookup. The offline missing-table negative control and hosted real installation
 lane cover this boundary. Offline metadata checks alone never establish that the
 Windows Installer engine can execute the package.
 
+The first hosted real installation also found that the generation registry key
+was created from its value row, omitting the key-only row's security descriptor.
+The recipe binds the same descriptor to every generation value row as well;
+the actual installed-key protected-DACL assertion is preserved. Inherited
+equivalent rights alone do not meet the protected-generation profile.
+
 The manual main-only signing workflow signs the helper first, builds/inspects the
 MSI around those exact signed bytes, signs only the named MSI with the existing
 Azure identity, and verifies its publisher/EKUs/timestamp/one embedded signer and

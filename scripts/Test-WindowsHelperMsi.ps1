@@ -82,6 +82,7 @@ public static class LexRunnerMsiFixtureMutation {
         'file-hash' = 'UPDATE `MsiFileHash` SET `HashPart1`=0 WHERE `File_`=''HelperImage'''
         'media-range' = 'UPDATE `Media` SET `LastSequence`=2 WHERE `DiskId`=1'
         'missing-signature-table' = 'DROP TABLE `Signature`'
+        'generation-value-permission' = 'DELETE FROM `MsiLockPermissionsEx` WHERE `MsiLockPermissionsEx`=''ManifestDigest'''
     }
     foreach ($item in $mutations.GetEnumerator()) {
         $copy = Join-Path $root ($item.Key + '.msi'); Copy-Item -LiteralPath $msi -Destination $copy

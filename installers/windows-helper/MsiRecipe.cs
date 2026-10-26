@@ -39,6 +39,9 @@ internal static class MsiRecipe
     db.Insert("Registry", "ManifestDigest", 2, root + "\\Generations\\" + generation, "ManifestDigest", manifest, "RetainedGenerationCatalog");
     db.Insert("Registry", "GenerationState", 2, root + "\\Generations\\" + generation, "State", "provisioned-unqualified", "RetainedGenerationCatalog");
     db.Insert("Registry", "GenerationProduct", 2, root + "\\Generations\\" + generation, "ProductCode", "[ProductCode]", "RetainedGenerationCatalog");
+    // Windows Installer can materialize this key from a value row, omitting the
+    // key-only '+' row. Every possible creator must carry the same protection.
+    foreach (var id in new[] { "ManifestDigest", "GenerationState", "GenerationProduct" }) Permission(id, id, "Registry", Program.RegistrySddl);
     db.Create("AppSearch", "`Property` CHAR(72) NOT NULL, `Signature_` CHAR(72) NOT NULL", "`Property`, `Signature_`"); db.Insert("AppSearch", "EXISTINGGENERATION", "ExistingGeneration");
     // AppSearch requires this table even for a raw registry lookup. No row may
     // turn ExistingGeneration into a file-signature search.
