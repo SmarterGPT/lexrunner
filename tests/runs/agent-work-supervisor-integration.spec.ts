@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createAgentTaskPacket, ExecutionEnvelope_v1 } from "../../src/schemas/agent-work.js";
 import { createNativeExecutionPathMapping } from "../../src/schemas/agent-work-projection.js";
@@ -116,50 +116,61 @@ describe("headless supervisor restart reconciliation", () => {
     expect(control.launchEffects).toBe(0);
   });
 
-  it("cancels durable work before a worker is attached", async () => {
-    const store = new InMemoryWorkspaceLifecycleStore();
-    const setup = await store.acquireControllerLease({
-      runId: "run-supervisor",
-      controllerId: "supervisor-1",
-      leaseId: "supervisor-lease-1",
-      now: "2026-07-19T12:00:00.000Z",
-      ttlMs: 60_000,
-      initialState: {},
-    });
-    if (!setup.acquired) throw new Error("expected controller setup");
-    await store.createAttempt({
-      runId: "run-supervisor",
-      expectedRunRevision: 0,
-      controller: credential(setup.lease),
-      mutationId: "create-cancelled-attempt",
-      now: "2026-07-19T12:00:00.000Z",
-      attemptId: "attempt-supervisor",
-      workItemId: "work-supervisor",
-      workItemRevision: 1,
-      packetId: "packet-supervisor",
-      packetHash: `sha256:${"a".repeat(64)}`,
-      baseSha: "a".repeat(40),
-    });
-    const observed = observation("/unused/worktree", "/unused/project");
-    const result = await makeSupervisor(
-      store,
-      new IdempotentLaunchControl(),
-      observed
-    ).reconcileRun({
-      ...reconcileInput("2026-07-19T12:00:00.100Z"),
-      cancelAttemptIds: ["attempt-supervisor"],
-      diagnostics: false,
-    });
-    if (result.ok) expect(result.attempts[0]).not.toHaveProperty("diagnostics");
-    expect(result).toMatchObject({
-      ok: true,
-      attempts: [{ action: "cancel_attempt", outcome: "applied", status: "cancelled" }],
-    });
-    await expect(store.getAttempt("attempt-supervisor")).resolves.toMatchObject({
-      status: "cancelled",
-      completedAt: "2026-07-19T12:00:00.100Z",
-    });
-  });
+  it.each([false, true])(
+    "handles cancellation before worker attachment with pending removal=%s",
+    async (pending) => {
+      const store = new InMemoryWorkspaceLifecycleStore();
+      const setup = await store.acquireControllerLease({
+        runId: "run-supervisor",
+        controllerId: "supervisor-1",
+        leaseId: "supervisor-lease-1",
+        now: "2026-07-19T12:00:00.000Z",
+        ttlMs: 60_000,
+        initialState: {},
+      });
+      if (!setup.acquired) throw new Error("expected controller setup");
+      await store.createAttempt({
+        runId: "run-supervisor",
+        expectedRunRevision: 0,
+        controller: credential(setup.lease),
+        mutationId: "create-cancelled-attempt",
+        now: "2026-07-19T12:00:00.000Z",
+        attemptId: "attempt-supervisor",
+        workItemId: "work-supervisor",
+        workItemRevision: 1,
+        packetId: "packet-supervisor",
+        packetHash: `sha256:${"a".repeat(64)}`,
+        baseSha: "a".repeat(40),
+      });
+      const observed = observation("/unused/worktree", "/unused/project");
+      const blocked = pending
+        ? vi
+            .spyOn(store, "transitionAttempt")
+            .mockResolvedValue({ updated: false, reason: "removal_operation_pending" })
+        : null;
+      const result = await makeSupervisor(
+        store,
+        new IdempotentLaunchControl(),
+        observed
+      ).reconcileRun({
+        ...reconcileInput("2026-07-19T12:00:00.100Z"),
+        cancelAttemptIds: ["attempt-supervisor"],
+        diagnostics: false,
+      });
+      if (result.ok) expect(result.attempts[0]).not.toHaveProperty("diagnostics");
+      expect(result).toMatchObject({
+        ok: true,
+        attempts: pending
+          ? [{ action: "reconciliation_required", outcome: "deferred", status: "unknown" }]
+          : [{ action: "cancel_attempt", outcome: "applied", status: "cancelled" }],
+      });
+      await expect(store.getAttempt("attempt-supervisor")).resolves.toMatchObject({
+        status: pending ? "prepared" : "cancelled",
+        completedAt: pending ? null : "2026-07-19T12:00:00.100Z",
+      });
+      blocked?.mockRestore();
+    }
+  );
 
   it.each(["resume", "cancel"])("recovers with %s after a human hold", async (recovery) => {
     const root = await mkdtemp(join(tmpdir(), "lexrunner-supervisor-"));
@@ -415,6 +426,35 @@ describe("headless supervisor restart reconciliation", () => {
     ).toMatchObject({ ok: true });
 
     control.state = "completed";
+    for (const method of ["endWorkerSession", "submitAttemptReceipt"] as const) {
+      const blocked =
+        method === "endWorkerSession"
+          ? vi
+              .spyOn(store, method)
+              .mockResolvedValueOnce({ updated: false, reason: "removal_operation_pending" })
+          : vi
+              .spyOn(store, method)
+              .mockResolvedValueOnce({ submitted: false, reason: "removal_operation_pending" });
+      try {
+        expect(
+          await makeSupervisor(store, control, observed).reconcileRun(
+            reconcileInput("2026-07-19T12:00:02.000Z")
+          )
+        ).toMatchObject({
+          ok: true,
+          attempts: [
+            {
+              action: "reconciliation_required",
+              outcome: "deferred",
+              diagnostics: { reason: "removal_operation_pending" },
+            },
+          ],
+        });
+        expect(await store.getAttemptReceiptForAttempt("attempt-supervisor")).toBeNull();
+      } finally {
+        blocked.mockRestore();
+      }
+    }
     const completed = await makeSupervisor(store, control, observed).reconcileRun(
       reconcileInput("2026-07-19T12:00:02.000Z")
     );
@@ -423,6 +463,23 @@ describe("headless supervisor restart reconciliation", () => {
       attempts: [{ action: "collect_receipt", outcome: "applied", status: "receipt_submitted" }],
     });
 
+    const pendingVerification = vi
+      .spyOn(store, "beginAttemptVerification")
+      .mockResolvedValueOnce({ started: false, reason: "removal_operation_pending" });
+    try {
+      expect(
+        await makeSupervisor(store, control, observed, "2026-07-19T12:00:02.500Z").reconcileRun(
+          reconcileInput("2026-07-19T12:00:02.500Z")
+        )
+      ).toMatchObject({
+        ok: true,
+        attempts: [
+          { action: "reconciliation_required", outcome: "deferred", status: "receipt_submitted" },
+        ],
+      });
+    } finally {
+      pendingVerification.mockRestore();
+    }
     const verified = await makeSupervisor(
       store,
       control,
@@ -436,6 +493,21 @@ describe("headless supervisor restart reconciliation", () => {
       ok: true,
       attempts: [{ action: "verify", outcome: "applied", status: "verified" }],
     });
+    const pendingAcceptance = vi
+      .spyOn(store, "applyAttemptAcceptance")
+      .mockResolvedValueOnce({ updated: false, reason: "removal_operation_pending" });
+    try {
+      expect(
+        await makeSupervisor(store, control, observed, "2026-07-19T12:00:03.000Z").reconcileRun(
+          reconcileInput("2026-07-19T12:00:03.000Z")
+        )
+      ).toMatchObject({
+        ok: true,
+        attempts: [{ action: "reconciliation_required", outcome: "deferred", status: "verified" }],
+      });
+    } finally {
+      pendingAcceptance.mockRestore();
+    }
     const accepted = await makeSupervisor(
       store,
       control,
@@ -565,7 +637,11 @@ function makeSupervisor(
   });
   const workerSessions = new AgentWorkWorkerSessionService(store, {
     config: { worktreeRoot: dirname(observed.worktreePath) } as never,
-    observeWorkspace: async () => ({ ok: true as const, observation: observed }),
+    observeWorkspace: async () => ({
+      ok: true as const,
+      outcome: "observed" as const,
+      observation: observed,
+    }),
   });
   return new AgentWorkHeadlessSupervisor(
     store,

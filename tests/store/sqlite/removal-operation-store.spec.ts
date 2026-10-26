@@ -412,7 +412,10 @@ describe("durable removal admission and observation recovery", () => {
             return lifecycle.transitionAttempt({ ...args, status: "cancelled" });
         }
       };
-      await expect(change()).rejects.toThrow("removal_operation_pending");
+      await expect(change()).resolves.toEqual({
+        updated: false,
+        reason: "removal_operation_pending",
+      });
       expect(await lifecycle.getAttempt("attempt")).toEqual(before.attempt);
       expect(await lifecycle.getWorkspaceLease("workspace")).toEqual(before.lease);
       expect(await lifecycle.listWorkspaceLifecycleEvents("run")).toEqual(before.events);

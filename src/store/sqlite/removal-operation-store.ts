@@ -3,6 +3,7 @@ import { SqliteRemovalEvidenceStore } from "./removal-evidence-store.js";
 import type { SqliteCoordinationStoreOptions } from "./coordination-store.js";
 import { credentialFailureReason, type ControllerLease } from "../coordination-store.js";
 import type { AttemptRecord, WorkspaceLifecycleLeaseRecord } from "../workspace-lifecycle-store.js";
+import { EndWorkerSessionStatus } from "../workspace-lifecycle-domains.js";
 import {
   assessReservedRemovalRecovery,
   parseRemovalIntentBytes,
@@ -221,6 +222,18 @@ export class SqliteRemovalOperationStore extends SqliteRemovalEvidenceStore {
       )
         return rejected("reservation_owner_changed");
       if (bound.assessment.state === "absence_observed") return rejected("already_absent");
+      // Admission and worker attachment share the SQLite writer ordering. A live
+      // session cannot become a cleanup target merely because its heartbeat is old.
+      // Terminal metadata still does not establish native executor quiescence.
+      if (
+        this.db
+          .prepare(
+            `SELECT 1 FROM worker_sessions WHERE workspaceLeaseId=?
+             AND status NOT IN (${EndWorkerSessionStatus.options.map(() => "?").join(",")}) LIMIT 1`
+          )
+          .get(intent.lease_id, ...EndWorkerSessionStatus.options)
+      )
+        return rejected("worker_session_not_terminal");
       if (
         this.db
           .prepare(

@@ -473,27 +473,31 @@ describe("WorkspaceCoordinator", () => {
     });
   });
 
-  it("does not remove when durable release preparation is rejected", async () => {
-    const ports = activePorts();
-    ports.broker.observe.mockResolvedValue({
-      ok: true,
-      outcome: "observed",
-      observation: observation(),
-    });
-    ports.store.heartbeatWorkspace.mockResolvedValue(failure("stale_workspace_revision", 2, 1));
+  it.each(["stale_workspace_revision", "removal_operation_pending"] as const)(
+    "does not remove when release preparation returns %s",
+    async (reason) => {
+      const ports = activePorts();
+      ports.broker.observe.mockResolvedValue({
+        ok: true,
+        outcome: "observed",
+        observation: observation(),
+      });
+      ports.store.heartbeatWorkspace.mockResolvedValue(failure(reason, 2, 1));
 
-    const result = await new WorkspaceCoordinator(ports.store, ports.broker).release(
-      releaseInput()
-    );
+      const result = await new WorkspaceCoordinator(ports.store, ports.broker).release(
+        releaseInput()
+      );
 
-    expect(result).toMatchObject({
-      ok: false,
-      phase: "release_prepare",
-      reason: "store_rejected",
-    });
-    expect(ports.broker.remove).not.toHaveBeenCalled();
-    expect(ports.store.releaseWorkspace).not.toHaveBeenCalled();
-  });
+      expect(result).toMatchObject({
+        ok: false,
+        phase: "release_prepare",
+        reason:
+          reason === "removal_operation_pending" ? "reconciliation_required" : "store_rejected",
+      });
+      expect(ports.broker.remove).not.toHaveBeenCalled();
+      expect(ports.store.releaseWorkspace).not.toHaveBeenCalled();
+    }
+  );
 
   it("continues a stable release retry only after the store validates its fingerprint", async () => {
     const ports = activePorts();
@@ -753,6 +757,13 @@ function fakePorts() {
     reconcileWorkspace: vi.fn<WorkspaceLifecycleStore["reconcileWorkspace"]>(),
     quarantineWorkspace: vi.fn<WorkspaceLifecycleStore["quarantineWorkspace"]>(),
     getAttempt: vi.fn<WorkspaceLifecycleStore["getAttempt"]>(async () => durable.attempt),
+    listAttempts: vi.fn<WorkspaceLifecycleStore["listAttempts"]>(async () =>
+      durable.attempt ? [durable.attempt] : []
+    ),
+    getAttemptRetryDelta: vi.fn<WorkspaceLifecycleStore["getAttemptRetryDelta"]>(async () => null),
+    listWorkspaceLeases: vi.fn<WorkspaceLifecycleStore["listWorkspaceLeases"]>(async () =>
+      durable.lease ? [durable.lease] : []
+    ),
     getWorkspaceLease: vi.fn<WorkspaceLifecycleStore["getWorkspaceLease"]>(
       async () => durable.lease
     ),

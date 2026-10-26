@@ -1004,6 +1004,8 @@ export class AgentWorkHeadlessSupervisor {
       expectedWorkerSessionRevision: session.revision,
       receipt,
     });
+    if (!submitted.submitted && submitted.reason === "removal_operation_pending")
+      return removalPendingResult(input, plan.attemptId, snapshot.attempt!.status);
     return {
       attemptId: plan.attemptId,
       action: plan.action,
@@ -1052,6 +1054,8 @@ export class AgentWorkHeadlessSupervisor {
         snapshot.attempt!.revision
       ),
     });
+    if (!result.recorded && result.reason === "removal_operation_pending")
+      return removalPendingResult(input, plan.attemptId, snapshot.attempt!.status);
     return {
       attemptId: plan.attemptId,
       action: plan.action,
@@ -1088,6 +1092,8 @@ export class AgentWorkHeadlessSupervisor {
       verificationId: verification.verificationId,
       verificationHash: verification.verificationHash,
     });
+    if (!result.applied && result.reason === "removal_operation_pending")
+      return removalPendingResult(input, plan.attemptId, snapshot.attempt!.status);
     return {
       attemptId: plan.attemptId,
       action: plan.action,
@@ -1203,6 +1209,8 @@ function mutationResult(
   result: Awaited<ReturnType<WorkspaceLifecycleStore["transitionAttempt"]>>,
   reason: string
 ): SupervisorAttemptResult {
+  if (!result.updated && result.reason === "removal_operation_pending")
+    return removalPendingResult(input, attemptId, "unknown");
   return {
     attemptId,
     action,
@@ -1220,6 +1228,8 @@ function workerMutationResult(
   plan: SupervisorAttemptPlan,
   result: Awaited<ReturnType<WorkerSessionStore["endWorkerSession"]>>
 ): SupervisorAttemptResult {
+  if (!result.updated && result.reason === "removal_operation_pending")
+    return removalPendingResult(input, plan.attemptId, "unknown");
   return {
     attemptId: plan.attemptId,
     action: plan.action,
@@ -1234,5 +1244,20 @@ function workerMutationResult(
           },
         }
       : {}),
+  };
+}
+
+function removalPendingResult(
+  input: { diagnostics: boolean },
+  attemptId: string,
+  status: SupervisorAttemptResult["status"]
+): SupervisorAttemptResult {
+  return {
+    attemptId,
+    action: "reconciliation_required",
+    outcome: "deferred",
+    status,
+    retryDeltaPresent: false,
+    ...(input.diagnostics ? { diagnostics: { reason: "removal_operation_pending" } } : {}),
   };
 }

@@ -951,7 +951,10 @@ function storeFailure(
   return {
     ok: false,
     phase,
-    reason: "store_rejected",
+    reason:
+      !result.updated && result.reason === "removal_operation_pending"
+        ? "reconciliation_required"
+        : "store_rejected",
     storeResult: result,
     quarantineAttempted: false,
   };

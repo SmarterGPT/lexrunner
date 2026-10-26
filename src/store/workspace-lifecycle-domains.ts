@@ -135,6 +135,7 @@ export const WorkspaceMutationFailureReason = z.enum([
   "retry_delta_required",
   "retry_delta_invalid",
   "fanout_invalid",
+  "removal_operation_pending",
 ]);
 export type WorkspaceMutationFailureReason = z.infer<typeof WorkspaceMutationFailureReason>;
 
