@@ -1,5 +1,13 @@
 # Windows helper signing qualification
 
+Distribution disposition (2026-10-25, America/Chicago): the Windows helper is a
+separate optional application, downloaded and installed explicitly by the user or
+an authorized agent. npm installs LexRunner only. Neither its dependencies,
+lifecycle scripts nor LexRunner commands acquire, install or update the helper.
+Runtime inspection may report an absent/incompatible installation; it must not
+turn that diagnosis into an automatic download or installation. The concrete
+application installer and protected launch profile still require qualification.
+
 The manual Windows helper signing workflow runs only from main. Its unsigned build
 job has no OIDC permission. After native tests, it transfers only the explicitly named
 win-x64 helper into the windows-release environment. That environment requires owner

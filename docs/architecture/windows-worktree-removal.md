@@ -454,9 +454,12 @@ serialize through the same SQLite writer transaction. If the lifecycle write com
 first, admission must satisfy the new revisions; if admission commits first, the
 lifecycle write fails with SQLite `removal_operation_pending` and the store transaction
 rolls back. The rejected mutation ID remains available. Selection replay with the
-same digest remains a read-only success. This internal opt-in error is not a new
-public lifecycle result variant; production adapters must handle it as a pending
-operation and recover rather than repeatedly retrying the mutation.
+same digest remains a read-only success. Lifecycle, worker-session, receipt and
+verification writes now translate this exact SQLite trigger into their existing
+failure result with reason `removal_operation_pending`, only after the complete
+transaction rolls back. Other SQLite errors still propagate. The coordinator
+reports reconciliation required; supervisor progression is deferred for recovery.
+Neither response retries a blocked write or releases its reservation.
 
 Fresh observations and other immutable evidence remain appendable. Controller
 renewal/takeover, run progress and unrelated reservations remain available. Recovery
@@ -466,9 +469,39 @@ replay still never dispatches. A resolved `contents_remaining` observation is no
 permission to reuse a partly removed workspace: reconciliation must use fresh
 physical evidence before any new execution or cleanup.
 
+Removal admission also checks worker sessions inside the same immediate writer
+transaction. A session in `starting`, `running`, `awaiting_human` or an unknown
+nonterminal state prevents first admission with `worker_session_not_terminal`.
+Heartbeat age alone does not establish that a worker stopped. If attachment commits
+first, its Attempt revision invalidates cached admission inputs, and fresh inputs
+still encounter the live-session check. If removal commits first, the existing
+Attempt trigger rolls back attachment, including the session, adapter binding,
+events and mutation ID. Replaying an old admission remains historical status only.
+
+An Attempt with an active verification authorization (`verifying`) similarly
+prevents first removal admission with `verification_in_progress`. Verification
+begin and removal admission share SQLite writer ordering: removal-first blocks
+authorization before engine commands run; verification-first prevents new removal
+until its result commits. Pending-result reporting is not by itself a durable
+pre-action hold. Older journals that already contain overlapping authorization
+still require executor quiescence and explicit recovery, not automatic replay.
+
+The same guards cover older unresolved journals that already overlap a live worker:
+failed/cancelled/lost termination cannot partially update the worker while its
+Attempt change is blocked. Session-only liveness or completed observations remain
+recordable; they do not change reservation identity or resolve removal. New removal
+admission excludes such live overlap. Recorded terminal worker metadata, including
+`lost`, is not physical executor-quiescence evidence. The native executor adapter
+must still establish cessation and effect exclusion before recovery or dispatch.
+
+The contention suite uses real independent SQLite connections and the lifecycle
+APIs with synthetic directory observations; no native process or deletion is
+launched. It verifies both writer orderings, rollback of receipt/verification
+evidence, recovery without consuming rejected mutation IDs, and legacy journal
+overlap. Native operation-lifetime and supported-host suites remain separate gates.
+
 These guards coordinate the existing store APIs; they are not protection from raw SQL
-schema changes or replacement of the database. Prior to production wiring, qualify
-worker/session concurrency and bind executor quiescence/exclusion to the guard's
-lifetime. This database API alone cannot establish physical
+schema changes or replacement of the database. Prior to production wiring, bind
+executor quiescence/exclusion to the guard's lifetime. This database API alone cannot establish physical
 custody, bind an authenticated helper, stop an OS call, or authorize a protected
 native mutation.

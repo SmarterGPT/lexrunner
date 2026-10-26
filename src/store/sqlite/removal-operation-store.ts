@@ -3,6 +3,7 @@ import { SqliteRemovalEvidenceStore } from "./removal-evidence-store.js";
 import type { SqliteCoordinationStoreOptions } from "./coordination-store.js";
 import { credentialFailureReason, type ControllerLease } from "../coordination-store.js";
 import type { AttemptRecord, WorkspaceLifecycleLeaseRecord } from "../workspace-lifecycle-store.js";
+import { EndWorkerSessionStatus } from "../workspace-lifecycle-domains.js";
 import {
   assessReservedRemovalRecovery,
   parseRemovalIntentBytes,
@@ -221,6 +222,21 @@ export class SqliteRemovalOperationStore extends SqliteRemovalEvidenceStore {
       )
         return rejected("reservation_owner_changed");
       if (bound.assessment.state === "absence_observed") return rejected("already_absent");
+      // Verification authorization advances the Attempt in this same writer
+      // ordering, and remains active until its engine result is committed.
+      if (bound.attempt.status === "verifying") return rejected("verification_in_progress");
+      // Admission and worker attachment share the SQLite writer ordering. A live
+      // session cannot become a cleanup target merely because its heartbeat is old.
+      // Terminal metadata still does not establish native executor quiescence.
+      if (
+        this.db
+          .prepare(
+            `SELECT 1 FROM worker_sessions WHERE workspaceLeaseId=?
+             AND status NOT IN (${EndWorkerSessionStatus.options.map(() => "?").join(",")}) LIMIT 1`
+          )
+          .get(intent.lease_id, ...EndWorkerSessionStatus.options)
+      )
+        return rejected("worker_session_not_terminal");
       if (
         this.db
           .prepare(
@@ -355,10 +371,11 @@ export class SqliteRemovalOperationStore extends SqliteRemovalEvidenceStore {
     const attempt = this.db
       .prepare(
         `SELECT attemptId,runId,runRevision,workItemId,workItemRevision,packetId,packetHash,
-        baseSha,workspaceLeaseId,revision,updatedAt FROM attempts WHERE attemptId=?`
+        baseSha,workspaceLeaseId,revision,status,updatedAt FROM attempts WHERE attemptId=?`
       )
       .get(intent.attempt_id) as
-      (RemovalReservationAttempt & Pick<AttemptRecord, "revision" | "updatedAt">) | undefined;
+      | (RemovalReservationAttempt & Pick<AttemptRecord, "revision" | "status" | "updatedAt">)
+      | undefined;
     const lease = this.db
       .prepare(
         `SELECT attemptId,runId,runRevision,workItemId,workItemRevision,packetId,packetHash,

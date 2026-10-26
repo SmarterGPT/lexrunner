@@ -1950,7 +1950,7 @@ export class SqliteWorkspaceLifecycleStore
     if (!parsed.success) return this.receiptFailure("evidence_mismatch");
     const receiptJson = canonicalJSONStringify(parsed.data);
     const receiptHash = computeCanonicalHash(parsed.data);
-    return this.immediateTransaction(() => {
+    const transaction = (): AttemptReceiptSubmissionResult => {
       const coordination = this.db
         .prepare(
           `SELECT revision, controllerId, leaseId, fencingToken, expiresAt
@@ -2084,7 +2084,10 @@ export class SqliteWorkspaceLifecycleStore
       const result = this.submitNewReceipt(input, parsed.data, receiptJson, receiptHash);
       if (result.submitted) this.storeReceiptMutation(input, fingerprint, result);
       return result;
-    });
+    };
+    return this.withRemovalInterlock(transaction, () =>
+      this.receiptFailure("removal_operation_pending")
+    );
   }
 
   async getAttemptReceipt(receiptId: string): Promise<AttemptReceiptRecord | null> {
@@ -2119,7 +2122,7 @@ export class SqliteWorkspaceLifecycleStore
     if (input.controller.runId !== input.runId) {
       return this.verificationBeginFailure("lease_mismatch");
     }
-    return this.immediateTransaction(() => {
+    const transaction = (): AttemptVerificationBeginResult => {
       const coordination = this.db
         .prepare(
           `SELECT revision, controllerId, leaseId, fencingToken, expiresAt
@@ -2302,7 +2305,10 @@ export class SqliteWorkspaceLifecycleStore
         )
         .run(input.runId, input.mutationId, fingerprint, json(result));
       return result;
-    });
+    };
+    return this.withRemovalInterlock(transaction, () =>
+      this.verificationBeginFailure("removal_operation_pending")
+    );
   }
 
   async submitAttemptVerification(
@@ -2319,7 +2325,7 @@ export class SqliteWorkspaceLifecycleStore
       return this.verificationFailure("evidence_mismatch");
     }
     const verificationHash = computeCanonicalHash(parsed.data);
-    return this.immediateTransaction(() => {
+    const transaction = (): AttemptVerificationSubmissionResult => {
       const coordination = this.db
         .prepare(
           `SELECT revision, controllerId, leaseId, fencingToken, expiresAt
@@ -2446,7 +2452,10 @@ export class SqliteWorkspaceLifecycleStore
       );
       if (result.recorded) this.storeVerificationMutation(input, fingerprint, result);
       return result;
-    });
+    };
+    return this.withRemovalInterlock(transaction, () =>
+      this.verificationFailure("removal_operation_pending")
+    );
   }
 
   async getAttemptVerification(verificationId: string): Promise<AttemptVerificationRecord | null> {
@@ -3164,13 +3173,30 @@ export class SqliteWorkspaceLifecycleStore
     return row ? parseVerificationMutationSuccess(row.resultJson) : null;
   }
 
+  /** Convert only the opt-in removal trigger, after SQLite has rolled back the
+   * whole transaction. Other storage errors retain their original failure. */
+  private withRemovalInterlock<T>(transaction: () => T, onPending: () => T): T {
+    try {
+      return this.immediateTransaction(transaction);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "SQLITE_CONSTRAINT_TRIGGER" &&
+        error.message === "removal_operation_pending"
+      )
+        return onPending();
+      throw error;
+    }
+  }
+
   private mutateWorker(
     input: AttachWorkerSessionInput | HeartbeatWorkerSessionInput | EndWorkerSessionInput,
     action: () => WorkerSessionMutationResult
   ): WorkerSessionMutationResult {
     if (!Number.isFinite(Date.parse(input.now))) return this.workerFailure("invalid_time");
     if (input.controller.runId !== input.runId) return this.workerFailure("lease_mismatch");
-    return this.immediateTransaction(() => {
+    const transaction = (): WorkerSessionMutationResult => {
       const coordination = this.db
         .prepare(
           `SELECT revision, controllerId, leaseId, fencingToken, expiresAt
@@ -3259,7 +3285,10 @@ export class SqliteWorkspaceLifecycleStore
           .run(input.runId, input.mutationId, fingerprint, json(result));
       }
       return result;
-    });
+    };
+    return this.withRemovalInterlock(transaction, () =>
+      this.workerFailure("removal_operation_pending")
+    );
   }
 
   private validateWorkerBinding(
@@ -3422,7 +3451,7 @@ export class SqliteWorkspaceLifecycleStore
   ): WorkspaceMutationResult {
     if (!Number.isFinite(Date.parse(input.now))) return this.failure("invalid_time");
     if (input.controller.runId !== input.runId) return this.failure("lease_mismatch");
-    return this.immediateTransaction(() => {
+    const transaction = (): WorkspaceMutationResult => {
       const coordination = this.db
         .prepare(
           `SELECT revision, controllerId, leaseId, fencingToken, expiresAt FROM run_coordination WHERE runId = ?`
@@ -3496,7 +3525,8 @@ export class SqliteWorkspaceLifecycleStore
           .run(input.runId, input.mutationId, fingerprint, json(result));
       }
       return result;
-    });
+    };
+    return this.withRemovalInterlock(transaction, () => this.failure("removal_operation_pending"));
   }
 
   private mutateWorkspace(
