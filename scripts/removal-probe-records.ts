@@ -65,3 +65,20 @@ export function probeObservation(intentDigest: string, state: ProbeSnapshot) {
 export function probePreservationDigest(initial: ProbeSnapshot) {
   return computeCanonicalHash({ profile: "disposable-known-files-fixture", initial });
 }
+
+/** Development logical clock only. Native snapshots and Node wall time can differ;
+ * replacement cases also deliberately advance the journal clock. Never alter the
+ * observed timestamp or use this helper in production evidence verification.
+ */
+export function probeOperationTime(input: {
+  wallTime: string;
+  observedAt: string;
+  journalUpdatedAt: string;
+  leaseRenewedAt: string;
+}) {
+  const times = Object.values(input).map((time) => {
+    z.string().datetime({ offset: true }).parse(time);
+    return Date.parse(time);
+  });
+  return new Date(Math.max(...times)).toISOString();
+}

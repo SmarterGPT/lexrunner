@@ -3,10 +3,12 @@ import { verifyRemovalProbeEvidence } from "../../scripts/verify-removal-probe-e
 import {
   probeIntent,
   probeObservation,
+  probeOperationTime,
   probePreservationDigest,
   removalProbeSnapshot,
 } from "../../scripts/removal-probe-records.js";
 import { canonicalJSONStringify } from "../../src/util/canonicalJson.js";
+import { assessRemovalRecovery } from "../../src/workspaces/workspace-removal-evidence.js";
 
 function fixture() {
   const identity = { path: "fixture", volume: "1", fileId: "2", filesystem: "fixture" };
@@ -43,6 +45,45 @@ function fixture() {
 }
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value));
 describe("development removal probe evidence ingestion", () => {
+  it("keeps a fresh native snapshot ahead of Node wall time unchanged while choosing fixture operation time", () => {
+    const initial = removalProbeSnapshot.parse(fixture().worktreeEvidence[0].snapshots[0]);
+    const intent = probeIntent("clock", initial, probePreservationDigest(initial));
+    const observation = probeObservation(intent.intent_digest, {
+      ...initial,
+      at: "2026-09-16T00:00:01.0020000Z",
+    });
+    const evidence = {
+      intentBytes: canonicalJSONStringify(intent),
+      observationBytes: canonicalJSONStringify(observation),
+      expectedIntentDigest: intent.intent_digest,
+      expectedObservationDigest: observation.observation_digest,
+      maxObservationAgeMs: 180_000,
+    };
+    const clock = {
+      wallTime: "2026-09-16T00:00:01.000Z",
+      observedAt: observation.observed_at,
+      journalUpdatedAt: initial.at,
+      leaseRenewedAt: initial.at,
+    };
+    expect(assessRemovalRecovery({ ...evidence, now: clock.wallTime }).reason).toBe(
+      "evidence_time_invalid"
+    );
+    expect(assessRemovalRecovery({ ...evidence, now: probeOperationTime(clock) })).toEqual({
+      state: "contents_remaining",
+      reason: "original_root_has_contents",
+      authorizesMutation: false,
+    });
+    const replacedClock = { ...clock, leaseRenewedAt: "2026-09-16T00:02:00Z" };
+    expect(probeOperationTime(replacedClock)).toBe("2026-09-16T00:02:00.000Z");
+    expect(
+      assessRemovalRecovery({ ...evidence, now: probeOperationTime(replacedClock) }).state
+    ).toBe("contents_remaining");
+    // Production also refuses stale evidence; only fixture input time changes.
+    expect(assessRemovalRecovery({ ...evidence, now: "2026-09-16T00:04:00Z" }).reason).toBe(
+      "evidence_time_invalid"
+    );
+    expect(observation.observed_at).toBe("2026-09-16T00:00:01.0020000Z");
+  });
   it("verifies pre-mutation checkpoint bindings without treating them as authenticated evidence", async () => {
     const report = fixture();
     const items = report.worktreeEvidence.map((item) => {
