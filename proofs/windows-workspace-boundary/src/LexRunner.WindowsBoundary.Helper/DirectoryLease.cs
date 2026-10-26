@@ -23,34 +23,52 @@ internal sealed class DirectoryLease : IDisposable
         path[1] != ':' || path[2] != '\\' || path.Contains('/') || path.Contains('\0'))
       throw new InvalidDataException();
     var tail = path.Length == 3 ? Array.Empty<string>() : path[3..].Split('\\');
-    if (tail.Length > 32 || tail.Any(p => p.Length == 0 || p is "." or ".." ||
-        p.EndsWith(' ') || p.EndsWith('.') || p.Any(c => c < 32 || "<>:\"|?*".Contains(c))))
-      throw new InvalidDataException();
+    if (tail.Length > 32) throw new InvalidDataException();
+    foreach (var component in tail) ValidateComponent(component);
     var lease = new DirectoryLease();
     try
     {
       var current = path[..3];
-      lease.Open(current);
+      // Reject per-session DOS aliases before selecting the global drive root.
+      // All subsequent lookup/effect work uses held objects, not the DOS map.
+      var ordinary = CreateFileW(current, 0x81, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+      try
+      {
+        if (ordinary.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        lease.Own(CreateFileW(GlobalPath(current), 0x81, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero), current);
+        if (Capture(ordinary) != lease.Leaf) throw new InvalidDataException("Unsupported DOS drive alias");
+      }
+      finally
+      {
+        var valid = !ordinary.IsInvalid;
+        ordinary.Dispose();
+        if (valid && ordinary.ReleaseSucceeded != true) throw new IOException("Native handle release uncertain");
+      }
       foreach (var component in tail)
       {
         current = System.IO.Path.Combine(current, component);
-        lease.Open(current);
+        lease.Own(NativeRelativeFiles.OpenCapabilityDirectory(lease.LeafHandle, component, false), current);
       }
       return lease;
     }
     catch { lease.Dispose(); throw; }
   }
 
-  private void Open(string path)
+  private void Own(DirectoryHandle handle, string path)
   {
-    // LIST_DIRECTORY | READ_ATTRIBUTES, share read/write but not delete.
-    var handle = CreateFileW(path, 0x81, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
     handles.Add(handle);
     if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
     var identity = Capture(handle);
     if (!string.Equals(identity.Path, path, StringComparison.OrdinalIgnoreCase))
       throw new InvalidDataException();
     identities.Add(identity);
+  }
+
+  internal static string GlobalPath(string path)
+  {
+    if (path.Length < 3 || !char.IsAsciiLetter(path[0]) || path[1] != ':' || path[2] != '\\' || path.Contains('\0'))
+      throw new InvalidDataException("Unsupported native process path");
+    return "\\\\.\\GLOBALROOT\\GLOBAL??\\" + path;
   }
 
   internal void AssertCurrent()
@@ -67,14 +85,27 @@ internal sealed class DirectoryLease : IDisposable
     var path = System.IO.Path.Combine(Leaf.Path, component);
     // Validate the complete profile before a potentially effectful creation.
     if (path.Length > 1024 || identities.Count >= 33) throw new InvalidDataException();
-    if (create && !CreateDirectoryW(path, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
-    DirectoryLease? child = null;
+    var child = new DirectoryLease();
     try
     {
-      try { child = Acquire(path); }
+      // Children own independent copies; closing this parent cannot invalidate
+      // an acquired child. Allocate/copy before any potentially effectful create.
+      foreach (var handle in handles)
+      {
+        if (!DuplicateHandle((IntPtr)(-1), handle, (IntPtr)(-1), out var copy, 0, false, 2))
+        {
+          var error = Marshal.GetLastWin32Error();
+          copy?.Dispose();
+          throw new Win32Exception(error);
+        }
+        child.handles.Add(copy); child.identities.Add(Capture(copy));
+      }
+      AssertCurrent();
+      try { child.Own(NativeRelativeFiles.OpenCapabilityDirectory(LeafHandle, component, create), path); }
       catch (Win32Exception error) when (allowMissing && error.NativeErrorCode is 2 or 3)
       {
         AssertCurrent();
+        child.Dispose();
         return null;
       }
       AssertCurrent();
@@ -82,7 +113,7 @@ internal sealed class DirectoryLease : IDisposable
           !child.identities.Take(identities.Count).SequenceEqual(identities)) throw new InvalidDataException();
       return child;
     }
-    catch { child?.Dispose(); throw; }
+    catch { child.Dispose(); throw; }
   }
 
   internal static void ValidateComponent(string component)
@@ -90,6 +121,13 @@ internal sealed class DirectoryLease : IDisposable
     if (component.Length is 0 or > 255 || component is "." or ".." ||
         component.EndsWith(' ') || component.EndsWith('.') ||
         component.Any(c => c < 32 || "<>:\"/\\|?*".Contains(c))) throw new InvalidDataException();
+    // Keep the supported profile independent of Win32 versus NT device-name
+    // interpretation. An NT-relative open must not silently add DOS devices.
+    var stem = component.Split('.')[0].TrimEnd(' ').ToUpperInvariant();
+    if (stem is "CON" or "PRN" or "AUX" or "NUL" or "CONIN$" or "CONOUT$" ||
+        (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.Ordinal) ||
+          stem.StartsWith("LPT", StringComparison.Ordinal)) && "123456789¹²³".Contains(stem[3])))
+      throw new InvalidDataException("Reserved DOS device name");
   }
 
   internal sealed record FileObservation(Identity Identity, byte[] Content);
@@ -102,7 +140,7 @@ internal sealed class DirectoryLease : IDisposable
     var path = System.IO.Path.Combine(Leaf.Path, component);
     if (path.Length > 1024) throw new InvalidDataException();
     // Synchronous read, no reparse following, read sharing only (no write/delete).
-    var file = CreateFileW(path, 0x80000000, 1, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+    var file = NativeRelativeFiles.OpenCapabilityFile(LeafHandle, component, false);
     try
     {
       if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -144,7 +182,7 @@ internal sealed class DirectoryLease : IDisposable
     var path = System.IO.Path.Combine(Leaf.Path, component);
     if (path.Length > 1024) throw new InvalidDataException();
     // CREATE_NEW, read/write access, no sharing. Never truncate an existing target.
-    var file = CreateFileW(path, 0xc0000000, 0, IntPtr.Zero, 1, 0x00200080, IntPtr.Zero);
+    var file = NativeRelativeFiles.OpenCapabilityFile(LeafHandle, component, true);
     try
     {
       if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -255,9 +293,10 @@ internal sealed class DirectoryLease : IDisposable
   [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)]
   private static extern bool CloseHandle(IntPtr handle);
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)]
-  private static extern bool CreateDirectoryW(string path, IntPtr security);
+  private static extern bool DuplicateHandle(IntPtr process, DirectoryHandle source, IntPtr targetProcess,
+      out DirectoryHandle target, uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint options);
   [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
   private static extern uint GetFileType(DirectoryHandle handle);
   [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]

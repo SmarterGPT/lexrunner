@@ -116,6 +116,7 @@ internal static class Program
         Check(!owner.Released && owner.ReleaseUncertain);
         Check(File.ReadAllText(Path.Combine(path, "file")) == "preserve");
       });
+      CapabilityIoProbe.Run(root, results);
       TreeRemovalProbe.Run(root, args.Length >= 2 ? args[1] : null, results);
       if (args.Length >= 2)
       {
