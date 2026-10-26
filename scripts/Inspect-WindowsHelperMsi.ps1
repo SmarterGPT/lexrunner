@@ -109,7 +109,10 @@ try {
     }
     $properties = @{}
     foreach ($row in @(Query 'SELECT `Property`,`Value` FROM `Property`')) { $properties[$row[0]] = $row[1] }
+    $propertyNames = @('ProductCode','ProductName','ProductVersion','Manufacturer','ProductLanguage','ALLUSERS','INSTALLLEVEL','ARPNOMODIFY','ARPNOREPAIR','SecureCustomProperties')
+    Require ($properties.Count -eq $propertyNames.Count -and @($properties.Keys | Where-Object { $_ -notin $propertyNames }).Count -eq 0 -and $properties['INSTALLLEVEL'] -ceq '1' -and $properties['SecureCustomProperties'] -ceq 'EXISTINGGENERATION') 'Unexpected installer property surface'
     Require ($properties['ALLUSERS'] -eq '1' -and $properties['ARPNOMODIFY'] -eq '1' -and $properties['ARPNOREPAIR'] -eq '1') 'Unexpected install/repair scope'
+    Require ($properties['ProductCode'] -match '^\{[0-9A-F-]{36}\}$' -and $properties['ProductName'] -ceq 'LexRunner Windows helper qualification' -and $properties['Manufacturer'] -ceq 'SmarterGPT' -and $properties['ProductLanguage'] -ceq '1033' -and $properties['ProductVersion'] -match '^\d+\.\d+\.\d+$') 'Unexpected product identity'
     $files = @(Query 'SELECT `File`,`Component_`,`FileName` FROM `File`')
     Require ($files.Count -eq 3 -and @($files | Where-Object { $_[0] -notin @('HelperImage', 'GenerationManifest', 'InstalledMarker') }).Count -eq 0) 'Unexpected MSI file payload'
     $expectedFiles = @{ HelperImage = @('RetainedHelperImage','LEXRUN~1.EXE|lexrunner-windows-boundary-helper.exe'); GenerationManifest = @('RetainedGenerationManifest','GENERA~1.JSO|generation.json'); InstalledMarker = @('InstallationMarker','INSTAL~1.JSO|installed.json') }
@@ -129,16 +132,33 @@ try {
         $expected = $componentBindings[$row[0]]
         Require ($row[1] -ceq $expected[0] -and $row[2] -ceq $expected[1] -and $row[3] -ceq '' -and $row[4] -ceq $expected[2] -and $row[5] -match '^\{[0-9A-F-]{36}\}$') 'Unexpected component binding or condition'
     }
+    $feature = @(Query 'SELECT `Feature`,`Feature_Parent`,`Level`,`Directory_`,`Attributes` FROM `Feature`')
+    Require ($feature.Count -eq 1 -and $feature[0][0] -ceq 'Helper' -and $feature[0][1] -ceq '' -and $feature[0][2] -ceq '1' -and $feature[0][3] -ceq 'HelperGenerationRoot' -and $feature[0][4] -ceq '0') 'Unexpected feature selection'
     $features = @(Query 'SELECT `Feature_`,`Component_` FROM `FeatureComponents`')
     Require ($features.Count -eq 7 -and @($features | Where-Object { $_[0] -cne 'Helper' -or $_[1] -notin $componentBindings.Keys }).Count -eq 0) 'Unexpected feature component binding'
     $registry = @(Query 'SELECT `Root`,`Key`,`Name`,`Value` FROM `Registry`')
     $registryRoot = 'Software\SmarterGPT.LexRunner.WindowsHelper'
     Require ($registry.Count -eq 6 -and @($registry | Where-Object { $_[0] -ne '2' -or ($_[1] -cne $registryRoot -and -not $_[1].StartsWith($registryRoot + '\', [StringComparison]::Ordinal)) -or $_[2] -notin @('+','ManifestDigest','State','ProductCode') }).Count -eq 0) 'Unexpected registry scope or activation'
     Require (@($registry | Where-Object { $_[2] -eq 'ManifestDigest' -and $_[3] -ceq $ExpectedManifestDigest -and $_[1].EndsWith($ExpectedGeneration) }).Count -eq 1) 'Generation catalog mismatch'
+    $generationKey = $registryRoot + '\Generations\' + $ExpectedGeneration
+    $registryBindings = @{ CatalogRoot = @($registryRoot,'+',''); CatalogGenerations = @(($registryRoot + '\Generations'),'+',''); CatalogGeneration = @($generationKey,'+',''); ManifestDigest = @($generationKey,'ManifestDigest',$ExpectedManifestDigest); GenerationState = @($generationKey,'State','provisioned-unqualified'); GenerationProduct = @($generationKey,'ProductCode','[ProductCode]') }
+    foreach ($row in @(Query 'SELECT `Registry`,`Root`,`Key`,`Name`,`Value`,`Component_` FROM `Registry`')) {
+        Require ($registryBindings.ContainsKey($row[0])) 'Unexpected registry resource'
+        $expected = $registryBindings[$row[0]]
+        Require ($row[1] -ceq '2' -and $row[2] -ceq $expected[0] -and $row[3] -ceq $expected[1] -and $row[4] -ceq $expected[2] -and $row[5] -ceq 'RetainedGenerationCatalog') 'Unexpected registry resource binding'
+    }
+    $search = @(Query 'SELECT `Property`,`Signature_` FROM `AppSearch`')
+    Require ($search.Count -eq 1 -and $search[0][0] -ceq 'EXISTINGGENERATION' -and $search[0][1] -ceq 'ExistingGeneration') 'Generation discovery property binding missing'
+    $locator = @(Query 'SELECT `Signature_`,`Root`,`Key`,`Name`,`Type` FROM `RegLocator`')
+    Require ($locator.Count -eq 1 -and $locator[0][0] -ceq 'ExistingGeneration' -and $locator[0][1] -ceq '2' -and $locator[0][2] -ceq $generationKey -and $locator[0][3] -ceq 'ManifestDigest' -and $locator[0][4] -ceq '18') 'Generation discovery must read the exact x64 HKLM catalog value'
     $directories = @(Query 'SELECT `Directory`,`Directory_Parent`,`DefaultDir` FROM `Directory`')
     $expectedDirectories = @{ TARGETDIR = @('','SourceDir'); ProgramFiles64Folder = @('TARGETDIR','.'); HelperApplicationRoot = @('ProgramFiles64Folder','LEXRUN~1|SmarterGPT.LexRunner.WindowsHelper'); HelperGenerationsRoot = @('HelperApplicationRoot','GENERA~1|generations'); HelperGenerationRoot = @('HelperGenerationsRoot',('G' + $ExpectedGeneration.Substring(0,7) + '|' + $ExpectedGeneration)) }
     Require ($directories.Count -eq 5) 'Unexpected directory surface'
     foreach ($directory in $directories) { Require ($expectedDirectories.ContainsKey($directory[0]) -and $directory[1] -ceq $expectedDirectories[$directory[0]][0] -and $directory[2] -ceq $expectedDirectories[$directory[0]][1]) 'Generation directory mismatch' }
+    $folders = @(Query 'SELECT `Directory_`,`Component_` FROM `CreateFolder`')
+    $folderBindings = @{ HelperApplicationRoot='ProtectApplicationRoot'; HelperGenerationsRoot='ProtectGenerationsRoot'; HelperGenerationRoot='ProtectGenerationRoot' }
+    Require ($folders.Count -eq 3) 'Required protected folder creation missing'
+    foreach ($row in $folders) { Require ($folderBindings.ContainsKey($row[0]) -and $row[1] -ceq $folderBindings[$row[0]]) 'Unexpected protected folder binding' }
     $permissions = @(Query 'SELECT `MsiLockPermissionsEx`,`LockObject`,`Table`,`SDDLText`,`Condition` FROM `MsiLockPermissionsEx`')
     $directorySddl = 'O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'
     $fileSddl = 'O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;BU)'
@@ -150,8 +170,8 @@ try {
         $expected = $permissionBindings[$row[0]]
         Require ($row[1] -ceq $expected[0] -and $row[2] -ceq $expected[1] -and $row[3] -ceq $expected[2] -and $row[4] -ceq '') 'Unexpected authored ownership/permissions or condition'
     }
-    $media = @(Query 'SELECT `Cabinet` FROM `Media`')
-    Require ($media.Count -eq 1 -and $media[0][0] -ceq '#payload.cab') 'Payload must use the single expected embedded cabinet'
+    $media = @(Query 'SELECT `Cabinet`,`DiskId`,`LastSequence`,`DiskPrompt`,`VolumeLabel`,`Source` FROM `Media`')
+    Require ($media.Count -eq 1 -and $media[0][0] -ceq '#payload.cab' -and $media[0][1] -ceq '1' -and $media[0][2] -ceq '3' -and $media[0][3] -ceq '' -and $media[0][4] -ceq '' -and $media[0][5] -ceq '') 'Payload must use the single expected embedded cabinet'
     $conditions = @(Query 'SELECT `Condition` FROM `LaunchCondition`')
     Require (@($conditions | Where-Object { $_[0] -eq 'NOT Installed OR REMOVE = "ALL"' }).Count -eq 1) 'In-place repair refusal missing'
     Require (@($conditions | Where-Object { $_[0] -eq 'Installed OR NOT EXISTINGGENERATION' }).Count -eq 1) 'Generation overwrite refusal missing'
@@ -167,6 +187,17 @@ try {
     Require (-not (Test-Path -LiteralPath $extracted)) 'Extraction output already exists'
     New-Item -ItemType Directory -Path $extracted | Out-Null
     [LexRunnerMsiReadV1]::ExtractPayload($artifact, $extracted)
+    $fileSequences = @{ HelperImage=1; GenerationManifest=2; InstalledMarker=3 }
+    foreach ($row in @(Query 'SELECT `File`,`FileSize`,`Attributes`,`Sequence`,`Version`,`Language` FROM `File`')) {
+        Require ([long]$row[1] -eq (Get-Item -LiteralPath (Join-Path $extracted $row[0])).Length -and $row[2] -ceq '512' -and [int]$row[3] -eq $fileSequences[$row[0]] -and $row[4] -ceq '' -and $row[5] -ceq '') 'Unexpected file install metadata'
+    }
+    # MSI's MD5 metadata supports unversioned-file installation behavior only;
+    # full SHA256 below remains the selected payload identity, not this hash.
+    foreach ($row in @(Query 'SELECT `File_`,`Options`,`HashPart1`,`HashPart2`,`HashPart3`,`HashPart4` FROM `MsiFileHash`')) {
+        $bytes = [Convert]::FromHexString((Get-FileHash -LiteralPath (Join-Path $extracted $row[0]) -Algorithm MD5).Hash)
+        Require ($row[1] -ceq '0') 'Unexpected installer hash options'
+        foreach ($index in 0..3) { Require ([int]$row[$index + 2] -eq [BitConverter]::ToInt32($bytes,$index * 4)) 'Installer file hash metadata mismatch' }
+    }
     Require ((Get-FileHash -LiteralPath (Join-Path $extracted 'HelperImage') -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $ExpectedGeneration) 'Embedded helper digest mismatch'
     Require ((Get-FileHash -LiteralPath (Join-Path $extracted 'GenerationManifest') -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $ExpectedManifestDigest) 'Embedded manifest digest mismatch'
     $marker = Get-Content -LiteralPath (Join-Path $extracted 'InstalledMarker') -Raw | ConvertFrom-Json

@@ -72,6 +72,15 @@ public static class LexRunnerMsiFixtureMutation {
         'permission-condition' = 'UPDATE `MsiLockPermissionsEx` SET `Condition`=''0'' WHERE `MsiLockPermissionsEx`=''HelperImage'''
         'permission-rights' = 'UPDATE `MsiLockPermissionsEx` SET `SDDLText`=''O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;BU)'' WHERE `MsiLockPermissionsEx`=''HelperImage'''
         'action-sequence' = 'UPDATE `InstallExecuteSequence` SET `Sequence`=3900 WHERE `Action`=''CreateFolders'''
+        'search-binding' = 'DELETE FROM `AppSearch`'
+        'locator-key' = 'UPDATE `RegLocator` SET `Key`=''Software\SmarterGPT.LexRunner.WindowsHelper\NeverProvisioned'' WHERE `Signature_`=''ExistingGeneration'''
+        'locator-view' = 'UPDATE `RegLocator` SET `Type`=2 WHERE `Signature_`=''ExistingGeneration'''
+        'catalog-component' = 'UPDATE `Registry` SET `Component_`=''InstallationMarker'' WHERE `Registry`=''GenerationState'''
+        'folder-missing' = 'DELETE FROM `CreateFolder` WHERE `Directory_`=''HelperApplicationRoot'''
+        'feature-disabled' = 'UPDATE `Feature` SET `Level`=0 WHERE `Feature`=''Helper'''
+        'file-optional' = 'UPDATE `File` SET `Attributes`=0 WHERE `File`=''HelperImage'''
+        'file-hash' = 'UPDATE `MsiFileHash` SET `HashPart1`=0 WHERE `File_`=''HelperImage'''
+        'media-range' = 'UPDATE `Media` SET `LastSequence`=2 WHERE `DiskId`=1'
     }
     foreach ($item in $mutations.GetEnumerator()) {
         $copy = Join-Path $root ($item.Key + '.msi'); Copy-Item -LiteralPath $msi -Destination $copy
