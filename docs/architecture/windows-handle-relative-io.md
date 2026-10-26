@@ -4,7 +4,9 @@ This #997 qualification delta changes the development helper's directory and fil
 operations. It does not activate the production resolver or qualify process launch.
 
 `DirectoryLease.Acquire` compares an ordinary drive-root handle with the OS global
-drive-root handle and rejects a different DOS alias. It retains the global root and
+drive-root handle and rejects a different DOS alias. The latter open uses the
+native absolute `\GLOBAL??\<drive>:\` object name, independent of a DOS alias
+named `GLOBALROOT`. It retains the global root and
 opens each remaining component relative to its already-held parent. The supported
 input remains an absolute local drive path on the qualified NTFS/ReFS profile;
 caller device paths, UNC paths and reserved DOS device components are rejected.
@@ -24,7 +26,7 @@ check. Relative lookup either addresses the retained directory object or refuses
 it must not create or read through the newly attached junction. A failed final
 assertion remains a failed/unknown operation, not an instruction to repeat creation.
 
-`RemovalLeaseProbe` adds seven actual native cases to the existing qualification
+`RemovalLeaseProbe` adds eight actual native cases to the existing qualification
 entrypoint, `proofs/windows-workspace-boundary/verify-removal.ps1`:
 
 - Independent child retention, read/create and preservation of an existing file.
@@ -32,6 +34,8 @@ entrypoint, `proofs/windows-workspace-boundary/verify-removal.ps1`:
 - Reserved DOS device-name refusal before creation.
 - Rejection of a process-private drive alias, with successful retained-handle I/O
   after the process's drive map changes.
+- Successful native root acquisition despite a spoofed process-private Win32
+  `GLOBALROOT` alias, with the ordinary drive still correct.
 - Three junction-race cases for child creation, file creation and file reads,
   each paired with an ordinary pathname control that reaches an outside canary.
 

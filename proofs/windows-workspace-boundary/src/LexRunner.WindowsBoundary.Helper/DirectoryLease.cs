@@ -35,7 +35,7 @@ internal sealed class DirectoryLease : IDisposable
       try
       {
         if (ordinary.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-        lease.Own(CreateFileW(GlobalPath(current), 0x81, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero), current);
+        lease.Own(NativeRelativeFiles.OpenGlobalDriveRoot(current), current);
         if (Capture(ordinary) != lease.Leaf) throw new InvalidDataException("Unsupported DOS drive alias");
       }
       finally
@@ -62,13 +62,6 @@ internal sealed class DirectoryLease : IDisposable
     if (!string.Equals(identity.Path, path, StringComparison.OrdinalIgnoreCase))
       throw new InvalidDataException();
     identities.Add(identity);
-  }
-
-  internal static string GlobalPath(string path)
-  {
-    if (path.Length < 3 || !char.IsAsciiLetter(path[0]) || path[1] != ':' || path[2] != '\\' || path.Contains('\0'))
-      throw new InvalidDataException("Unsupported native process path");
-    return "\\\\.\\GLOBALROOT\\GLOBAL??\\" + path;
   }
 
   internal void AssertCurrent()

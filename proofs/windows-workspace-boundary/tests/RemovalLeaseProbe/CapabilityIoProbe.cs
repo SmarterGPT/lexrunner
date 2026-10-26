@@ -70,6 +70,17 @@ internal static class CapabilityIoProbe
       Check(File.Exists(Path.Combine(path, "retained-file")) && Directory.Exists(Path.Combine(path, "retained-child")));
       Check(Directory.EnumerateFileSystemEntries(outside).Count() == 1);
     });
+    Test("process-private-globalroot-spoof", path => {
+      PrivateDriveProbe.WithAlias(path[..2], path[..3], () => {
+        // The ordinary drive is correct, but the Win32 GLOBALROOT alias is
+        // adversarial. Acquisition must use the absolute native OS namespace.
+        Check(!Directory.Exists(@"\\.\GLOBALROOT\GLOBAL??\" + path));
+        using var lease = DirectoryLease.Acquire(path);
+        lease.CreateBoundedFile("native-root-file", [6]);
+        Check(lease.ReadBoundedFile("native-root-file", 1).Content.SequenceEqual(new byte[] { 6 }));
+      }, spoofGlobalRoot: true);
+      Check(File.ReadAllBytes(Path.Combine(path, "native-root-file")).SequenceEqual(new byte[] { 6 }));
+    });
     foreach (var operation in new[] { "directory", "create-file", "read-file" })
       Test("reparse-race-" + operation, path => {
         var outside = path + "-outside"; Directory.CreateDirectory(outside);

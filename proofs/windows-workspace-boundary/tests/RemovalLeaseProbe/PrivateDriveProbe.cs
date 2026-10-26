@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 // modifies shared/session/global DOS names or calls DefineDosDevice.
 internal static class PrivateDriveProbe
 {
-  internal static void WithAlias(string drive, string target, Action body)
+  internal static void WithAlias(string drive, string target, Action body, bool spoofGlobalRoot = false)
   {
     var owned = new List<IntPtr>(); var switched = false; var original = IntPtr.Zero;
     try
@@ -17,7 +17,7 @@ internal static class PrivateDriveProbe
       Check(NtCreateDirectoryObject(out var directory, 0xf000f, ref anonymous)); owned.Add(directory);
       var selected = directory;
       Check(NtSetInformationProcess((IntPtr)(-1), 23, ref selected, (uint)IntPtr.Size)); switched = true;
-      owned.Add(Link(directory, "GLOBALROOT", @"\"));
+      owned.Add(Link(directory, "GLOBALROOT", spoofGlobalRoot ? @"\Device\Null" : @"\"));
       owned.Add(Link(directory, drive, @"\GLOBAL??\" + target));
       body();
     }

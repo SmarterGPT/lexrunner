@@ -60,20 +60,36 @@ internal static class NativeRelativeFiles
     Open(parent, component, false, create ? 0xc0100080u : 0x80100080u,
       create ? 0u : 1u, create ? 2u : 1u, create ? 0x80u : 0u);
 
+  internal static DirectoryLease.DirectoryHandle OpenGlobalDriveRoot(string drive)
+  {
+    if (drive.Length != 3 || !char.IsAsciiLetter(drive[0]) || drive[1] != ':' || drive[2] != '\\')
+      throw new InvalidDataException();
+    // Native absolute object-manager name: never the per-process DOS aliases
+    // named GLOBALROOT or GLOBAL??. Only the OS-managed drive link is followed.
+    return OpenNative(null, @"\GLOBAL??\" + drive, true, 0x100081, 3, 1, 0);
+  }
+
   private static DirectoryLease.DirectoryHandle Open(DirectoryLease.DirectoryHandle parent,
       string component, bool directory, uint access, uint share, uint disposition, uint fileAttributes)
   {
     DirectoryLease.ValidateComponent(component);
+    return OpenNative(parent, component, directory, access, share, disposition, fileAttributes);
+  }
+
+  private static DirectoryLease.DirectoryHandle OpenNative(DirectoryLease.DirectoryHandle? parent,
+      string component, bool directory, uint access, uint share, uint disposition, uint fileAttributes)
+  {
     var text = Marshal.StringToHGlobalUni(component);
     var name = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>());
     var retained = false;
     try
     {
-      parent.DangerousAddRef(ref retained);
+      parent?.DangerousAddRef(ref retained);
       Marshal.StructureToPtr(new UnicodeString { Length = checked((ushort)(component.Length * 2)),
           MaximumLength = checked((ushort)(component.Length * 2)), Buffer = text }, name, false);
       var attributes = new ObjectAttributes { Length = Marshal.SizeOf<ObjectAttributes>(),
-          RootDirectory = parent.DangerousGetHandle(), ObjectName = name, Attributes = 0x1040 };
+          RootDirectory = parent?.DangerousGetHandle() ?? IntPtr.Zero, ObjectName = name,
+          Attributes = parent == null ? 0x40u : 0x1040u };
       var status = NtCreateFile(out var handle, access,
           ref attributes, out _, IntPtr.Zero, fileAttributes, share, disposition,
           0x200020u | (directory ? 1u : 0x40u), IntPtr.Zero, 0);
@@ -82,7 +98,7 @@ internal static class NativeRelativeFiles
     }
     finally
     {
-      if (retained) parent.DangerousRelease();
+      if (retained) parent!.DangerousRelease();
       Marshal.FreeHGlobal(name); Marshal.FreeHGlobal(text);
     }
   }
