@@ -82,3 +82,5 @@ test-summary.md
 *real-pr-plan.json
 test-artifacts/*
 tool-assessment-report.md
+installers/windows-helper/bin/
+installers/windows-helper/obj/

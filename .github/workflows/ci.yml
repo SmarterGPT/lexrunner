@@ -230,6 +230,9 @@ jobs:
       - name: Qualify actual native removal and recovery
         shell: pwsh
         run: ./proofs/windows-workspace-boundary/verify-removal.ps1
+      - name: Qualify MSI packaging without installation
+        shell: pwsh
+        run: ./scripts/Test-WindowsHelperMsi.ps1 -HelperExecutable (Join-Path $PWD 'proofs/windows-workspace-boundary/artifacts/removal/ntfs/helper/lexrunner-windows-boundary-helper.exe') -ArtifactDirectory (Join-Path $PWD 'artifacts/windows-helper-msi-ci')
       - name: Upload native Windows proof receipts
         if: always()
         uses: actions/upload-artifact@v7
@@ -241,6 +244,9 @@ jobs:
             proofs/windows-workspace-boundary/artifacts/removal/**/qualification-receipt.json
             proofs/windows-workspace-boundary/artifacts/removal/**/*.log
             proofs/windows-workspace-boundary/artifacts/removal/**/native-tests.json
+            artifacts/windows-helper-msi-ci/test-receipt.json
+            artifacts/windows-helper-msi-ci/*.log
+            artifacts/windows-helper-msi-ci/valid.json
           if-no-files-found: warn
 
   # Full manual-only determinism and license gate.

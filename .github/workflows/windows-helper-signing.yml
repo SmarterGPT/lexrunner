@@ -93,6 +93,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,6 +127,55 @@ jobs:
       - name: Verify publisher, timestamp and final bytes
         shell: pwsh
         run: ./scripts/verify-windows-helper-signature.ps1 -Path artifacts/signing/lexrunner-windows-boundary-helper.exe -SourceRevision $env:GITHUB_SHA -ReceiptPath artifacts/signing/signature-receipt.json
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: installers/windows-helper/global.json
+      - name: Build and inspect the separate MSI candidate
+        shell: pwsh
+        run: |
+          ./scripts/Build-WindowsHelperMsi.ps1 -HelperExecutable (Join-Path $PWD 'artifacts/signing/lexrunner-windows-boundary-helper.exe') -WorkflowSignatureReceipt (Join-Path $PWD 'artifacts/signing/signature-receipt.json') -HelperSourceRevision $env:GITHUB_SHA -SigningRunId ([long]$env:GITHUB_RUN_ID) -OutputDirectory (Join-Path $PWD 'artifacts/msi-build')
+          $built = Get-Content artifacts/msi-build/build-receipt.json -Raw | ConvertFrom-Json
+          ./scripts/Inspect-WindowsHelperMsi.ps1 -Path $built.msi -ExpectedGeneration $built.helperSha256 -ExpectedManifestDigest $built.manifestSha256 -ReceiptPath (Join-Path $PWD 'artifacts/msi-build/inspection.json')
+          New-Item -ItemType Directory -Path artifacts/msi-signing | Out-Null
+          Copy-Item -LiteralPath $built.msi -Destination artifacts/msi-signing/LexRunner.WindowsHelper.qualification.win-x64.msi
+      - name: Sign only the MSI candidate
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME }}
+          files: ${{ github.workspace }}\artifacts\msi-signing\LexRunner.WindowsHelper.qualification.win-x64.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: LexRunner optional Windows helper MSI qualification
+      - name: Verify the final signed MSI
+        shell: pwsh
+        run: ./scripts/Verify-WindowsHelperMsiSignature.ps1 -Path artifacts/msi-signing/LexRunner.WindowsHelper.qualification.win-x64.msi -SourceRevision $env:GITHUB_SHA -ReceiptPath artifacts/msi-signing/signature-receipt.json
+      - name: Attest both final signed artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: |
+            artifacts/signing/lexrunner-windows-boundary-helper.exe
+            artifacts/msi-signing/LexRunner.WindowsHelper.qualification.win-x64.msi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-helper-msi-qualification-${{ github.sha }}
+          path: artifacts/msi-signing/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain MSI build and inspection evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: msi-build-evidence-${{ github.sha }}
+          path: |
+            artifacts/msi-build/build-receipt.json
+            artifacts/msi-build/helper-signature-verification.json
+            artifacts/msi-build/inspection.json
+            artifacts/msi-build/payload/generation.json
+            artifacts/msi-build/*.log
+          if-no-files-found: warn
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: signed-helper-qualification-${{ github.sha }}
