@@ -102,7 +102,7 @@ $clock = [Diagnostics.Stopwatch]::StartNew()
 $held = [IO.File]::Open($artifact, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
 try {
     $tables = @(Query 'SELECT `Name` FROM `_Tables`' | ForEach-Object { $_[0] })
-    $allowedTables = @('Property','Directory','Component','Feature','FeatureComponents','CreateFolder','MsiLockPermissionsEx','File','MsiFileHash','Media','Registry','AppSearch','RegLocator','LaunchCondition','InstallExecuteSequence','InstallUISequence')
+    $allowedTables = @('Property','Directory','Component','Feature','FeatureComponents','CreateFolder','MsiLockPermissionsEx','File','MsiFileHash','Media','Registry','AppSearch','Signature','RegLocator','LaunchCondition','InstallExecuteSequence','InstallUISequence')
     Require ($tables.Count -eq $allowedTables.Count -and @($tables | Where-Object { $_ -notin $allowedTables }).Count -eq 0) 'Unexpected MSI table surface'
     foreach ($forbidden in @('CustomAction', 'ServiceInstall', 'ServiceControl', 'Upgrade', 'Environment', 'Shortcut')) {
         Require ($forbidden -notin $tables) 'Unexpected active installer mechanism'
@@ -149,6 +149,7 @@ try {
     }
     $search = @(Query 'SELECT `Property`,`Signature_` FROM `AppSearch`')
     Require ($search.Count -eq 1 -and $search[0][0] -ceq 'EXISTINGGENERATION' -and $search[0][1] -ceq 'ExistingGeneration') 'Generation discovery property binding missing'
+    Require (@(Query 'SELECT `Signature` FROM `Signature`').Count -eq 0) 'Raw registry discovery must not become a file-signature search'
     $locator = @(Query 'SELECT `Signature_`,`Root`,`Key`,`Name`,`Type` FROM `RegLocator`')
     Require ($locator.Count -eq 1 -and $locator[0][0] -ceq 'ExistingGeneration' -and $locator[0][1] -ceq '2' -and $locator[0][2] -ceq $generationKey -and $locator[0][3] -ceq 'ManifestDigest' -and $locator[0][4] -ceq '18') 'Generation discovery must read the exact x64 HKLM catalog value'
     $directories = @(Query 'SELECT `Directory`,`Directory_Parent`,`DefaultDir` FROM `Directory`')
@@ -163,8 +164,8 @@ try {
     $directorySddl = 'O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'
     $fileSddl = 'O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;BU)'
     $registrySddl = 'O:SYG:SYD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)'
-    $permissionBindings = @{ ProtectApplicationRoot = @('HelperApplicationRoot','CreateFolder',$directorySddl); ProtectGenerationsRoot = @('HelperGenerationsRoot','CreateFolder',$directorySddl); ProtectGenerationRoot = @('HelperGenerationRoot','CreateFolder',$directorySddl); HelperImage = @('HelperImage','File',$fileSddl); GenerationManifest = @('GenerationManifest','File',$fileSddl); InstalledMarker = @('InstalledMarker','File',$fileSddl); CatalogRoot = @('CatalogRoot','Registry',$registrySddl); CatalogGenerations = @('CatalogGenerations','Registry',$registrySddl); CatalogGeneration = @('CatalogGeneration','Registry',$registrySddl) }
-    Require ($permissions.Count -eq 9) 'Required permission rows missing'
+    $permissionBindings = @{ ProtectApplicationRoot = @('HelperApplicationRoot','CreateFolder',$directorySddl); ProtectGenerationsRoot = @('HelperGenerationsRoot','CreateFolder',$directorySddl); ProtectGenerationRoot = @('HelperGenerationRoot','CreateFolder',$directorySddl); HelperImage = @('HelperImage','File',$fileSddl); GenerationManifest = @('GenerationManifest','File',$fileSddl); InstalledMarker = @('InstalledMarker','File',$fileSddl); CatalogRoot = @('CatalogRoot','Registry',$registrySddl); CatalogGenerations = @('CatalogGenerations','Registry',$registrySddl); CatalogGeneration = @('CatalogGeneration','Registry',$registrySddl); ManifestDigest = @('ManifestDigest','Registry',$registrySddl); GenerationState = @('GenerationState','Registry',$registrySddl); GenerationProduct = @('GenerationProduct','Registry',$registrySddl) }
+    Require ($permissions.Count -eq 12) 'Required permission rows missing'
     foreach ($row in $permissions) {
         Require ($permissionBindings.ContainsKey($row[0])) 'Unexpected permission object'
         $expected = $permissionBindings[$row[0]]

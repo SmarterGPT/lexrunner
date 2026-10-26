@@ -233,6 +233,11 @@ jobs:
       - name: Qualify MSI packaging without installation
         shell: pwsh
         run: ./scripts/Test-WindowsHelperMsi.ps1 -HelperExecutable (Join-Path $PWD 'proofs/windows-workspace-boundary/artifacts/removal/ntfs/helper/lexrunner-windows-boundary-helper.exe') -ArtifactDirectory (Join-Path $PWD 'artifacts/windows-helper-msi-ci')
+      - name: Qualify real MSI lifecycle on the disposable hosted runner
+        shell: pwsh
+        run: |
+          $fixture = Get-Content artifacts/windows-helper-msi-ci/test-receipt.json -Raw | ConvertFrom-Json
+          ./scripts/Test-WindowsHelperMsiInstall.ps1 -EphemeralCi -Path (Join-Path $PWD 'artifacts/windows-helper-msi-ci/first/helper.msi') -ExpectedGeneration $fixture.generation -ExpectedManifestDigest $fixture.manifest -ArtifactDirectory (Join-Path $PWD 'artifacts/windows-helper-msi-install-ci')
       - name: Upload native Windows proof receipts
         if: always()
         uses: actions/upload-artifact@v7
@@ -247,6 +252,8 @@ jobs:
             artifacts/windows-helper-msi-ci/test-receipt.json
             artifacts/windows-helper-msi-ci/*.log
             artifacts/windows-helper-msi-ci/valid.json
+            artifacts/windows-helper-msi-install-ci/*.json
+            artifacts/windows-helper-msi-install-ci/*.log
           if-no-files-found: warn
 
   # Full manual-only determinism and license gate.
