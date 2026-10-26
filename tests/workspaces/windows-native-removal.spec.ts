@@ -371,6 +371,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
           await rm(resolved, { recursive: true, force: true });
         }
       vi.mocked(resolveWorkspaceBoundary).mockReset();
+      vi.unstubAllEnvs();
       expect(quiescent, "All owned helpers must exit before fixture cleanup").toBe(true);
     });
 
@@ -498,6 +499,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         ok: true,
         observation: { cleanliness: "clean", exists: true, registered: true },
       });
+      const original = await readFile(path.join(f.worktree, "nested", "tracked.txt"));
       await writeFile(path.join(f.worktree, "nested", "tracked.txt"), "dirty content\n");
       expect(await broker.remove(f.lease)).toMatchObject({
         ok: true,
@@ -505,8 +507,9 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         preservationReason: "dirty",
       });
       expect(f.store.readOperation("remove")).toBeNull();
-      await writeFile(path.join(f.worktree, "nested", "tracked.txt"), "tracked content\n");
-      expect(await broker.remove(f.lease)).toMatchObject({
+      await writeFile(path.join(f.worktree, "nested", "tracked.txt"), original);
+      const removed = await broker.remove(f.lease);
+      expect(removed, JSON.stringify(removed)).toMatchObject({
         ok: true,
         outcome: "removed",
         observation: { exists: false, registered: false },
@@ -525,6 +528,51 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       },
       30000
     );
+    it("uses the broker's global Git normalization without projecting general credentials", async () => {
+      await mkdir(artifactParent, { recursive: true });
+      const configurationRoot = await mkdtemp(path.join(artifactParent, "native-removal-config-"));
+      fixtureRoots.push(configurationRoot);
+      const global = path.join(configurationRoot, "gitconfig");
+      await writeFile(global, "[core]\n    autocrlf = true\n");
+      vi.stubEnv("GIT_CONFIG_GLOBAL", global);
+      const f = await setup(true);
+      const transition = createOwnedWindowsRemovalTransition({
+        helper: f.options,
+        store: f.store,
+        lease: f.lease,
+        ...f.selected,
+        gitExecutable: gitExecutable!,
+        now: f.now,
+        admission: {
+          operationId: "remove",
+          controller,
+          expectedRunRevision: 0,
+          expectedAttemptRevision: 1,
+          now: f.now(),
+          maxObservationAgeMs: 30000,
+        },
+        resolution: {
+          operationId: "remove",
+          controller,
+          expectedRunRevision: 0,
+          now: f.now(),
+          maxObservationAgeMs: 30000,
+        },
+      });
+      transitions.push(transition);
+      const broker = await NodeGitWorktreeBroker.open({
+        ...f.brokerOptions,
+        nativeRemoval: transition,
+      });
+      expect(
+        (await readFile(path.join(f.worktree, "nested", "tracked.txt"))).includes(
+          Buffer.from("\r\n")
+        )
+      ).toBe(true);
+      const removed = await broker.remove(f.lease);
+      expect(removed, JSON.stringify(removed)).toMatchObject({ ok: true, outcome: "removed" });
+      expect(f.store.readOperation("remove")?.resolution?.observedState).toBe("absence_observed");
+    }, 45000);
     it("refuses a replaced stable slot during recovery", async () => {
       const f = await setup(),
         first = await f.open();

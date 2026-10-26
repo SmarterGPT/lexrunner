@@ -17,6 +17,7 @@ import {
   type WindowsRemovalBinding,
 } from "./windows-removal-binding.js";
 import { WindowsRemovalIdentity, type WindowsRemovalPayload } from "./windows-removal-protocol.js";
+import { windowsRemovalGitEnvironment } from "./windows-removal-git-environment.js";
 
 interface Parents {
   root: OwnedWindowsDirectoryScope;
@@ -70,6 +71,7 @@ export async function executeOwnedWindowsRemoval(input: {
     win32.join(parents.slot.identity.path, selectedSlot.component) !== slot.path
   )
     throw new Error("Native removal paths do not match the retained lease");
+  const gitEnvironment = windowsRemovalGitEnvironment();
   const prepared = await channel.invoke({
     ...channel.tokens,
     operation: "prepare",
@@ -82,6 +84,7 @@ export async function executeOwnedWindowsRemoval(input: {
     slot_content_sha256: selectedSlot.contentSha256,
     marker_sha256: windowsRemovalMarkerSha256(lease),
     git_executable: input.gitExecutable,
+    git_environment: gitEnvironment,
   });
   if (
     prepared.operation !== "prepare" ||
@@ -90,6 +93,13 @@ export async function executeOwnedWindowsRemoval(input: {
   )
     throw new Error("Native removal preparation mismatch");
   try {
+    if (
+      prepared.clean_git.environment_sha256 !==
+      `sha256:${createHash("sha256")
+        .update(canonicalJSONStringify({ git_environment: gitEnvironment }))
+        .digest("hex")}`
+    )
+      throw new Error("Native removal Git environment mismatch");
     if (
       `sha256:${createHash("sha256")
         .update(

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { WINDOWS_REMOVAL_GIT_ENVIRONMENT_NAMES } from "./windows-removal-git-environment.js";
 
 /** Additive opt-in feature. The v2 hello alone does not imply removal support. */
 export const WINDOWS_REMOVAL_VERSION = "1.0.0" as const;
@@ -37,6 +38,17 @@ export const WindowsRemovalPrepare = z.strictObject({
   operation: z.literal("prepare"),
   marker_sha256: WindowsRemovalDigest,
   git_executable: z.string().min(3).max(1024),
+  git_environment: z
+    .array(
+      z.strictObject({
+        name: z.enum(WINDOWS_REMOVAL_GIT_ENVIRONMENT_NAMES),
+        value_base64: z
+          .string()
+          .max(10924)
+          .regex(/^[A-Za-z0-9+/]*={0,2}$/u),
+      })
+    )
+    .max(WINDOWS_REMOVAL_GIT_ENVIRONMENT_NAMES.length),
 });
 export const WindowsRemovalRecover = z.strictObject({
   ...selection,
@@ -67,6 +79,7 @@ export const WindowsRemovalCleanGit = z.strictObject({
   arguments: z.array(z.string().max(2048)).max(64),
   process_id: z.number().int().positive().max(0xffffffff),
   duration_ms: z.number().int().nonnegative().safe(),
+  environment_sha256: WindowsRemovalDigest,
   exit_code: z.literal(0),
   job_empty: z.literal(true),
   stdout_sha256: WindowsRemovalDigest,

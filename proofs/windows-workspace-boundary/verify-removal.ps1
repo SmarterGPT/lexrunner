@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Native Windows is required' }
-if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'X64') { throw 'This qualification profile requires native Windows x64' }
+if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'X64' -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') { throw 'This qualification profile requires native Windows x64' }
 if (-not $env:WINDIR) { $env:WINDIR = $env:SystemRoot }
 $proofRoot = $PSScriptRoot
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $proofRoot '..\..'))
@@ -35,6 +35,11 @@ $receipt = [ordered]@{
     fixtureParent = $fixtureRoot
     filesystem = $filesystem
     architecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+    osArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    operatingSystem = [Runtime.InteropServices.RuntimeInformation]::OSDescription
+    osVersion = [Environment]::OSVersion.Version.ToString()
+    nodeVersion = (& node.exe --version).Trim()
+    gitVersion = (& $GitExecutable --version).Trim()
     productionReady = $false
     verificationAuthority = 'not_established'
     startedAt = [DateTimeOffset]::UtcNow.ToString('o')
@@ -80,7 +85,7 @@ try {
     Invoke-Recorded 'native-session-tests' 'npx.cmd' @('vitest', 'run', 'tests/workspaces/windows-native-removal.spec.ts', 'tests/workspaces/windows-native-helper.spec.ts', 'tests/workspaces/windows-native-directory.spec.ts', 'tests/workspaces/node-git-worktree-native.spec.ts', 'tests/workspaces/owned-windows-workspace-lease.spec.ts', 'tests/workspaces/owned-windows-directory-session.spec.ts', 'tests/workspaces/owned-windows-directory.spec.ts', '--maxWorkers=1', '--reporter=verbose', '--reporter=json', "--outputFile.json=$testReport") $repoRoot
     $tests = Get-Content -LiteralPath $testReport -Raw | ConvertFrom-Json
     $removalCases = @($tests.testResults | Where-Object { $_.name.EndsWith('windows-native-removal.spec.ts') } | ForEach-Object { $_.assertionResults })
-    if ($removalCases.Count -lt 17 -or @($removalCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
+    if ($removalCases.Count -lt 18 -or @($removalCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
         throw 'Actual removal qualification must execute every required case without skips'
     }
     $receipt.nativeRemovalTests = $removalCases.Count

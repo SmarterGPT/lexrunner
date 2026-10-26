@@ -28,6 +28,9 @@ A registration `locked` marker or `.lock` file prevents preparation. Fixed nativ
 includes untracked and ignored files, disables optional locks/hooks/fsmonitor, uses explicit Git
 routing/environment, and runs under the existing native process Job Object. Its command, cwd,
 process, duration, exit and output digests are bound into the prepared selection.
+Public Git configuration-location variables match the broker, including global newline
+normalization. Their digest is recorded; general credential variables are not forwarded.
+Inline Git environment configuration is explicitly unsupported rather than projected blindly.
 
 DELETE handles are acquired parent-first relative to retained parents. Each original handle stays
 live until the new handle's complete identity matches. A replacement cannot reuse that still-live

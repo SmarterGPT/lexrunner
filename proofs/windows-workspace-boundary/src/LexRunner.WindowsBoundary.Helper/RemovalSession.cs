@@ -49,7 +49,7 @@ internal sealed class RemovalSession : IDisposable
     if (operation is "prepare" or "recover")
     {
       Keys(payload, operation == "prepare" ?
-        ["operation", "root_parent_token", "registration_parent_token", "slot_parent_token", "root_component", "registration_component", "slot_component", "root_identity", "registration_identity", "slot_identity", "slot_content_sha256", "marker_sha256", "git_executable"] :
+        ["operation", "root_parent_token", "registration_parent_token", "slot_parent_token", "root_component", "registration_component", "slot_component", "root_identity", "registration_identity", "slot_identity", "slot_content_sha256", "marker_sha256", "git_executable", "git_environment"] :
         ["operation", "root_parent_token", "registration_parent_token", "slot_parent_token", "root_component", "registration_component", "slot_component", "root_identity", "registration_identity", "slot_identity", "slot_content_sha256", "previous_executor_id"]);
       if (held.Count >= 4) throw new InvalidDataException("Removal session capacity");
       var parents = new List<DirectoryLease>();
@@ -96,12 +96,26 @@ internal sealed class RemovalSession : IDisposable
               Metadata(registration, "HEAD") != "ref: refs/heads/" + marker.RootElement.GetProperty("branch").GetString() ||
               registration.HasRootEntry(name => name.Equals("locked", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".lock", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("Removal registration mismatch");
-          // Fixed read-only Git command, explicit routing, no inherited Git/config hooks.
+          // Fixed read-only Git command. Preserve public config-location semantics
+          // used by the broker; never inherit the general credential environment.
           var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
           foreach (var name in new[] { "SYSTEMROOT", "WINDIR", "TEMP", "TMP" })
             if (Environment.GetEnvironmentVariable(name) is string value) environment.Add(name, value);
-          environment["GIT_CONFIG_NOSYSTEM"] = "1"; environment["GIT_CONFIG_GLOBAL"] = "NUL";
+          string[] allowed = ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "XDG_CONFIG_HOME", "PROGRAMDATA", "ALLUSERSPROFILE", "APPDATA", "LOCALAPPDATA", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_ATTR_NOSYSTEM"];
+          var gitEnvironment = payload.GetProperty("git_environment");
+          if (gitEnvironment.ValueKind != JsonValueKind.Array || gitEnvironment.GetArrayLength() > allowed.Length) throw new InvalidDataException("Git environment budget");
+          foreach (var entry in gitEnvironment.EnumerateArray())
+          {
+            Keys(entry, "name", "value_base64"); var name = S(entry, "name"); var encoded = S(entry, "value_base64");
+            if (!allowed.Contains(name, StringComparer.Ordinal) || encoded.Length > 10924) throw new InvalidDataException("Git environment name");
+            var decoded = Convert.FromBase64String(encoded);
+            var value = new UTF8Encoding(false, true).GetString(decoded);
+            if (decoded.Length > 8192 || Convert.ToBase64String(decoded) != encoded || value.Contains('\0') || !environment.TryAdd(name, value))
+              throw new InvalidDataException("Git environment value");
+          }
           environment["GIT_OPTIONAL_LOCKS"] = "0"; environment["GIT_TERMINAL_PROMPT"] = "0";
+          if (environment.Sum(p => p.Key.Length + p.Value.Length + 2) + 1 > 32767) throw new InvalidDataException("Git environment block");
+          var environmentDigest = Hash(Program.Json(w => { w.WritePropertyName("git_environment"); WriteValue(w, gitEnvironment); }));
           var gitExecutable = S(payload, "git_executable");
           string[] gitArguments = ["--git-dir=" + registrationPath, "--work-tree=" + rootPath, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"];
           var clean = NativeProcess.Run(gitExecutable, gitArguments, common, 30000, 65536, environment);
@@ -117,7 +131,7 @@ internal sealed class RemovalSession : IDisposable
           {
             w.WritePropertyName("clean_git"); w.WriteStartObject();
             w.WritePropertyName("arguments"); w.WriteStartArray(); foreach (var argument in gitArguments) w.WriteStringValue(argument); w.WriteEndArray();
-            w.WriteString("cwd", common); w.WriteNumber("duration_ms", clean.DurationMs); w.WriteString("executable", gitExecutable);
+            w.WriteString("cwd", common); w.WriteNumber("duration_ms", clean.DurationMs); w.WriteString("environment_sha256", environmentDigest); w.WriteString("executable", gitExecutable);
             w.WriteNumber("exit_code", clean.ExitCode); w.WriteBoolean("job_empty", true); w.WriteNumber("process_id", clean.ProcessId);
             w.WriteString("stderr_sha256", Hash(clean.Stderr)); w.WriteString("stdout_sha256", Hash(clean.Stdout)); w.WriteEndObject();
           }
@@ -280,10 +294,14 @@ internal sealed class RemovalSession : IDisposable
     {
       if (omitDigest && property.Name == "request_digest") continue;
       w.WritePropertyName(property.Name);
-      if (property.Value.ValueKind == JsonValueKind.Object)
-      { w.WriteStartObject(); WriteProperties(w, property.Value); w.WriteEndObject(); }
-      else property.Value.WriteTo(w);
+      WriteValue(w, property.Value);
     }
+  }
+  private static void WriteValue(Utf8JsonWriter w, JsonElement value)
+  {
+    if (value.ValueKind == JsonValueKind.Object) { w.WriteStartObject(); WriteProperties(w, value); w.WriteEndObject(); }
+    else if (value.ValueKind == JsonValueKind.Array) { w.WriteStartArray(); foreach (var item in value.EnumerateArray()) WriteValue(w, item); w.WriteEndArray(); }
+    else value.WriteTo(w);
   }
   private static void Close(DirectoryLease.DirectoryHandle handle)
   {
