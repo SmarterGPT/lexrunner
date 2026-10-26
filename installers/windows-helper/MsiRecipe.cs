@@ -7,8 +7,8 @@ internal static class MsiRecipe
     foreach (var item in new (string, string)[] { ("ProductCode", Program.GuidFor("product:" + generation)), ("ProductName", "LexRunner Windows helper qualification"), ("ProductVersion", version), ("Manufacturer", "SmarterGPT"), ("ProductLanguage", "1033"), ("ALLUSERS", "1"), ("INSTALLLEVEL", "1"), ("ARPNOMODIFY", "1"), ("ARPNOREPAIR", "1"), ("SecureCustomProperties", "EXISTINGGENERATION") }) db.Insert("Property", item.Item1, item.Item2);
     db.Create("Directory", "`Directory` CHAR(72) NOT NULL, `Directory_Parent` CHAR(72), `DefaultDir` CHAR(255) NOT NULL LOCALIZABLE", "`Directory`");
     db.Insert("Directory", "TARGETDIR", null, "SourceDir"); db.Insert("Directory", "ProgramFiles64Folder", "TARGETDIR", ".");
-    db.Insert("Directory", "HelperApplicationRoot", "ProgramFiles64Folder", "SmarterGPT.LexRunner.WindowsHelper");
-    db.Insert("Directory", "HelperGenerationsRoot", "HelperApplicationRoot", "generations"); db.Insert("Directory", "HelperGenerationRoot", "HelperGenerationsRoot", generation);
+    db.Insert("Directory", "HelperApplicationRoot", "ProgramFiles64Folder", "LEXRUN~1|SmarterGPT.LexRunner.WindowsHelper");
+    db.Insert("Directory", "HelperGenerationsRoot", "HelperApplicationRoot", "GENERA~1|generations"); db.Insert("Directory", "HelperGenerationRoot", "HelperGenerationsRoot", "G" + generation[..7] + "|" + generation);
     db.Create("Component", "`Component` CHAR(72) NOT NULL, `ComponentId` CHAR(38), `Directory_` CHAR(72) NOT NULL, `Attributes` SHORT NOT NULL, `Condition` CHAR(255), `KeyPath` CHAR(72)", "`Component`");
     db.Create("Feature", "`Feature` CHAR(38) NOT NULL, `Feature_Parent` CHAR(38), `Title` CHAR(64) LOCALIZABLE, `Description` CHAR(255) LOCALIZABLE, `Display` SHORT, `Level` SHORT NOT NULL, `Directory_` CHAR(72), `Attributes` SHORT NOT NULL", "`Feature`");
     db.Insert("Feature", "Helper", null, "Optional Windows helper", "Qualification generation; not production activation", 2, 1, "HelperGenerationRoot", 0);
@@ -26,7 +26,7 @@ internal static class MsiRecipe
     { Component(item.Item1, item.Item2, true, null); db.Insert("CreateFolder", item.Item2, item.Item1); Permission(item.Item1, item.Item2, "CreateFolder", Program.DirectorySddl); }
     db.Create("File", "`File` CHAR(72) NOT NULL, `Component_` CHAR(72) NOT NULL, `FileName` CHAR(255) NOT NULL LOCALIZABLE, `FileSize` LONG NOT NULL, `Version` CHAR(72), `Language` CHAR(20), `Attributes` SHORT NOT NULL, `Sequence` SHORT NOT NULL", "`File`");
     for (var i = 0; i < Program.Files.Length; i++)
-    { var file = Program.Files[i]; Component(file.Component, "HelperGenerationRoot", file.Permanent, file.Id); db.Insert("File", file.Id, file.Component, file.Name, lengths[i], null, null, 512, i + 1); Permission(file.Id, file.Id, "File", Program.FileSddl); }
+    { var file = Program.Files[i]; Component(file.Component, "HelperGenerationRoot", file.Permanent, file.Id); var shortName = new[] { "LEXRUN~1.EXE", "GENERA~1.JSO", "INSTAL~1.JSO" }[i]; db.Insert("File", file.Id, file.Component, shortName + "|" + file.Name, lengths[i], null, null, 512, i + 1); Permission(file.Id, file.Id, "File", Program.FileSddl); }
     db.Create("MsiFileHash", "`File_` CHAR(72) NOT NULL, `Options` SHORT NOT NULL, `HashPart1` LONG NOT NULL, `HashPart2` LONG NOT NULL, `HashPart3` LONG NOT NULL, `HashPart4` LONG NOT NULL", "`File_`");
     foreach (var file in Program.Files) db.FileHash(file.Id, Path.Combine(payload, file.Name));
     db.Create("Media", "`DiskId` SHORT NOT NULL, `LastSequence` SHORT NOT NULL, `DiskPrompt` CHAR(64) LOCALIZABLE, `Cabinet` CHAR(255), `VolumeLabel` CHAR(32), `Source` CHAR(72)", "`DiskId`");
@@ -44,6 +44,7 @@ internal static class MsiRecipe
     db.Insert("RegLocator", "ExistingGeneration", 2, root + "\\Generations\\" + generation, "ManifestDigest", 18);
     db.Create("LaunchCondition", "`Condition` CHAR(255) NOT NULL, `Description` CHAR(255) NOT NULL LOCALIZABLE", "`Condition`");
     db.Insert("LaunchCondition", "VersionNT64", "This helper qualification package requires 64-bit Windows.");
+    db.Insert("LaunchCondition", "NOT SHORTFILENAMES", "This immutable generation profile requires long file names.");
     db.Insert("LaunchCondition", "NOT Installed OR REMOVE = \"ALL\"", "This immutable generation cannot be repaired or modified in place. Provision a separately reviewed new generation.");
     db.Insert("LaunchCondition", "Installed OR NOT EXISTINGGENERATION", "This generation already exists. Reconciliation is required; its files will not be overwritten.");
     var actions = new (string, int)[] { ("AppSearch", 50), ("LaunchConditions", 100), ("CostInitialize", 800), ("FileCost", 900), ("CostFinalize", 1000), ("InstallValidate", 1400), ("InstallInitialize", 1500), ("ProcessComponents", 1600), ("UnpublishFeatures", 1800), ("RemoveRegistryValues", 2600), ("RemoveFiles", 3500), ("RemoveFolders", 3600), ("CreateFolders", 3700), ("InstallFiles", 4000), ("WriteRegistryValues", 5000), ("RegisterUser", 6000), ("RegisterProduct", 6100), ("PublishFeatures", 6300), ("PublishProduct", 6400), ("InstallFinalize", 6600) };

@@ -81,6 +81,13 @@ pwsh -NoLogo -NoProfile -File scripts/Test-WindowsHelperMsi.ps1 `
   -ArtifactDirectory D:\new\offline-msi-tests
 ```
 
+The recipe supplies explicit short/long filename pairs as required by the
+[Windows Installer Filename contract](https://learn.microsoft.com/en-us/windows/win32/msi/filename).
+It refuses `SHORTFILENAMES` so the installed layout always uses the selected long
+names. A short-alias collision must fail installation rather than select a different
+generation. Inspection compares the complete authored permission rows, component
+destinations/conditions and standard-action sequences before extracting payloads.
+
 The fixture artifact is deliberately unqualified. Cases include repeat-build byte
 equality, real embedded-payload readback, wrong input identity, weakened retention,
 registry/directory/file escapes, unexpected selection publication, unsigned MSI

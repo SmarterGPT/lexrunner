@@ -68,6 +68,10 @@ public static class LexRunnerMsiFixtureMutation {
         'unexpected-activation' = 'UPDATE `Registry` SET `Name`=''ActiveSelection'' WHERE `Registry`=''GenerationState'''
         'directory-escape' = 'UPDATE `Directory` SET `DefaultDir`=''elsewhere'' WHERE `Directory`=''HelperApplicationRoot'''
         'file-escape' = 'UPDATE `File` SET `FileName`=''different.exe'' WHERE `File`=''HelperImage'''
+        'component-directory' = 'UPDATE `Component` SET `Directory_`=''TARGETDIR'' WHERE `Component`=''RetainedHelperImage'''
+        'permission-condition' = 'UPDATE `MsiLockPermissionsEx` SET `Condition`=''0'' WHERE `MsiLockPermissionsEx`=''HelperImage'''
+        'permission-rights' = 'UPDATE `MsiLockPermissionsEx` SET `SDDLText`=''O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;BU)'' WHERE `MsiLockPermissionsEx`=''HelperImage'''
+        'action-sequence' = 'UPDATE `InstallExecuteSequence` SET `Sequence`=3900 WHERE `Action`=''CreateFolders'''
     }
     foreach ($item in $mutations.GetEnumerator()) {
         $copy = Join-Path $root ($item.Key + '.msi'); Copy-Item -LiteralPath $msi -Destination $copy
@@ -111,3 +115,6 @@ public static class LexRunnerMsiFixtureMutation {
     $receipt.outcome = 'passed'; $receipt.msiSha256 = Digest $msi; $receipt.generation = $generation; $receipt.manifest = $manifest
 } finally { Json (Join-Path $root 'test-receipt.json') $receipt }
 Write-Output "MSI offline qualification passed: $($cases.Count) cases; no installation performed"
+# Negative controls deliberately leave a nonzero native LASTEXITCODE. GitHub's
+# pwsh wrapper propagates it even after successful assertions unless reset here.
+exit 0
