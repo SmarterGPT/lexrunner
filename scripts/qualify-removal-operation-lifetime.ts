@@ -10,7 +10,11 @@ import { SqliteRemovalEvidenceStore } from "../src/store/sqlite/removal-evidence
 import { SqliteRemovalOperationStore } from "../src/store/sqlite/removal-operation-store.js";
 import { assessReservedRemovalRecovery } from "../src/workspaces/workspace-removal-evidence.js";
 import { canonicalJSONStringify } from "../src/util/canonicalJson.js";
-import { probeObservation, removalProbeSnapshot } from "./removal-probe-records.js";
+import {
+  probeObservation,
+  probeOperationTime,
+  removalProbeSnapshot,
+} from "./removal-probe-records.js";
 
 // Cooperative development fixture only. Every effect contender here uses the slot.
 // No broker/helper protocol entrypoint or authenticated admission is implemented.
@@ -151,18 +155,16 @@ async function actor(root: string, id: string) {
       const recovery = await assess(root);
       const current = await store.getRunCoordination("run");
       assert.ok(current?.lease);
+      const clock = {
+        wallTime: new Date().toISOString(),
+        observedAt: recovery.fresh.at,
+        journalUpdatedAt: current.updatedAt,
+        leaseRenewedAt: current.lease.renewedAt,
+      };
       const now =
         condition === "expired"
           ? new Date(Date.parse(current.lease.expiresAt) + 1).toISOString()
-          : new Date(
-              condition === "recover"
-                ? Math.max(
-                    Date.now(),
-                    Date.parse(current.updatedAt),
-                    Date.parse(current.lease.renewedAt)
-                  )
-                : Date.now()
-            ).toISOString();
+          : probeOperationTime(clock);
       const intentDigest = JSON.parse(recovery.intentBytes!).intent_digest;
       let operation;
       if (condition === "recover") {
@@ -201,6 +203,7 @@ async function actor(root: string, id: string) {
         JSON.stringify({
           request: id,
           stage: "checked",
+          fixtureClock: { ...clock, selectedTime: now },
           operation,
           assessment: recovery.assessment,
         })
@@ -716,6 +719,7 @@ async function run() {
         "SQLite admission is atomic over current controller, reservation and selected evidence; filesystem effects remain a separate cooperative executor contract.",
         "Current-controller recovery records an observation without releasing the reservation or advancing selection; it does not transfer ownership for new deletion.",
         "Replacement/expiry use an advanced logical clock. Barrier ordering is real; no wall-time race-frequency claim.",
+        "Fixture operation time includes the fresh native observation and journal clock; original evidence times and strict production verification are unchanged.",
         "Parent exit occurs with native child alive before a known-file partial effect, not during a kernel call.",
         "Surviving-child case explicitly uses detached launch; default attached launch is a separate observed termination control.",
         "Cancel is at the pre-effect safe point; mid-effect deadlines, power loss and production activation remain unqualified.",
