@@ -500,10 +500,23 @@ describe("removal and worker lifecycle writer ordering", () => {
     expect((await worker.beginAttemptVerification(request)).started).toBe(true);
   });
 
-  it("rolls back verification completion without losing its authorization", async () => {
+  it("rejects removal after verification authorization commits first", async () => {
     const begun = await prepareReceipt();
     expect((await worker.beginAttemptVerification(begun)).started).toBe(true);
-    expect(removals.admitRemoval(await seedRemoval()).kind).toBe("admitted");
+    const request = await seedRemoval();
+    const before = state();
+    expect(removals.admitRemoval(request)).toEqual({
+      kind: "rejected",
+      reason: "verification_in_progress",
+    });
+    expect(state()).toEqual(before);
+    expect(removals.readOperation("remove")).toBeNull();
+  });
+
+  it("rolls back legacy overlapping verification completion without losing its authorization", async () => {
+    const begun = await prepareReceipt();
+    expect((await worker.beginAttemptVerification(begun)).started).toBe(true);
+    await seedLegacyAdmission();
     const before = state();
     const request = {
       ...auth,
@@ -555,37 +568,41 @@ describe("removal and worker lifecycle writer ordering", () => {
     expect((await worker.submitAttemptVerification(request)).recorded).toBe(true);
   });
 
+  async function seedLegacyAdmission() {
+    const input = await seedRemoval();
+    // Upgrade fixture only: earlier journals could admit a live worker or
+    // verifier. No bypass is introduced in the production admission API.
+    const body = {
+      schemaVersion: "removal-admission/1",
+      operationId: input.operationId,
+      intentDigest: input.intentDigest,
+      observationDigest: input.observationDigest,
+      expectedRunRevision: input.expectedRunRevision,
+      expectedAttemptRevision: input.expectedAttemptRevision,
+      controller,
+      executorId: input.executorId,
+      admittedAt: input.now,
+      workspaceLeaseId: "workspace",
+    };
+    const db = new Database(path);
+    try {
+      db.prepare(
+        "INSERT INTO removal_operations(operationId,workspaceLeaseId,admissionJson) VALUES(?,?,?)"
+      ).run(
+        "remove",
+        "workspace",
+        canonicalJSONStringify({ ...body, admissionDigest: computeCanonicalHash(body) })
+      );
+    } finally {
+      db.close();
+    }
+  }
+
   it.each(["failed", "cancelled", "lost"] as const)(
     "preserves worker and attempt atomically on legacy overlapping %s completion",
     async (status) => {
       expect((await worker.attachWorkerSession(attach())).updated).toBe(true);
-      const input = await seedRemoval();
-      // Simulate an unresolved record admitted by the preceding implementation,
-      // which did not exclude live workers. No production override is introduced.
-      const body = {
-        schemaVersion: "removal-admission/1",
-        operationId: input.operationId,
-        intentDigest: input.intentDigest,
-        observationDigest: input.observationDigest,
-        expectedRunRevision: input.expectedRunRevision,
-        expectedAttemptRevision: input.expectedAttemptRevision,
-        controller,
-        executorId: input.executorId,
-        admittedAt: input.now,
-        workspaceLeaseId: "workspace",
-      };
-      const db = new Database(path);
-      try {
-        db.prepare(
-          "INSERT INTO removal_operations(operationId,workspaceLeaseId,admissionJson) VALUES(?,?,?)"
-        ).run(
-          "remove",
-          "workspace",
-          canonicalJSONStringify({ ...body, admissionDigest: computeCanonicalHash(body) })
-        );
-      } finally {
-        db.close();
-      }
+      await seedLegacyAdmission();
       const before = state();
       const request = { ...sessionMutation(), now: time(14), status };
       expect(await worker.endWorkerSession(request)).toEqual({

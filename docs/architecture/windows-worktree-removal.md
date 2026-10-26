@@ -478,6 +478,14 @@ still encounter the live-session check. If removal commits first, the existing
 Attempt trigger rolls back attachment, including the session, adapter binding,
 events and mutation ID. Replaying an old admission remains historical status only.
 
+An Attempt with an active verification authorization (`verifying`) similarly
+prevents first removal admission with `verification_in_progress`. Verification
+begin and removal admission share SQLite writer ordering: removal-first blocks
+authorization before engine commands run; verification-first prevents new removal
+until its result commits. Pending-result reporting is not by itself a durable
+pre-action hold. Older journals that already contain overlapping authorization
+still require executor quiescence and explicit recovery, not automatic replay.
+
 The same guards cover older unresolved journals that already overlap a live worker:
 failed/cancelled/lost termination cannot partially update the worker while its
 Attempt change is blocked. Session-only liveness or completed observations remain
@@ -493,7 +501,7 @@ evidence, recovery without consuming rejected mutation IDs, and legacy journal
 overlap. Native operation-lifetime and supported-host suites remain separate gates.
 
 These guards coordinate the existing store APIs; they are not protection from raw SQL
-schema changes or replacement of the database. Prior to production wiring, qualify
-bind executor quiescence/exclusion to the guard's lifetime. This database API alone cannot establish physical
+schema changes or replacement of the database. Prior to production wiring, bind
+executor quiescence/exclusion to the guard's lifetime. This database API alone cannot establish physical
 custody, bind an authenticated helper, stop an OS call, or authorize a protected
 native mutation.
