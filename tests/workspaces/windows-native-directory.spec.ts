@@ -58,7 +58,7 @@ async function setup() {
   const parent = path.join(root, "parent");
   const directory = path.join(parent, "café");
   await mkdir(directory, { recursive: true });
-  const child = spawn(executable!, ["--boundary-session", "2.1.0"], {
+  const child = spawn(executable!, ["--boundary-session", "2.2.0"], {
     windowsHide: true,
     stdio: "pipe",
   });
@@ -111,7 +111,7 @@ async function setup() {
   const nonce = randomBytes(32).toString("hex");
   const hello = await send({
     kind: "hello",
-    protocol_version: "2.1.0",
+    protocol_version: "2.2.0",
     request_id: randomUUID(),
     client_nonce: nonce,
   });
@@ -131,7 +131,7 @@ async function setup() {
   ) {
     const body = {
       kind: "directory_request",
-      protocol_version: "2.1.0",
+      protocol_version: "2.2.0",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
       request_id: randomUUID(),
@@ -161,7 +161,7 @@ async function setup() {
   async function read(token: string, component: string, maximum: number, allowMissing = false) {
     const body = {
       kind: "file_request",
-      protocol_version: "2.1.0",
+      protocol_version: "2.2.0",
       operation: "read-file",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
@@ -202,11 +202,12 @@ async function setup() {
     token: string,
     component: string,
     content: Buffer,
-    correction: Record<string, string> = {}
+    correction: Record<string, string> = {},
+    expectExists = false
   ) {
     const body = {
       kind: "file_create_request",
-      protocol_version: "2.1.0",
+      protocol_version: "2.2.0",
       operation: "create-file",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
@@ -224,7 +225,7 @@ async function setup() {
       2000
     );
     const reply = await send({ ...body, request_digest: digest });
-    expect(reply.kind).toBe("file_create_result");
+    expect(reply.kind).toBe(expectExists ? "file_exists" : "file_create_result");
     expect(
       exchange.correlate({
         client_nonce: reply.client_nonce,
@@ -234,12 +235,18 @@ async function setup() {
         request_digest: reply.request_digest,
       }).correlated
     ).toBe(true);
-    expect(reply).toMatchObject({
-      status: "created",
-      lease_token: token,
-      byte_length: content.length,
-      content_sha256: body.content_sha256,
-    });
+    if (expectExists) {
+      expect(reply).toMatchObject({ lease_token: token });
+      expect(reply).not.toHaveProperty("byte_length");
+      expect(reply).not.toHaveProperty("file_id");
+    } else {
+      expect(reply).toMatchObject({
+        status: "created",
+        lease_token: token,
+        byte_length: content.length,
+        content_sha256: body.content_sha256,
+      });
+    }
     return reply;
   }
   async function run(
@@ -249,7 +256,7 @@ async function setup() {
   ) {
     const body = {
       kind: "process_request",
-      protocol_version: "2.1.0",
+      protocol_version: "2.2.0",
       operation: "run-process",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
@@ -301,7 +308,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
   "native bound process execution",
   () => {
     it("rejects a malformed one-shot worker frame before command launch", async () => {
-      const worker = spawn(executable!, ["--process-worker", "2.1.0"], {
+      const worker = spawn(executable!, ["--process-worker", "2.2.0"], {
         cwd: path.dirname(executable!),
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
@@ -548,18 +555,24 @@ describe.skipIf(process.platform !== "win32" || !executable)("real native direct
       await f.operation("release", root.lease_token);
     }
   );
-  it("preserves an existing file when creation collides", async () => {
+  it("returns a correlated no-effect collision and keeps the session live", async () => {
     const f = await setup();
     const target = path.join(f.directory, "existing");
     await writeFile(target, "coworker content");
     const root = await f.operation("acquire", f.directory);
-    await expect(
-      f.create(root.lease_token, "existing", Buffer.from("new content"))
-    ).rejects.toThrow();
-    await f.closed;
-    expect(f.child.exitCode).toBe(3);
+    const collision = await f.create(
+      root.lease_token,
+      "existing",
+      Buffer.from("new content"),
+      {},
+      true
+    );
+    expect(collision.kind).toBe("file_exists");
     expect(await readFile(target, "utf8")).toBe("coworker content");
-    await rename(f.parent, f.parent + "-released");
+    expect((await f.read(root.lease_token, "existing", 32)).content.toString()).toBe(
+      "coworker content"
+    );
+    await f.operation("release", root.lease_token);
   });
   it("creates within a held child after its parent token is released", async () => {
     const f = await setup();

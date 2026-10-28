@@ -309,21 +309,26 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned native direc
       fileCreations: [{ byteLength: 0, acknowledged: true }],
     });
   });
-  it("preserves an existing file and the unacknowledged creation record", async () => {
+  it("preserves an existing file with a correlated no-effect creation record", async () => {
     const f = await fixture();
     await writeFile(path.join(f.directory, "existing"), "coworker content");
     const report = await withOwnedWindowsBoundaryDirectory(
       f.options,
       { path: f.directory },
       async (root) => {
-        await root.createFile("existing", Buffer.from("replacement"));
+        const collision = await root.createFile("existing", Buffer.from("replacement"));
+        expect(collision.kind).toBe("file_exists");
+        const observed = await root.readFile("existing", 32);
+        expect(observed.kind).toBe("file_read");
+        if (observed.kind === "file_read")
+          expect(Buffer.from(observed.bytes).toString()).toBe("coworker content");
       }
     );
     expect(readFileSync(path.join(f.directory, "existing"), "utf8")).toBe("coworker content");
     expect(report).toMatchObject({
-      outcome: "failed",
-      directory: { filesCreated: 0 },
-      fileCreations: [{ acknowledged: false, component: "existing" }],
+      outcome: "matched",
+      directory: { filesCreated: 0, filesRead: 1, releaseAcknowledged: true },
+      fileCreations: [{ acknowledged: true, outcome: "file_exists", component: "existing" }],
     });
   });
   it("rejects oversized input before recording or sending a creation", async () => {

@@ -22,11 +22,11 @@ describe.skipIf(process.platform !== "win32" || !executable)(
   () => {
     const request = {
       kind: "hello",
-      protocol_version: "2.1.0",
+      protocol_version: "2.2.0",
       request_id: "native-test",
       client_nonce: "a".repeat(64),
     };
-    function run(input: Buffer, args = ["--boundary-protocol", "2.1.0"]) {
+    function run(input: Buffer, args = ["--boundary-protocol", "2.2.0"]) {
       return spawnSync(executable!, args, {
         input,
         timeout: 3000,
@@ -58,7 +58,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
       "native session rejects %s",
       async (mode) => {
         await new Promise<void>((resolve, reject) => {
-          const child = spawn(executable!, ["--boundary-session", "2.1.0"], {
+          const child = spawn(executable!, ["--boundary-session", "2.2.0"], {
             windowsHide: true,
             stdio: "pipe",
           });
@@ -84,7 +84,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
                     kind: "session_request" as const,
                     operation: "session-status" as const,
                     operation_id: "op1",
-                    protocol_version: "2.1.0" as const,
+                    protocol_version: "2.2.0" as const,
                     request_id: "r1",
                     session_nonce:
                       mode === "wrong-session" ? "f".repeat(64) : message.session_nonce,

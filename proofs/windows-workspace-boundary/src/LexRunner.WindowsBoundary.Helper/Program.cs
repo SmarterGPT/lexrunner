@@ -7,7 +7,7 @@ using System.Text.Json;
 // Development protocol and held-directory peer; not a qualified production boundary.
 internal static class Program
 {
-  internal const string Version = "2.1.0";
+  internal const string Version = "2.2.0";
   private const int Limit = 4096;
   internal const int FileLimit = 65_536;
   private const int SessionLimit = 98_304;

@@ -79,7 +79,7 @@ describe.skipIf(process.platform !== "win32" || !helper)(
           transport: "native_helper",
           implementation: "test-composition",
           implementation_version: "1.0.0",
-          protocol_version: "2.1.0",
+          protocol_version: "2.2.0",
           artifact_digest: digest,
           signature: { status: "verified", signer_identity: "synthetic-test-metadata" },
         },

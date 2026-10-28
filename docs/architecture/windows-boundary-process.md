@@ -67,18 +67,21 @@ repository-selected config under a different process identity, provide a
 protected creation transition, or change production `helper_missing`.
 
 The shared native broker test is routed to Linux Git CI and native Windows
-qualification for the same nine public behaviors. Its Windows fixture supplies a source-built
-development helper; it does not select or activate an installed helper. The
-fixture seeds an existing worktree through Git only to exercise reuse,
-observation, and preservation. Windows creation and fresh removal assert a
-structured `containment_violation` with no first effect. The native Windows
-qualification script checks that all nine cases execute without skips and
-records their count. This is a partial #893 conformance slice, not production
-parity: the older 28-case functional broker suite still has Linux-only fixture
-setup and is skipped on Windows. The directory-boundary conformance fixture
-likewise still hardcodes Linux identity. These cases need a complete cross-host
-refactor and qualified Windows creation and fresh-removal transitions before
-#893 can close.
+qualification for the same 13 public behaviors. Its Windows fixture supplies a
+source-built development helper; it does not select or activate an installed
+helper. The fixture seeds an existing worktree through Git only to exercise
+reuse, observation, and preservation. Windows creation and fresh removal assert
+a structured `containment_violation` with no first effect. The native Windows
+qualification script requires all 13 cases without skips and records their
+count. The shared workspace-boundary suite also runs the same three public
+lease cases on Linux and source-built Windows, including a confirmed no-effect
+exclusive-create collision and subsequent read. Its fixture accepts the host's
+directory identity; it does not use production Windows selection.
+
+This is a partial #893 conformance slice. The older 28-case functional broker
+suite still has Linux-only fixture setup and is skipped on Windows. Protected
+Windows creation and fresh-removal transitions, remaining hostile cases, and
+public Attempt-level qualification are still needed before #893 can close.
 
 The development session now accepts `process_request` / `run-process`. It runs
 an explicit absolute .exe through CreateProcessW without a shell. The cwd is a

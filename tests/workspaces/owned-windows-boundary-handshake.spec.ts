@@ -272,6 +272,54 @@ describe("owned Windows boundary development handshake", () => {
       });
     }
   );
+  it("keeps a correlated file_exists reply and the directory session live", async () => {
+    state.mode = "directory-create-exists-valid";
+    let observed: unknown;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture" },
+      async (root) => {
+        observed = await root.createFile("existing", Buffer.from("replacement"));
+        await root.assertCurrent();
+      }
+    );
+    expect(observed).toMatchObject({
+      kind: "file_exists",
+      requestId: expect.any(String),
+      operationId: expect.any(String),
+      requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+    });
+    expect(Object.isFrozen(observed)).toBe(true);
+    expect(report).toMatchObject({
+      outcome: "matched",
+      directory: { filesCreated: 0, assertions: 1, releaseAcknowledged: true },
+      fileCreations: [{ acknowledged: true, outcome: "file_exists", component: "existing" }],
+      sessionOperations: { requested: 4, correlated: 4 },
+    });
+  });
+  it.each(["wrong-token", "wrong-digest", "on-assert"])(
+    "rejects forged file_exists %s without acknowledging a creation",
+    async (mode) => {
+      state.mode = `directory-create-exists-${mode}`;
+      const report = await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture" },
+        async (root) => {
+          if (mode === "on-assert") await root.assertCurrent();
+          else await root.createFile("existing", Buffer.from("replacement"));
+        }
+      );
+      expect(report).toMatchObject({
+        reason: "protocol_error",
+        directory: { filesCreated: 0, releaseAcknowledged: false },
+        sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+      });
+      if (mode !== "on-assert")
+        expect(report.fileCreations).toMatchObject([
+          { acknowledged: false, component: "existing" },
+        ]);
+    }
+  );
   it("retains an unanswered file request without retry", async () => {
     state.mode = "directory-file-silent";
     const report = await withOwnedWindowsBoundaryDirectory(
@@ -601,7 +649,7 @@ describe("owned Windows boundary development handshake", () => {
     vi.stubEnv("LD_PRELOAD", "/do-not-load-this");
     vi.stubEnv("PRIVATE_TEST_SECRET", "must-not-be-forwarded");
     expect((await probeOwnedWindowsBoundaryHandshake(options())).outcome).toBe("matched");
-    expect(state.calls[0][1]).toEqual(["--boundary-protocol", "2.1.0"]);
+    expect(state.calls[0][1]).toEqual(["--boundary-protocol", "2.2.0"]);
     const launch = state.calls[0][2] as any;
     expect(launch).toMatchObject({
       shell: false,

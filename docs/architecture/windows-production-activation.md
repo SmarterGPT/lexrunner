@@ -40,7 +40,7 @@ open; WSL projection requires separate explicit authorization and configuration.
    A projected receipt is not durable delivery, and `not_requested` durability is
    not `committed`.
 3. **Workload budgets — v2 profile implemented, broker workload qualification pending.**
-   Protocol 2.1.0 retains 128 requests, 30-second command budgets plus reply reserve,
+   Protocol 2.2.0 retains 128 requests, 30-second command budgets plus reply reserve,
    and an explicitly selected work window up to five minutes. Defaults are unchanged.
    See [v2 bounds and qualification](windows-boundary-budget-v2.md). Exercise actual
    broker command sequences before claiming fit; do not silently shorten command

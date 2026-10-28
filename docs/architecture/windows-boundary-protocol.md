@@ -32,9 +32,9 @@ The [owned handshake probe](owned-windows-boundary-handshake.md) now exercises a
 one-shot development child with private pipes, a deadline and explicit cleanup.
 It remains non-authorizing and does not supply a production helper.
 
-## Current read absence reply (2.1.0)
+## Correlated no-effect file replies (2.2.0)
 
-Protocol `2.1.0` adds a strict `file_missing` reply for a `read-file` request.
+Protocol `2.1.0` added a strict `file_missing` reply for a `read-file` request.
 The native helper emits it only when a handle-relative file open fails with
 Windows error 2 or 3 and the held parent still passes `AssertCurrent`. It echoes
 the session, lease token, request and operation identities, and request digest.
@@ -45,8 +45,19 @@ unexpected or malformed replies remain terminal. The portable lease maps the
 correlated absence to `invalid_path` with `no_effect`, allowing the broker to
 preserve ambiguous ownership without removing a worktree.
 
+Protocol `2.2.0` adds a strict `file_exists` reply for a `create-file` request.
+The native helper emits it only for the exact `STATUS_OBJECT_NAME_COLLISION`
+returned by an atomic handle-relative `FILE_CREATE`, after reasserting the held
+parent chain. No target handle was opened and no bytes were written. The reply
+echoes the session, lease token, request and operation identities, and request
+digest; it carries no file content or identity. The caller accepts it only for
+the matching pending creation, records an acknowledged no-effect attempt, and
+keeps the helper session live. Other native create failures and malformed or
+uncorrelated replies remain terminal.
+
 Version checks remain exact. An installed `2.0.0` helper cannot negotiate with
-the `2.1.0` client; it requires a separately reviewed upgrade. This protocol
+the `2.2.0` client; it requires a separately reviewed upgrade. The `2.1.0`
+development helper also cannot negotiate with the `2.2.0` client. This protocol
 change does not activate a helper or establish production readiness.
 
 Production integration must bind these frames to owned inherited private pipes, verify

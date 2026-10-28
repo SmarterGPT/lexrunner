@@ -62,6 +62,27 @@ process.stdin.on("data", (chunk) => {
       process.stdout.write(encode(reply));
       return;
     }
+    if (
+      mode.startsWith("directory-create-exists-") &&
+      (request.kind === "file_create_request" ||
+        (mode === "directory-create-exists-on-assert" && request.operation === "assert"))
+    ) {
+      const reply = {
+        kind: "file_exists",
+        protocol_version: request.protocol_version,
+        client_nonce: request.client_nonce,
+        session_nonce: request.session_nonce,
+        request_id: request.request_id,
+        operation_id: request.operation_id,
+        request_digest: request.request_digest,
+        lease_token: request.lease_token,
+      };
+      if (mode === "directory-create-exists-wrong-token") reply.lease_token = "e".repeat(64);
+      if (mode === "directory-create-exists-wrong-digest")
+        reply.request_digest = `sha256:${"0".repeat(64)}`;
+      process.stdout.write(encode(reply));
+      return;
+    }
     if (request.kind === "process_request") {
       if (mode === "directory-process-lost") {
         process.exit(0);

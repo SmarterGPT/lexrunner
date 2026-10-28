@@ -120,7 +120,10 @@ export interface OwnedWindowsDirectoryScope {
     component: string,
     maxBytes: number
   ): Promise<OwnedWindowsFileRead | OwnedWindowsFileMissing>;
-  createFile(component: string, content: Uint8Array): Promise<OwnedWindowsFileCreated>;
+  createFile(
+    component: string,
+    content: Uint8Array
+  ): Promise<OwnedWindowsFileCreated | OwnedWindowsFileExists>;
   runProcess(request: OwnedWindowsProcessRequest): Promise<OwnedWindowsProcessResult>;
 }
 export interface OwnedWindowsProcessRequest {
@@ -212,6 +215,12 @@ export interface OwnedWindowsFileCreated {
   readonly fileId: string;
   readonly volumeSerialNumber: string;
 }
+export interface OwnedWindowsFileExists {
+  readonly kind: "file_exists";
+  readonly requestId: string;
+  readonly operationId: string;
+  readonly requestDigest: string;
+}
 export interface OwnedWindowsFileCreationAttempt {
   readonly requestId: string;
   readonly operationId: string;
@@ -221,6 +230,7 @@ export interface OwnedWindowsFileCreationAttempt {
   readonly byteLength: number;
   readonly contentSha256: string;
   readonly acknowledged: boolean;
+  readonly outcome?: "created" | "file_exists";
   readonly fileId?: string;
 }
 export interface OwnedWindowsFileRead {
@@ -238,6 +248,7 @@ type ScopeReply =
   | OwnedWindowsFileRead
   | OwnedWindowsFileMissing
   | OwnedWindowsFileCreated
+  | OwnedWindowsFileExists
   | OwnedWindowsProcessResult
   | { kind: "removal_completed"; payload: WindowsRemovalResultPayload }
   | null;
@@ -875,7 +886,7 @@ async function runOwnedWindowsBoundary(
             "create-file",
             component,
             (reply) => {
-              if (!reply || reply.kind !== "file_created")
+              if (!reply || (reply.kind !== "file_created" && reply.kind !== "file_exists"))
                 throw new Error("Unexpected creation response");
               return reply;
             },
@@ -1213,6 +1224,7 @@ async function runOwnedWindowsBoundary(
             fileCreations[currentCreation] = Object.freeze({
               ...attempt,
               acknowledged: true,
+              outcome: "created",
               fileId: message.file_id,
             });
             directoryOperation = undefined;
@@ -1228,6 +1240,51 @@ async function runOwnedWindowsBoundary(
                 contentSha256: message.content_sha256,
                 fileId: message.file_id,
                 volumeSerialNumber: message.volume_serial_number,
+              })
+            );
+            drainDeadline();
+            continue;
+          }
+          if (seenReply && directory && message.kind === "file_exists") {
+            if (
+              directoryOperation !== "create-file" ||
+              !directoryTarget ||
+              currentCreation === undefined ||
+              !assertion ||
+              message.lease_token !== directoryTarget.lease_token
+            ) {
+              fail("protocol_error");
+              return;
+            }
+            if (stopExpiredGrace()) return;
+            const match = exchange!.correlate({
+              client_nonce: message.client_nonce,
+              session_nonce: message.session_nonce,
+              request_id: message.request_id,
+              operation_id: message.operation_id,
+              request_digest: message.request_digest,
+            });
+            if (!match.correlated) {
+              fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
+              return;
+            }
+            clearTimeout(handshakeTimer);
+            acknowledgeDirectory(message.request_id);
+            operationCount++;
+            fileCreations[currentCreation] = Object.freeze({
+              ...fileCreations[currentCreation],
+              acknowledged: true,
+              outcome: "file_exists",
+            });
+            directoryOperation = undefined;
+            const waiter = assertion;
+            assertion = undefined;
+            waiter.resolve(
+              Object.freeze({
+                kind: "file_exists",
+                requestId: message.request_id,
+                operationId: message.operation_id,
+                requestDigest: message.request_digest,
               })
             );
             drainDeadline();

@@ -24,8 +24,7 @@ internal static class CapabilityIoProbe
         child.CreateBoundedFile("file", [1, 2, 3]);
         Check((child.ReadBoundedFile("file", 3) ?? throw new InvalidDataException("Expected file observation"))
           .Content.SequenceEqual(new byte[] { 1, 2, 3 }));
-        try { child.CreateBoundedFile("file", [9]); throw new Exception("Expected collision"); }
-        catch (Win32Exception) { }
+        Check(child.CreateBoundedFile("file", [9]) == null);
         Check((child.ReadBoundedFile("file", 3) ?? throw new InvalidDataException("Expected file observation"))
           .Content.SequenceEqual(new byte[] { 1, 2, 3 }));
         Check(child.OpenChild("missing", true, false) == null);
