@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -8,6 +9,10 @@ internal static class ProcessImageProbe
 {
   internal static void Run(string root, string canary, List<string> results)
   {
+    // The managed probe changes only its own private map; load framework code
+    // before that change so missing test dependencies cannot mimic a refusal.
+    Thread.Sleep(0);
+    Stopwatch.StartNew().Stop();
     var systemCmd = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
     var expected = SuspendedImage(systemCmd);
     var alias = Path.Combine(root, "process-image-alias"); Directory.CreateDirectory(alias);
@@ -46,31 +51,88 @@ internal static class ProcessImageProbe
     if (File.ReadAllText(workerOutput) != "global-cwd")
       throw new InvalidDataException("Final-map worker did not bind its command cwd");
     results.Add("process-final-map-worker-cwd");
-  }
 
-  private static uint RunSelectedChild(string executable, string arguments, string? cwd)
-  {
-    var startup = new StartupInfo { Size = Marshal.SizeOf<StartupInfo>() };
-    var command = new StringBuilder($"\"{executable}\" {arguments}");
-    if (!CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, false,
-        0x4, IntPtr.Zero, cwd, ref startup, out var child))
-      throw new Win32Exception(Marshal.GetLastWin32Error());
+    var marker = Path.Combine(alias, "owned-grandchild-pid");
+    IntPtr grandchild = IntPtr.Zero;
     try
     {
+      PrivateDriveProbe.WithAlias(systemCmd[..2], alias, () => {
+        try
+        {
+          RunSelectedChild(systemCmd, $"--launch-hold \"{canary}\" \"{marker}\"", null, () => {
+            var wait = Stopwatch.StartNew();
+            var aliasMarker = systemCmd[..3] + "owned-grandchild-pid";
+            while (!File.Exists(aliasMarker) && wait.ElapsedMilliseconds < 3000) Thread.Sleep(5);
+            if (!File.Exists(aliasMarker)) throw new IOException("Owned grandchild never started");
+            var pid = uint.Parse(File.ReadAllText(aliasMarker));
+            grandchild = OpenProcess(0x100000, false, pid); // Pin the actual process, not just its PID.
+            if (grandchild == IntPtr.Zero || WaitForSingleObject(grandchild, 0) != 258)
+              throw new IOException("Owned grandchild was not live");
+            throw new InvalidOperationException("Injected outer cancellation");
+          });
+          throw new Exception("Expected outer cancellation");
+        }
+        catch (InvalidOperationException error) when (error.Message == "Injected outer cancellation") { }
+      });
+      if (grandchild == IntPtr.Zero || WaitForSingleObject(grandchild, 5000) != 0)
+        throw new IOException("Owned job did not drain the grandchild");
+      results.Add("process-worker-failure-drains-descendant");
+    }
+    finally { if (grandchild != IntPtr.Zero && !CloseHandle(grandchild)) throw new IOException("Grandchild observation release uncertain"); }
+  }
+
+  private static uint RunSelectedChild(string executable, string arguments, string? cwd, Action? afterResume = null)
+  {
+    var job = CreateJobObjectW(IntPtr.Zero, null);
+    if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    ProcessInfo child = default;
+    var assigned = false;
+    var startup = new StartupInfo { Size = Marshal.SizeOf<StartupInfo>() };
+    var command = new StringBuilder($"\"{executable}\" {arguments}");
+    try
+    {
+      var limits = new ExtendedLimits { Basic = new BasicLimits { Flags = 0x2000 } };
+      if (!SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf<ExtendedLimits>()))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      if (!CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, false,
+          0x4, IntPtr.Zero, cwd, ref startup, out child))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      // The child is still suspended. No code can run before job ownership.
+      if (!AssignProcessToJobObject(job, child.Process)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      assigned = true;
       PrivateDriveProbe.SelectGlobalChild(child.Process);
-      if (ResumeThread(child.Thread) != 1 || WaitForSingleObject(child.Process, 5000) != 0 ||
+      if (ResumeThread(child.Thread) != 1) throw new IOException("Owned canary resume failed");
+      afterResume?.Invoke();
+      if (WaitForSingleObject(child.Process, 5000) != 0 ||
           !GetExitCodeProcess(child.Process, out var code))
         throw new IOException("Owned cwd canary failed");
       return code;
     }
     finally
     {
-      var stopped = WaitForSingleObject(child.Process, 0) == 0 ||
-          (TerminateProcess(child.Process, 1) && WaitForSingleObject(child.Process, 5000) == 0);
-      var threadClosed = CloseHandle(child.Thread);
-      var processClosed = CloseHandle(child.Process);
-      if (!stopped || !threadClosed || !processClosed)
-        throw new IOException("Owned cwd canary cleanup uncertain");
+      var closed = true;
+      if (child.Process != IntPtr.Zero)
+      {
+        if (assigned)
+        {
+          closed &= TerminateJobObject(job, 1);
+          var drain = Stopwatch.StartNew();
+          while (closed)
+          {
+            if (!QueryInformationJobObject(job, 1, out var accounting,
+                (uint)Marshal.SizeOf<Accounting>(), IntPtr.Zero)) { closed = false; break; }
+            if (accounting.ActiveProcesses == 0) break;
+            if (drain.ElapsedMilliseconds >= 2000) { closed = false; break; }
+            Thread.Sleep(5);
+          }
+        }
+        else closed &= TerminateProcess(child.Process, 1);
+        closed &= WaitForSingleObject(child.Process, 2000) == 0;
+        closed &= CloseHandle(child.Thread);
+        closed &= CloseHandle(child.Process);
+      }
+      closed &= CloseHandle(job);
+      if (!closed) throw new IOException("Owned canary job/descendant cleanup uncertain");
     }
   }
 
@@ -102,6 +164,12 @@ internal static class ProcessImageProbe
   { internal int Size; internal IntPtr Reserved, Desktop, Title; internal uint X, Y, XSize, YSize, XChars, YChars, Fill, Flags; internal ushort Show, ReservedSize; internal IntPtr ReservedBytes, Input, Output, Error; }
   [StructLayout(LayoutKind.Sequential)] private struct ProcessInfo
   { internal IntPtr Process, Thread; internal uint Id, ThreadId; }
+  [StructLayout(LayoutKind.Sequential)] private struct BasicLimits
+  { internal long ProcessTime, JobTime; internal uint Flags; internal UIntPtr Minimum, Maximum; internal uint Active; internal UIntPtr Affinity; internal uint Priority, Scheduling; }
+  [StructLayout(LayoutKind.Sequential)] private struct ExtendedLimits
+  { internal BasicLimits Basic; internal ulong ReadOps, WriteOps, OtherOps, ReadBytes, WriteBytes, OtherBytes; internal UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory; }
+  [StructLayout(LayoutKind.Sequential)] private struct Accounting
+  { internal long User, Kernel, PeriodUser, PeriodKernel; internal uint Faults, TotalProcesses, ActiveProcesses, TerminatedProcesses; }
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CreateProcessW(string application, StringBuilder command,
       IntPtr processAttributes, IntPtr threadAttributes, [MarshalAs(UnmanagedType.Bool)] bool inherit,
@@ -114,6 +182,12 @@ internal static class ProcessImageProbe
   [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(IntPtr handle, uint timeout);
   [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(IntPtr process, out uint code);
   [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)] private static extern uint ResumeThread(IntPtr thread);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateJobObjectW(IntPtr attributes, string? name);
+  [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimits value, uint size);
+  [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+  [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(IntPtr job, uint code);
+  [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(IntPtr job, int kind, out Accounting value, uint size, IntPtr length);
+  [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint processId);
   [DllImport("kernel32.dll", SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CloseHandle(IntPtr handle);
 }

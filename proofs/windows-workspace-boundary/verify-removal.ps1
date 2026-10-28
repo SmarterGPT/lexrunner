@@ -78,8 +78,8 @@ try {
     Invoke-Recorded 'tree-probe' $treeProbe @($fixtureRoot, $GitExecutable, $processCanary) $proofRoot
     $treeResult = Get-Content -LiteralPath (Join-Path $artifacts 'tree-probe.log') -Raw | ConvertFrom-Json
     $requiredObservation = @('git-observation-weakened-clean-swap', 'git-observation-guarded-dirty-preserved')
-    $requiredProcess = @('capability-nonempty-directory-reparse-refusal', 'process-suspended-image-readback', 'process-child-map-cwd-mismatch', 'process-final-map-worker-cwd')
-    if ($treeResult.filesystem -ne $filesystem -or @($treeResult.passed).Count -lt 39 -or
+    $requiredProcess = @('capability-nonempty-directory-reparse-refusal', 'process-suspended-image-readback', 'process-child-map-cwd-mismatch', 'process-final-map-worker-cwd', 'process-worker-failure-drains-descendant')
+    if ($treeResult.filesystem -ne $filesystem -or @($treeResult.passed).Count -lt 40 -or
         @($requiredObservation | Where-Object { $_ -notin $treeResult.passed }).Count -ne 0) {
         throw 'Git observation guard controls did not complete on the selected filesystem'
     }

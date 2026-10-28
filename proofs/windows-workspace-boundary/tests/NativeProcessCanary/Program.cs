@@ -28,6 +28,17 @@ if (args.Length == 4 && args[0] == "--launch-cwd")
   if (!child.WaitForExit(5000)) { child.Kill(entireProcessTree: true); child.WaitForExit(); return 6; }
   return child.ExitCode;
 }
+if (args.Length == 2 && args[0] == "--hold")
+{ File.WriteAllText(args[1], Environment.ProcessId.ToString()); System.Threading.Thread.Sleep(10000); return 0; }
+if (args.Length == 3 && args[0] == "--launch-hold")
+{
+  var start = new ProcessStartInfo(args[1]) { UseShellExecute = false, CreateNoWindow = true };
+  start.ArgumentList.Add("--hold"); start.ArgumentList.Add(args[2]);
+  using var child = Process.Start(start);
+  if (child == null) return 5;
+  if (!child.WaitForExit(10000)) { child.Kill(entireProcessTree: true); child.WaitForExit(); return 6; }
+  return child.ExitCode;
+}
 if (args.Length > 0 && args[0].Equals("/d", StringComparison.OrdinalIgnoreCase))
 { Console.Write("namespace-canary"); return 0; }
 return 2;

@@ -33,9 +33,13 @@ An owned two-process control shows the narrower viable ordering: create a
 short-lived copied canary suspended, select its global child map, resume it,
 then have that canary start a second known canary with its cwd under the final
 global map. The second canary read the intended file on both NTFS and ReFS.
-This does not authenticate or package a worker, prove a protected loader,
-establish nested Job ownership, or protect workspace paths against reparse
-mutation. It is a process-binding experiment, not a production execution claim.
+The test launch canary is assigned to an owned kill-on-close Job before resume.
+An injected outer failure after a grandchild writes its PID retains an actual
+process handle and observes that grandchild exit after job termination. This
+closes the fixture's orphan window; it does not authenticate or package a
+product worker, prove a protected loader, establish production nested Job
+ownership, or protect workspace paths against reparse mutation. It is a
+process-binding experiment, not a production execution claim.
 
 A separate owned native probe found that `FSCTL_SET_REPARSE_POINT` refuses a
 nonempty directory on NTFS and ReFS while preserving its contents. This is a
