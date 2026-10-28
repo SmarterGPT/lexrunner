@@ -129,7 +129,23 @@ describe("shared native broker behavior", () => {
             capability.decision_digest,
             { workTimeoutMs: 120_000 }
           );
-          if (!acquired.ok) throw new Error("Shared native fixture acquisition failed");
+          if (!acquired.ok)
+            throw new Error(
+              `Shared native fixture acquisition failed: ${JSON.stringify({
+                reason: acquired.reason,
+                reportReason: acquired.report?.reason,
+                helloMatched: acquired.report?.helloMatched,
+                directoryAcquired: acquired.report?.directory?.acquired,
+                childrenAcquired: acquired.report?.directory?.childrenAcquired,
+                releaseAcknowledged: acquired.report?.directory?.releaseAcknowledged,
+                sessionRequested: acquired.report?.sessionOperations?.requested,
+                sessionCorrelated: acquired.report?.sessionOperations?.correlated,
+                cleanup: acquired.report?.cleanup.disposition,
+                exitCode: acquired.report?.cleanup.exitCode,
+                stderrBytes: acquired.report?.stderrBytes,
+                fixtureRoot: root.slice(0, 512),
+              })}`
+            );
           leases.push(acquired.lease);
           return acquired;
         },
