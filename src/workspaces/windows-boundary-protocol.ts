@@ -9,7 +9,7 @@ import {
 } from "./windows-removal-protocol.js";
 
 /** Negotiation only. Parsing these messages never qualifies a production helper. */
-export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "2.0.0" as const;
+export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "2.1.0" as const;
 export const WINDOWS_BOUNDARY_CONTROL_BYTES = 4_096;
 export const WINDOWS_BOUNDARY_SESSION_REQUESTS = 128;
 export const WINDOWS_BOUNDARY_NEGOTIATION_FRAMES = WINDOWS_BOUNDARY_SESSION_REQUESTS + 1;
@@ -145,6 +145,13 @@ export const WindowsBoundaryFileResult = z.strictObject({
   file_id: z.string().regex(/^[a-f0-9]{32}$/u),
   volume_serial_number: z.string().regex(/^[a-f0-9]{16}$/u),
 });
+/** A correlated read-only absence from a held native parent. No file handle was
+ * acquired and the helper session remains live for subsequent operations. */
+export const WindowsBoundaryFileMissingResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_missing"),
+  lease_token: Nonce,
+});
 export const WindowsBoundaryFileCreateRequest = z.strictObject({
   ...OperationCommon,
   kind: z.literal("file_create_request"),
@@ -222,6 +229,7 @@ const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryDirectoryResult,
   WindowsBoundaryFileRequest,
   WindowsBoundaryFileResult,
+  WindowsBoundaryFileMissingResult,
   WindowsBoundaryFileCreateRequest,
   WindowsBoundaryFileCreateResult,
   WindowsBoundaryProcessRequest,

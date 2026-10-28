@@ -15,7 +15,7 @@ import {
 it("requires explicit session decoding and keeps negotiation closed to operations", () => {
   const operation = {
     kind: "session_result",
-    protocol_version: "2.0.0",
+    protocol_version: "2.1.0",
     request_id: "r1",
     client_nonce: "a".repeat(64),
     session_nonce: "b".repeat(64),
@@ -31,7 +31,7 @@ it("requires explicit session decoding and keeps negotiation closed to operation
 
 const request = {
   kind: "hello" as const,
-  protocol_version: "2.0.0" as const,
+  protocol_version: "2.1.0" as const,
   request_id: "request-1",
   client_nonce: "a".repeat(64),
 };
@@ -71,6 +71,29 @@ it("frames a maximum binary payload across fragmented input while keeping negoti
   expect(messages).toEqual([result]);
   expect(() => encodeWindowsBoundarySession({ ...result, byte_length: 65_537 })).toThrow();
 });
+it("admits only the bounded 2.1.0 missing-file reply shape", () => {
+  const missing = {
+    ...request,
+    kind: "file_missing",
+    session_nonce: "b".repeat(64),
+    operation_id: "read",
+    request_digest: `sha256:${"c".repeat(64)}`,
+    lease_token: "d".repeat(64),
+  };
+  const frame = encodeWindowsBoundarySession(missing);
+  expect(new WindowsBoundaryControlDecoder(true).push(frame)).toEqual([missing]);
+  expect(frame.length).toBeLessThan(WINDOWS_BOUNDARY_CONTROL_BYTES);
+  for (const other of [
+    { ...missing, protocol_version: "2.0.0" },
+    { ...missing, content_base64: "" },
+    { ...missing, error_code: 2 },
+  ]) {
+    expect(() => encodeWindowsBoundarySession(other)).toThrow();
+    expect(() =>
+      new WindowsBoundaryControlDecoder(true).push(raw(canonicalJSONStringify(other)))
+    ).toThrow();
+  }
+});
 it("rejects oversized session frames from the header and retains the stream budget", () => {
   const header = Buffer.alloc(4);
   header.writeUInt32BE(WINDOWS_BOUNDARY_PROCESS_BYTES + 1);
@@ -102,7 +125,7 @@ function expectTerminalFailure(frame: Uint8Array, code = "invalid_frame") {
 describe("Windows boundary negotiation codec", () => {
   it("matches the fixed v2 wire vector independently of the decoder", () => {
     const payload =
-      '{\n  "client_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",\n  "kind": "hello",\n  "protocol_version": "2.0.0",\n  "request_id": "request-1"\n}\n';
+      '{\n  "client_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",\n  "kind": "hello",\n  "protocol_version": "2.1.0",\n  "request_id": "request-1"\n}\n';
     const vector = Buffer.concat([Buffer.from([0, 0, 0, 168]), Buffer.from(payload, "utf8")]);
     expect(encodeWindowsBoundaryControl(request)).toEqual(vector);
     expect(new WindowsBoundaryControlDecoder().push(vector)).toEqual([request]);

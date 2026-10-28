@@ -102,7 +102,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
           transport: "native_helper",
           implementation: "windows-removal-fixture",
           implementation_version: "1.0.0",
-          protocol_version: "2.0.0",
+          protocol_version: "2.1.0",
           signature: { status: "development_unverified" },
         },
         claims: {

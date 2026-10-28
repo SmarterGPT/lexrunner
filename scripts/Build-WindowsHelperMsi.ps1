@@ -64,7 +64,7 @@ try {
     $manifest = [ordered]@{
         schemaVersion = 'windows-helper-generation/1'; profile = 'windows-helper-msi-direct/1'
         generationId = $generation; helperVersion = $HelperVersion
-        helper = [ordered]@{ file = 'lexrunner-windows-boundary-helper.exe'; sha256 = $generation; bytes = $signature.artifact_bytes; architecture = 'x64'; protocolVersion = '2.0.0'; removalVersion = '1.0.0' }
+        helper = [ordered]@{ file = 'lexrunner-windows-boundary-helper.exe'; sha256 = $generation; bytes = $signature.artifact_bytes; architecture = 'x64'; protocolVersion = '2.1.0'; removalVersion = '1.0.0' }
         source = [ordered]@{ repository = 'SmarterGPT/lexrunner'; revision = $HelperSourceRevision; signingRunId = $SigningRunId; basis = 'explicit workflow selection; independent release attestation still required' }
         publisherPolicy = [ordered]@{ id = 'lexrunner-azure-helper-publisher/1'; subject = $signature.publisher; identityEku = $signature.publisher_identity_eku }
         state = 'provisioned-unqualified'; productionReady = $false

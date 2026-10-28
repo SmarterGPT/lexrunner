@@ -66,6 +66,20 @@ creation effect; it does not protect the broker's earlier Git inspection from
 repository-selected config under a different process identity, provide a
 protected creation transition, or change production `helper_missing`.
 
+The shared native broker test is routed to Linux Git CI and native Windows
+qualification for the same nine public behaviors. Its Windows fixture supplies a source-built
+development helper; it does not select or activate an installed helper. The
+fixture seeds an existing worktree through Git only to exercise reuse,
+observation, and preservation. Windows creation and fresh removal assert a
+structured `containment_violation` with no first effect. The native Windows
+qualification script checks that all nine cases execute without skips and
+records their count. This is a partial #893 conformance slice, not production
+parity: the older 28-case functional broker suite still has Linux-only fixture
+setup and is skipped on Windows. The directory-boundary conformance fixture
+likewise still hardcodes Linux identity. These cases need a complete cross-host
+refactor and qualified Windows creation and fresh-removal transitions before
+#893 can close.
+
 The development session now accepts `process_request` / `run-process`. It runs
 an explicit absolute .exe through CreateProcessW without a shell. The cwd is a
 live directory token; arguments are literal strings or live directory tokens with

@@ -185,8 +185,8 @@ jobs:
           name: npm-pack-dry-run
           path: npm-pack-dry-run.json
 
-  # Native Windows bootstrap and independently portable regressions. The full shared
-  # native-host conformance lane is tracked by #893 and must not be simulated with skips.
+  # Native Windows bootstrap, portable regressions, and a source-built shared broker
+  # slice through verify-removal.ps1. Full native-host conformance remains #893 work.
   windows-bootstrap:
     runs-on: windows-latest
     if: >-

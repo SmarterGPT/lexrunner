@@ -22,10 +22,12 @@ internal static class CapabilityIoProbe
       try
       {
         child.CreateBoundedFile("file", [1, 2, 3]);
-        Check(child.ReadBoundedFile("file", 3).Content.SequenceEqual(new byte[] { 1, 2, 3 }));
+        Check((child.ReadBoundedFile("file", 3) ?? throw new InvalidDataException("Expected file observation"))
+          .Content.SequenceEqual(new byte[] { 1, 2, 3 }));
         try { child.CreateBoundedFile("file", [9]); throw new Exception("Expected collision"); }
         catch (Win32Exception) { }
-        Check(child.ReadBoundedFile("file", 3).Content.SequenceEqual(new byte[] { 1, 2, 3 }));
+        Check((child.ReadBoundedFile("file", 3) ?? throw new InvalidDataException("Expected file observation"))
+          .Content.SequenceEqual(new byte[] { 1, 2, 3 }));
         Check(child.OpenChild("missing", true, false) == null);
       }
       finally { child.Dispose(); }
@@ -40,7 +42,8 @@ internal static class CapabilityIoProbe
           try { lease.ReadBoundedFile("file", 4); throw new Exception("Expected conflicting writer refusal"); }
           catch (Win32Exception) { }
         }
-        Check(Encoding.UTF8.GetString(lease.ReadBoundedFile("file", 4).Content) == "keep");
+        Check(Encoding.UTF8.GetString((lease.ReadBoundedFile("file", 4) ??
+          throw new InvalidDataException("Expected file observation")).Content) == "keep");
       }
       Directory.Move(path, path + "-released");
     });
@@ -64,7 +67,8 @@ internal static class CapabilityIoProbe
         try { using var refused = DirectoryLease.Acquire(path[..3]); throw new Exception("Expected DOS alias refusal"); }
         catch (InvalidDataException) { }
         lease.CreateBoundedFile("retained-file", [4, 5]);
-        Check(lease.ReadBoundedFile("retained-file", 2).Content.SequenceEqual(new byte[] { 4, 5 }));
+        Check((lease.ReadBoundedFile("retained-file", 2) ??
+          throw new InvalidDataException("Expected file observation")).Content.SequenceEqual(new byte[] { 4, 5 }));
         using var child = lease.OpenChild("retained-child", false, true)!;
       });
       Check(File.Exists(Path.Combine(path, "retained-file")) && Directory.Exists(Path.Combine(path, "retained-child")));
@@ -77,7 +81,8 @@ internal static class CapabilityIoProbe
         Check(!Directory.Exists(@"\\.\GLOBALROOT\GLOBAL??\" + path));
         using var lease = DirectoryLease.Acquire(path);
         lease.CreateBoundedFile("native-root-file", [6]);
-        Check(lease.ReadBoundedFile("native-root-file", 1).Content.SequenceEqual(new byte[] { 6 }));
+        Check((lease.ReadBoundedFile("native-root-file", 1) ??
+          throw new InvalidDataException("Expected file observation")).Content.SequenceEqual(new byte[] { 6 }));
       }, spoofGlobalRoot: true);
       Check(File.ReadAllBytes(Path.Combine(path, "native-root-file")).SequenceEqual(new byte[] { 6 }));
     });

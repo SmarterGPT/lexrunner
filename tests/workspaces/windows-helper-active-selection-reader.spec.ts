@@ -30,7 +30,7 @@ const osRoot = String.raw`\\?\GLOBALROOT\SystemRoot\System32\reg.exe`;
 const dosPath = String.raw`D:\Windows\System32\reg.exe`;
 const selectionValue =
   `{"generationId":"${"a".repeat(64)}","manifestSha256":"${"b".repeat(64)}",` +
-  '"profile":"windows-helper-msi-direct/1","protocolVersion":"2.0.0",' +
+  '"profile":"windows-helper-msi-direct/1","protocolVersion":"2.1.0",' +
   '"publisherPolicyId":"lexrunner-azure-helper-publisher/1","removalVersion":"1.0.0",' +
   '"revision":1,"schemaVersion":"windows-helper-active-selection/1",' +
   `"source":{"repository":"SmarterGPT/lexrunner","revision":"${"c".repeat(40)}",` +
