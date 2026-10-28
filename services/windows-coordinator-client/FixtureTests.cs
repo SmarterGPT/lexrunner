@@ -255,6 +255,7 @@ internal static class FixtureTests
                 client.BytesWritten > 0, results, failures);
 
         CoordinatorSelectionFixtureTests.Run(results, failures);
+        CoordinatorV2RegistryFixtureTests.Run(results, failures);
         Program.Emit(new TestReport { State = failures.Count == 0 ? "pass" : "fail",
             Profile = "synthetic_same_user_non_authorizing", Results = results, Failures = failures },
             failures.Count == 0 ? 0 : 1);

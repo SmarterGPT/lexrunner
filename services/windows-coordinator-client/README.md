@@ -8,19 +8,19 @@ bounded diagnostic, but it still reports `helper_missing` even if that service
 exists. No caller argument can supply a pipe name, PID, image path, or pin in
 the ordinary image.
 
-The ordinary `--status` path also makes a read-only observation of the proposed
-service-specific `ActiveSelection` under the 64-bit
-`HKLM\Software\SmarterGPT.LexRunner.WindowsCoordinator` key. It parses a bounded,
-exact canonical `windows-coordinator-active-selection/1` value, reads the
-digest-named catalog and generation metadata under a fixed Program Files path,
-hashes the image, and compares the fixed `LexRunnerCoordinator` SCM configuration
-using `QueryServiceConfigW`. A repeated selection read detects a changed value.
-All outcomes are descriptive and carry `AuthorizesLaunch = false`; `--status`
-still reports `helper_missing`, and no result can construct a production
-endpoint or send a request. The initial MSI authors no selection or catalog and
-marks its manifest unqualified. These reads do not establish protected ACLs,
-rollback resistance, atomic file custody, loader closure, actual running-image
-binding, or cross-account peer authority.
+The ordinary `--status` path now makes a read-only v2 observation of the fixed
+64-bit `HKLM\Software\SmarterGPT.LexRunner.WindowsCoordinator` key through the
+shared native selection-custody reader. It holds opened registry keys, refuses
+registry links, checks the SYSTEM owner and protected exact DACL, requires
+typed canonical v2 `ActiveSelection` and `HighWaterRevision` values, checks the
+selected catalog, and compares two structural snapshots. The result is only a
+bounded diagnostic reason: even a structural match still reports
+`helper_missing` and cannot construct a production endpoint or send a request.
+The old v1 one-image selection comparison remains isolated in source fixtures;
+it is not the ordinary client's selected v2 profile. The initial MSI authors
+no selection or catalog. This v2 observation does not authenticate the
+publisher, retain high-water across upgrades, bind the installed graph or
+running process image, qualify loader closure, or prove cross-account access.
 
 The source binding sequence for a future protected selection is:
 
@@ -65,7 +65,8 @@ pwsh -NoLogo -NoProfile -File .\services\windows-coordinator-client\verify.ps1
 
 The verifier builds normal and gated NativeAOT images under
 `artifacts/windows-coordinator-client`, checks the ordinary refusal and gated
-tests, runs the npm package boundary validator, and records bounded command,
+tests (including v2 registry-only no-send cases), runs the npm package boundary
+validator, and records bounded command,
 cwd, duration, exit, output hash/tail, source hashes, and image hashes in
 `artifacts/windows-coordinator-client/verification-receipt.json`. These are
 uninstalled review artifacts. It removes only this project's checked `bin/`
