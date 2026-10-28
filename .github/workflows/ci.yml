@@ -247,6 +247,14 @@ jobs:
           tests/workspaces/windows-coordinator-active-selection-v2.spec.ts
           tests/workspaces/windows-coordinator-active-selection-v2-reader.spec.ts
           tests/workspaces/windows-coordinator-active-selection-v2-acquisition.spec.ts
+      - name: Verify inactive Windows coordinator admission bundle and journal
+        run: >-
+          npx --no-install vitest run
+          tests/windows-coordinator/bundled-admission-probe.spec.ts
+          services/windows-coordinator-admission/synthetic-uncertainty-journal.spec.ts
+          tests/windows-coordinator/admission-store.spec.ts
+          tests/store/sqlite/coordination-store.spec.ts
+          tests/store/sqlite/workspace-lifecycle-store.spec.ts
       - name: Qualify native Windows coordinator console peer probe
         shell: pwsh
         run: ./services/windows-coordinator-host/verify.ps1

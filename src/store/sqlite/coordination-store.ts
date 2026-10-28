@@ -94,6 +94,8 @@ interface CoordinationEventRow {
 
 export interface SqliteCoordinationStoreOptions {
   readOnly?: boolean;
+  /** Installed-profile callers may supply the already loaded, exact native addon object. */
+  nativeBinding?: object;
 }
 
 /** SQLite implementation with transactionally serialized lease and CAS operations. */
@@ -103,9 +105,24 @@ export class SqliteCoordinationStore implements CoordinationStore {
   private closed = false;
 
   constructor(dbPath: string, options: SqliteCoordinationStoreOptions = {}) {
+    if (
+      options.nativeBinding !== undefined &&
+      (options.nativeBinding === null || typeof options.nativeBinding !== "object")
+    )
+      throw new TypeError("SQLite native binding must be an addon object");
+    // Upstream runtime accepts an addon object, while its published .d.ts still
+    // declares only a string path. The object branch skips `bindings` search.
+    const nativeOptions =
+      options.nativeBinding === undefined
+        ? {}
+        : { nativeBinding: options.nativeBinding as unknown as string };
     this.db = new Database(
       dbPath,
-      options.readOnly ? { readonly: true, fileMustExist: true } : undefined
+      options.readOnly
+        ? { readonly: true, fileMustExist: true, ...nativeOptions }
+        : Object.keys(nativeOptions).length > 0
+          ? nativeOptions
+          : undefined
     );
     try {
       this.db.pragma("foreign_keys = ON");
