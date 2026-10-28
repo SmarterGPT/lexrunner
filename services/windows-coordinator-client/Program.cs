@@ -23,6 +23,8 @@ internal static class Program
             {
                 var service = new ScmServiceSnapshots();
                 var status = service.Read();
+                if (status is not null)
+                    _ = CoordinatorAcquisition.Observe();
                 return Emit(new Output { State = "helper_missing",
                     Reason = status is not null ? "selection_unavailable" :
                         service.LastError == 1060 ? "service_missing" : "service_unavailable" }, 0);

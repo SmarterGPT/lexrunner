@@ -16,6 +16,15 @@ on:
       - "services/windows-coordinator-host/**"
       - "services/windows-coordinator-client/**"
       - "services/windows-coordinator-service/**"
+      - "services/windows-coordinator-admission/**"
+      - "services/windows-coordinator-git/**"
+      - "services/windows-coordinator-installed-readback/**"
+      - "services/windows-coordinator-job/**"
+      - "services/windows-coordinator-root-provisioner/**"
+      - "installers/windows-coordinator/**"
+      - "scripts/*WindowsCoordinator*.ps1"
+      - "scripts/*windows-coordinator*.ts"
+      - "docs/architecture/windows-coordinator-*.md"
       - "package*.json"
       - "tsconfig*.json"
       - ".github/workflows/**"
@@ -227,12 +236,36 @@ jobs:
           tests/workspaces/workspace-boundary-resolver.spec.ts
           tests/workspaces/workspace-boundary.spec.ts
           tests/store/sqlite/removal-evidence-interruption.spec.ts
+      - name: Verify inactive Windows coordinator graph and selection source
+        run: >-
+          npx --no-install vitest run
+          tests/workspaces/windows-coordinator-generation-graph.spec.ts
+          tests/workspaces/windows-coordinator-generation-payload.spec.ts
+          tests/workspaces/windows-coordinator-active-selection.spec.ts
+          tests/workspaces/windows-coordinator-active-selection-reader.spec.ts
+          tests/workspaces/windows-coordinator-active-selection-acquisition.spec.ts
+          tests/workspaces/windows-coordinator-active-selection-v2.spec.ts
+          tests/workspaces/windows-coordinator-active-selection-v2-reader.spec.ts
+          tests/workspaces/windows-coordinator-active-selection-v2-acquisition.spec.ts
       - name: Qualify native Windows coordinator console peer probe
         shell: pwsh
         run: ./services/windows-coordinator-host/verify.ps1
       - name: Qualify native Windows coordinator client source
         shell: pwsh
         run: ./services/windows-coordinator-client/verify.ps1
+      - name: Verify inactive coordinator installed-readback source contract
+        shell: pwsh
+        run: |
+          $result = ./services/windows-coordinator-installed-readback/Read-InstalledCoordinator.ps1 -SelfTest | ConvertFrom-Json
+          if ($result.schemaVersion -cne 'windows-coordinator-installed-readback/1' -or
+              $result.state -cne 'unavailable' -or
+              $result.reason -cne 'synthetic_contract_pass' -or
+              $result.authorizesExecution -ne $false -or
+              $result.productionReady -ne $false -or
+              $result.helperMissingCleared -ne $false -or
+              $result.sourceOnly -ne $true) {
+            throw 'Installed-readback source contract made an unsupported authority claim'
+          }
       - name: Qualify fail-closed Windows coordinator service source
         shell: pwsh
         run: ./services/windows-coordinator-service/verify.ps1
