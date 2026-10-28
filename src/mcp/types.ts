@@ -189,6 +189,12 @@ export const ConfigShowArgs = z.object({
 export type ConfigShowArgs = z.infer<typeof ConfigShowArgs>;
 
 export const WorkflowGuideArgs = z.object({
+  repoRoot: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((value) => value.trim().length > 0 && !value.includes("\0"))
+    .optional(),
   phase: z.enum([
     "initial",
     "post-plan-creation",

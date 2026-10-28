@@ -1134,6 +1134,13 @@ const tools = {
     inputSchema: {
       type: "object",
       properties: {
+        repoRoot: {
+          type: "string",
+          minLength: 1,
+          maxLength: 4096,
+          description:
+            "Repository for initial readiness diagnostics; relative to the server startup directory",
+        },
         phase: {
           type: "string",
           enum: [
@@ -1163,7 +1170,7 @@ const tools = {
         let guide;
         if (phase === "initial") {
           const doctor = await new core.WorkspaceDiagnosticsService().run({
-            baseDir: serverBaseDir,
+            baseDir: resolve(serverBaseDir, parsedArgs.data.repoRoot ?? "."),
           });
           const remediation = doctor.suggestions.length
             ? doctor.suggestions.join("; ")
@@ -1188,6 +1195,7 @@ const tools = {
               : undefined,
             observation: {
               source: "doctor",
+              diagnosticBase: doctor.diagnosticBase,
               hasErrors: doctor.hasErrors,
               missingFiles: doctor.configuration.missingFiles,
               compatibilityFiles: doctor.configuration.compatibilityFiles,

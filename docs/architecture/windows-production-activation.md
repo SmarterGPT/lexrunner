@@ -6,6 +6,17 @@ preserve/remove flow on a disposable Windows repository, followed by interruptio
 and restart reconciliation through the existing receipt verifier. Passing helper
 unit tests alone does not satisfy this target.
 
+## Current installation status
+
+The prerequisite is the qualified native Windows WorkspaceBoundary helper **and**
+its production selection/broker integration. LexRunner2.5.0 has no supported
+installation or configuration procedure that enables this path. Preflight reports
+the unavailable backend; it does not inspect helper installation. Installing a
+qualification-only MSI or supplying a hash/path does not activate it. npm never
+downloads or installs this optional application. Use the
+[external-worker workflow](../workflows/external-workers.md) while these gates remain
+open; WSL projection requires separate explicit authorization and configuration.
+
 ## Remaining gates
 
 1. **Portable broker bootstrap — implemented, native qualification pending.**
@@ -42,9 +53,10 @@ unit tests alone does not satisfy this target.
    and safe removal against disposable native Git repositories. Check isolation,
    marker/receipt provenance, bounded graceful deadlines and cleanup observations.
    Explicit native test composition now covers create/retry/observe and dirty
-   preservation. Clean removal is refused before mutation for deletion-excluding
-   profiles; [#997 and the removal contract](windows-worktree-removal.md) track the
-   qualified removal transition. This refusal is not successful removal qualification.
+   preservation. The [native removal executor](windows-native-removal-executor.md)
+   now implements the deliberate #997 transition with actual removal/recovery tests.
+   Its explicit development composition does not connect production selection or
+   establish complete public Attempt/CLI/MCP qualification.
 6. **Recovery.** Interrupt before/after dispatch, mutation, acknowledgment and receipt
    delivery. Reconcile through durable state and the existing verifier without replaying
    an unknown mutation or inferring success from process exit.

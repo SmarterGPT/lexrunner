@@ -414,7 +414,7 @@ export function mcpToolError(
 export function workflowGuideArgumentsError(): AXError {
   return mcpToolError(
     "WORKFLOW_GUIDE_ARGUMENTS_INVALID",
-    "Workflow phase is required and must be one of the published phase values",
+    "Workflow phase is required and must be one of the published phase values; optional repoRoot must be a nonempty path of at most 4096 characters without NUL bytes",
     {
       tool: "workflow.guide",
       operation: "workflow.guide",

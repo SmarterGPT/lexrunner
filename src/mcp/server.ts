@@ -945,6 +945,13 @@ function createServer(options?: McpServerOptions): Server {
           inputSchema: {
             type: "object",
             properties: {
+              repoRoot: {
+                type: "string",
+                minLength: 1,
+                maxLength: 4096,
+                description:
+                  "Repository for initial readiness diagnostics; relative to the server startup directory",
+              },
               phase: {
                 type: "string",
                 enum: [
@@ -2658,7 +2665,9 @@ async function handleWorkflowGuide(
 
     let guide: WorkflowGuide;
     if (phase === "initial") {
-      const doctor = await new WorkspaceDiagnosticsService().run({ baseDir: diagnosticBase });
+      const doctor = await new WorkspaceDiagnosticsService().run({
+        baseDir: path.resolve(diagnosticBase, parsedArgs.data.repoRoot ?? "."),
+      });
       const remediation = doctor.suggestions.length
         ? doctor.suggestions.join("; ")
         : "Run doctor and resolve every reported workspace issue before proceeding";
@@ -2685,6 +2694,7 @@ async function handleWorkflowGuide(
           : undefined,
         observation: {
           source: "doctor",
+          diagnosticBase: doctor.diagnosticBase,
           hasErrors: doctor.hasErrors,
           missingFiles: doctor.configuration.missingFiles,
           compatibilityFiles: doctor.configuration.compatibilityFiles,

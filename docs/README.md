@@ -64,6 +64,7 @@ New to LexRunner? Start here:
 
 ### Agent safety
 
+- **[External-worker workflow](./workflows/external-workers.md)** - Planning, externally coordinated implementation/integration, and verification when governed Attempt execution is unavailable
 - **[Agent worktree physical containment](./security/agent-worktree-containment.md)** - Directory-identity guarantees and platform restrictions
 
 ## 🔧 Configuration

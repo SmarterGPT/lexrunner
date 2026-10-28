@@ -1,7 +1,10 @@
 # Native Windows to WSL Attempt projection
 
-Use this workflow when `attempt preflight` reports `broker_required` because the authoritative
-checkout is on native Windows or exposed to WSL through DrvFS/9P. The projection is a disposable,
+Use this workflow only when the Windows-to-WSL route is explicitly authorized and its
+prerequisites are configured. `broker_required` alone does not authorize WSL installation,
+projection or host switching. Native Windows Attempt execution remains unavailable until
+its production boundary is qualified; the [external-worker workflow](external-workers.md)
+preserves planning and verification without changing hosts. The projection is a disposable,
 identity-anchored transport for one exact committed base. It is not another user-maintained
 checkout and it never copies source worktree dirt.
 

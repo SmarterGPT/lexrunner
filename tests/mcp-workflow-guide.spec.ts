@@ -30,6 +30,16 @@ describe("MCP Workflow Guide Types", () => {
       expect(() => WorkflowGuideArgs.parse({})).toThrow();
     });
 
+    it("preserves an explicit repository and rejects invalid repository paths", () => {
+      expect(WorkflowGuideArgs.parse({ phase: "initial", repoRoot: "../repository" })).toEqual({
+        phase: "initial",
+        repoRoot: "../repository",
+      });
+      for (const repoRoot of ["", " ", "bad\0path", "x".repeat(4097), 7, null]) {
+        expect(() => WorkflowGuideArgs.parse({ phase: "initial", repoRoot })).toThrow();
+      }
+    });
+
     it("should reject non-string phase values", () => {
       expect(() => WorkflowGuideArgs.parse({ phase: 123 })).toThrow();
       expect(() => WorkflowGuideArgs.parse({ phase: true })).toThrow();

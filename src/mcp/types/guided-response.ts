@@ -50,6 +50,8 @@ export interface WorkflowGuide {
   /** Optional observed workspace readiness used by the published MCP adapter. */
   readiness?: {
     source: "doctor";
+    /** Actual directory inspected; selecting it does not retarget execution. */
+    diagnosticBase?: string;
     hasErrors: boolean;
     missingFiles: string[];
     compatibilityFiles: string[];
