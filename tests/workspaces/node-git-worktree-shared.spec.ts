@@ -165,7 +165,18 @@ describe("shared native broker behavior", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    for (const lease of leases.splice(0)) await lease.close("completed").catch(() => {});
+    const releaseFailures: unknown[] = [];
+    for (const lease of leases.splice(0)) {
+      try {
+        const result = await lease.close("completed");
+        if (result.phase !== "released")
+          throw new Error(`Shared broker fixture release ended in ${result.phase}`);
+      } catch (error) {
+        releaseFailures.push(error);
+      }
+    }
+    if (releaseFailures.length)
+      throw new AggregateError(releaseFailures, "Shared broker fixture native release unconfirmed");
     if (root) {
       if (path.dirname(root) !== fixtureParent || !path.basename(root).startsWith("case-"))
         throw new Error("Invalid shared broker cleanup root");
