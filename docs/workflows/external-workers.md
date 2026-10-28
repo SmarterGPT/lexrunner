@@ -22,6 +22,9 @@ guidance, call `workflow.guide` (source adapter: `workflow_guide`) with:
 values resolve against the server's captured startup directory; omitting it retains
 that directory. This selects advisory diagnostics only, not execution/store/merge
 authority. `doctor` itself continues to inspect its startup directory.
+If the selected repository needs setup or diagnostic recovery, the guide directs
+you to a repository-specific session and omits a command recommendation that would
+operate in the container instead. `local.init` is not retargeted by `repoRoot` either.
 
 The `repoRoot` guide argument requires a release containing this update. On 2.5.0,
 start a repository-specific MCP session in the actual repository; passing this

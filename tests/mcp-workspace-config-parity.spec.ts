@@ -145,6 +145,7 @@ describe("published MCP workspace/config parity", () => {
     const startupRoot = fixtureRoot();
     const selectedRoot = fixtureRoot();
     const laterRoot = fixtureRoot();
+    const missingRoot = fixtureRoot();
     prepareDiagnosticRoot(selectedRoot, "local");
     const configuration = path.join(selectedRoot, ".smartergpt");
     for (const file of ["intent.md", "scope.yml", "deps.yml", "gates.yml"]) {
@@ -157,6 +158,7 @@ describe("published MCP workspace/config parity", () => {
       { phase: "initial", repoRoot: selectedRoot },
       { phase: "initial", repoRoot: path.relative(startupRoot, selectedRoot) },
       { phase: "initial" },
+      { phase: "initial", repoRoot: missingRoot },
     ];
     await withoutProfileEnvironment(async () => {
       const published = await invokeMany(startupRoot, [
@@ -197,10 +199,23 @@ describe("published MCP workspace/config parity", () => {
               authority: "advisory",
               authorizesExecution: false,
               authorizesMerge: false,
-              readiness: { diagnosticBase: index < 2 ? selectedRoot : startupRoot },
+              readiness: {
+                diagnosticBase: index < 2 ? selectedRoot : index === 2 ? startupRoot : missingRoot,
+              },
             });
             expect(guide.readiness.missingFiles.length === 0).toBe(index < 2);
-            expect(guide.recommendedAction === "local.init").toBe(index === 2);
+            expect(guide.recommendedAction === "local.init").toBe(
+              index === 2 && guide === deployed
+            );
+            if (index !== 2 || guide === source) {
+              expect(guide).not.toHaveProperty("recommendedAction");
+              expect(guide.readiness.suggestions.join(" ")).toContain(
+                "repository-specific MCP session"
+              );
+              expect(guide.readiness.suggestions.join(" ")).toContain(
+                guide.readiness.diagnosticBase
+              );
+            }
           }
         }
       } finally {
@@ -210,6 +225,7 @@ describe("published MCP workspace/config parity", () => {
       }
     });
     expect(fs.existsSync(path.join(startupRoot, ".smartergpt.local"))).toBe(false);
+    expect(fs.existsSync(path.join(missingRoot, ".smartergpt.local"))).toBe(false);
     expect(
       fs
         .readdirSync(configuration)
@@ -399,9 +415,9 @@ describe("published MCP workspace/config parity", () => {
           authorizesMerge: false,
           phase: "initial",
           canProceed: false,
-          recommendedAction: "local.init",
           readiness: { source: "doctor", hasErrors: true },
         });
+        expect(initialGuide).not.toHaveProperty("recommendedAction");
         expect(initialGuide.readiness.suggestions.join(" ")).toContain(startupRoot);
         expect(initialGuide.readiness.suggestions.join(" ")).not.toContain(laterRoot);
 

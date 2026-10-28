@@ -63,7 +63,8 @@ export interface WorkflowGuide {
 export interface WorkflowReadiness {
   canProceed: boolean;
   commonIssues?: CommonIssue[];
-  recommendedAction?: string;
+  /** Explicit null suppresses a phase default that cannot target this repository. */
+  recommendedAction?: string | null;
   observation?: WorkflowGuide["readiness"];
 }
 

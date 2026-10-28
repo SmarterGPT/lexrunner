@@ -293,7 +293,10 @@ export function createWorkflowGuide(
     commonIssues: [...def.commonIssues, ...(readiness?.commonIssues ?? [])],
     documentation: def.documentation,
     canProceed: readiness?.canProceed ?? true,
-    recommendedAction: readiness?.recommendedAction ?? def.recommendedAction,
+    recommendedAction:
+      readiness?.recommendedAction === null
+        ? undefined
+        : (readiness?.recommendedAction ?? def.recommendedAction),
     ...(readiness?.observation ? { readiness: readiness.observation } : {}),
   };
 }
