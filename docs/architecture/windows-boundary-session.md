@@ -1,7 +1,7 @@
 # Bounded persistent development session
 
 > Version note: the v1 limits/launch examples below are historical. Current protocol
-> 2.1.0 requires a new helper for the correlated missing-file reply; see
+> 2.2.0 requires a new helper for correlated missing-file and file-collision replies; see
 > [v2 session budgets](windows-boundary-budget-v2.md) for the retained budgets.
 
 `probeOwnedWindowsBoundarySession(options, rounds)` connects the reviewed exchange

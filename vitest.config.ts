@@ -30,6 +30,7 @@ export default defineConfig({
       "**/tests/runs/worker-receipt-native-integration.spec.ts",
       "**/tests/workspaces/workspace-coordinator-sqlite-git.spec.ts",
       "**/tests/workspaces/node-git-worktree-shared.spec.ts",
+      "**/tests/workspaces/workspace-boundary-shared.spec.ts",
       "**/tests/application/gate-candidate-routing-git.spec.ts",
       "**/tests/application/gate-execution-service.spec.ts",
       "**/tests/application/workspace-diagnostics-git.spec.ts",

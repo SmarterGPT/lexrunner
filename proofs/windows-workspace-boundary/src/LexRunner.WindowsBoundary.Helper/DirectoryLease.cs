@@ -175,7 +175,7 @@ internal sealed class DirectoryLease : IDisposable
     }
   }
 
-  internal FileObservation CreateBoundedFile(string component, byte[] content)
+  internal FileObservation? CreateBoundedFile(string component, byte[] content)
   {
     ValidateComponent(component);
     if (content.Length > Program.FileLimit) throw new InvalidDataException();
@@ -183,7 +183,15 @@ internal sealed class DirectoryLease : IDisposable
     var path = System.IO.Path.Combine(Leaf.Path, component);
     if (path.Length > 1024) throw new InvalidDataException();
     // CREATE_NEW, read/write access, no sharing. Never truncate an existing target.
-    var file = NativeRelativeFiles.OpenCapabilityFile(LeafHandle, component, true);
+    DirectoryHandle file;
+    try { file = NativeRelativeFiles.OpenCapabilityFile(LeafHandle, component, true); }
+    catch (NativeRelativeFiles.FileCreateCollisionException)
+    {
+      // Only the exact failed FILE_CREATE name collision is a proven no-effect
+      // result. Reassert every held parent before reporting it to the caller.
+      AssertCurrent();
+      return null;
+    }
     try
     {
       if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());

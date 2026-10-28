@@ -83,8 +83,9 @@ describe("shared native broker behavior", () => {
     await git(repository, "config", "core.autocrlf", "false");
     await git(repository, "config", "user.name", "Shared Broker Fixture");
     await git(repository, "config", "user.email", "fixture@example.invalid");
+    await writeFile(path.join(repository, ".gitignore"), "ignored.log\n");
     await writeFile(path.join(repository, "tracked.txt"), "mostly birds\n");
-    await git(repository, "add", "tracked.txt");
+    await git(repository, "add", ".gitignore", "tracked.txt");
     await git(repository, "commit", "-m", "base");
 
     if (windows) {
@@ -101,7 +102,7 @@ describe("shared native broker behavior", () => {
           transport: "native_helper",
           implementation: "shared-broker-development-fixture",
           implementation_version: "1.0.0",
-          protocol_version: "2.1.0",
+          protocol_version: "2.2.0",
           artifact_digest: digest,
           signature: { status: "development_unverified" },
         },
@@ -298,6 +299,23 @@ describe("shared native broker behavior", () => {
     expect(await readFile(path.join(target.worktreePath, "untracked.txt"), "utf8")).toBe("keep\n");
   });
 
+  it("observes tracked, untracked, and ignored dirtiness with exact paths", async () => {
+    await seedOwnedWorktree();
+    await writeFile(path.join(target.worktreePath, "tracked.txt"), "modified\n");
+    await mkdir(path.join(target.worktreePath, "untracked dir"));
+    await writeFile(path.join(target.worktreePath, "untracked dir", "new file.txt"), "new\n");
+    await writeFile(path.join(target.worktreePath, "ignored.log"), "ignored\n");
+
+    const result = await broker.observe(target);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.observation.cleanliness).toBe("dirty");
+    expect(result.observation.dirtyPaths).toEqual(
+      expect.arrayContaining(["tracked.txt", "untracked dir/new file.txt", "ignored.log"])
+    );
+  });
+
   it("preserves missing and unregistered worktrees", async () => {
     expect(await broker.remove(target)).toMatchObject({
       ok: true,
@@ -326,6 +344,66 @@ describe("shared native broker behavior", () => {
     const gitAdmin = await git(target.worktreePath, "rev-parse", "--absolute-git-dir");
     await rm(path.join(gitAdmin, "lexrunner-attempt.json"));
     expect(await broker.remove(target)).toMatchObject({
+      ok: true,
+      outcome: "preserved",
+      preservationReason: "identity_ambiguous",
+    });
+  });
+
+  it("preserves a registered worktree whose branch no longer matches", async () => {
+    await seedOwnedWorktree();
+    await git(target.worktreePath, "switch", "-c", "agent/reassigned");
+
+    await expect(broker.remove(target)).resolves.toMatchObject({
+      ok: true,
+      outcome: "preserved",
+      preservationReason: "wrong_branch",
+      observation: { registered: true, branch: "agent/reassigned", attemptId: null },
+    });
+    expect(
+      (await git(repository, "worktree", "list", "--porcelain")).replaceAll("\\", "/").toLowerCase()
+    ).toContain(target.worktreePath.replaceAll("\\", "/").toLowerCase());
+  });
+
+  it("treats a path registered by another repository as unregistered and never removes it", async () => {
+    const foreignRepository = path.join(root, "foreign repository");
+    await git(root, "clone", repository, foreignRepository);
+    await git(
+      foreignRepository,
+      "worktree",
+      "add",
+      "-b",
+      target.branch,
+      target.worktreePath,
+      target.baseSha
+    );
+
+    await expect(broker.remove(target)).resolves.toMatchObject({
+      ok: true,
+      outcome: "preserved",
+      preservationReason: "unregistered",
+      observation: { exists: true, registered: false, repositoryId: null },
+    });
+    expect(
+      (await git(foreignRepository, "worktree", "list", "--porcelain"))
+        .replaceAll("\\", "/")
+        .toLowerCase()
+    ).toContain(target.worktreePath.replaceAll("\\", "/").toLowerCase());
+    expect(existsSync(target.worktreePath)).toBe(true);
+  });
+
+  it("treats a malformed Attempt marker as ambiguous ownership", async () => {
+    await seedOwnedWorktree();
+    const gitAdmin = await git(target.worktreePath, "rev-parse", "--absolute-git-dir");
+    await writeFile(path.join(gitAdmin, "lexrunner-attempt.json"), "null\n");
+
+    const observed = await broker.observe(target);
+    expect(observed).toMatchObject({
+      ok: true,
+      observation: { registered: true, attemptId: null, cleanliness: "clean" },
+    });
+    if (observed.ok) expect(observed.observation.reason).toMatch(/marker is malformed/u);
+    await expect(broker.remove(target)).resolves.toMatchObject({
       ok: true,
       outcome: "preserved",
       preservationReason: "identity_ambiguous",

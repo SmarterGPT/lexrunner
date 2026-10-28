@@ -9,7 +9,7 @@ import {
 } from "./windows-removal-protocol.js";
 
 /** Negotiation only. Parsing these messages never qualifies a production helper. */
-export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "2.1.0" as const;
+export const WINDOWS_BOUNDARY_PROTOCOL_VERSION = "2.2.0" as const;
 export const WINDOWS_BOUNDARY_CONTROL_BYTES = 4_096;
 export const WINDOWS_BOUNDARY_SESSION_REQUESTS = 128;
 export const WINDOWS_BOUNDARY_NEGOTIATION_FRAMES = WINDOWS_BOUNDARY_SESSION_REQUESTS + 1;
@@ -171,6 +171,13 @@ export const WindowsBoundaryFileCreateResult = z.strictObject({
   file_id: WindowsBoundaryFileResult.shape.file_id,
   volume_serial_number: WindowsBoundaryFileResult.shape.volume_serial_number,
 });
+/** An exact atomic FILE_CREATE name collision with the held parent reasserted.
+ * No file handle or write was acquired; the native session remains live. */
+export const WindowsBoundaryFileExistsResult = z.strictObject({
+  ...OperationCommon,
+  kind: z.literal("file_exists"),
+  lease_token: Nonce,
+});
 export const WindowsBoundaryProcessRequest = z.strictObject({
   ...OperationCommon,
   kind: z.literal("process_request"),
@@ -232,6 +239,7 @@ const SessionMessage = z.discriminatedUnion("kind", [
   WindowsBoundaryFileMissingResult,
   WindowsBoundaryFileCreateRequest,
   WindowsBoundaryFileCreateResult,
+  WindowsBoundaryFileExistsResult,
   WindowsBoundaryProcessRequest,
   WindowsBoundaryProcessResult,
   WindowsBoundaryRemovalRequest,

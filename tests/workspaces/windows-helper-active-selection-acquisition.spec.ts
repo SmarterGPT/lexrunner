@@ -60,7 +60,7 @@ function fixture() {
       sha256: generation,
       bytes: 2_753_944,
       architecture: "x64",
-      protocolVersion: "2.1.0",
+      protocolVersion: "2.2.0",
       removalVersion: "1.0.0",
     },
     source: {
@@ -94,7 +94,7 @@ function fixture() {
     generationId: generation,
     manifestSha256: digest,
     publisherPolicyId: "lexrunner-azure-helper-publisher/1",
-    protocolVersion: "2.1.0",
+    protocolVersion: "2.2.0",
     removalVersion: "1.0.0",
     source: {
       repository: "SmarterGPT/lexrunner",

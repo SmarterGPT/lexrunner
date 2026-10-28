@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { beforeEach, describe, expect, it, onTestFinished } from "vitest";
 
@@ -8,14 +8,25 @@ import type { WorkspaceBoundary } from "../../src/workspaces/workspace-boundary.
 
 export function workspaceBoundaryConformance(
   name: string,
-  createBoundary: () => WorkspaceBoundary
+  createBoundary: () => WorkspaceBoundary,
+  expected: {
+    readonly backendKind: "linux-native" | "windows-native";
+    readonly identityKind: "linux-device-inode" | "windows-volume-file-id";
+  } = { backendKind: "linux-native", identityKind: "linux-device-inode" }
 ): void {
   describe(name, () => {
     let repositoryRoot: string;
     let allocationRoot: string;
 
     beforeEach(async () => {
-      const sandbox = await mkdtemp(join(tmpdir(), "lexrunner-boundary-conformance-"));
+      // Node's Windows TEMP may be an 8.3 alias that a native boundary must refuse.
+      const fixtureParent = process.env.LEXRUNNER_TEST_REMOVAL_ROOT
+        ? resolve(process.env.LEXRUNNER_TEST_REMOVAL_ROOT, "shared-boundary")
+        : expected.backendKind === "windows-native"
+          ? resolve("artifacts", "shared-boundary")
+          : tmpdir();
+      await mkdir(fixtureParent, { recursive: true });
+      const sandbox = await mkdtemp(join(fixtureParent, "lexrunner-boundary-conformance-"));
       onTestFinished(() => rm(sandbox, { recursive: true, force: true }));
       repositoryRoot = join(sandbox, "repository");
       allocationRoot = join(sandbox, "allocation");
@@ -35,16 +46,16 @@ export function workspaceBoundaryConformance(
         orchestration_lease_id: "lease-1",
         orchestration_lease_revision: 7,
         owner_id: "owner-1",
-        backend_kind: "linux-native",
+        backend_kind: expected.backendKind,
         phase: "acquired",
       });
       expect(repository.identity).toMatchObject({
-        backend_kind: "linux-native",
-        identity_kind: "linux-device-inode",
+        backend_kind: expected.backendKind,
+        identity_kind: expected.identityKind,
         canonical_path: repositoryRoot,
       });
       expect(Object.keys(repository).sort()).toEqual(["identity", "leaseId"]);
-      expect(JSON.stringify(repository)).not.toMatch(/procPath|\/proc\/\d+\/fd\/\d+/u);
+      expect(JSON.stringify(repository)).not.toMatch(/procPath|nativeHandle|\/proc\/\d+\/fd\/\d+/u);
 
       const git = await lease.openChild(repository, ".git", "open-git");
       expect(git.ok).toBe(true);
@@ -128,7 +139,7 @@ export function workspaceBoundaryConformance(
         expect(processResult.receipt).toMatchObject({
           operation_id: "process-path",
           operation: "spawn-process",
-          backend_kind: "linux-native",
+          backend_kind: expected.backendKind,
         });
       }
 
@@ -235,6 +246,13 @@ export function workspaceBoundaryConformance(
         error: { effect_state: "no_effect" },
         receipt: { outcome: "rejected", durability: "not_applicable" },
       });
+      const retained = await acquired.lease.readFile({
+        operationId: "read-after-duplicate",
+        directory: git.value,
+        component: "exclusive.txt",
+        maxBytes: 32,
+      });
+      expect(retained.ok && Buffer.from(retained.value).toString("utf8")).toBe("owned");
       await acquired.lease.close("completed");
     });
   });

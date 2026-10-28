@@ -7,6 +7,8 @@ using System.Text;
 // against its retained parent object, never against a reconstructed pathname.
 internal static class NativeRelativeFiles
 {
+  internal sealed class FileCreateCollisionException : Exception { }
+
   internal static IEnumerable<(string Name, bool Directory)> Entries(DirectoryLease.DirectoryHandle parent)
   {
     var buffer = new byte[65536]; var restart = true;
@@ -94,7 +96,12 @@ internal static class NativeRelativeFiles
           ref attributes, out _, IntPtr.Zero, fileAttributes, share, disposition,
           0x200020u | (directory ? 1u : 0x40u), IntPtr.Zero, 0);
       if (status >= 0) return handle;
-      handle.Dispose(); throw new Win32Exception((int)RtlNtStatusToDosError(status));
+      handle.Dispose();
+      // FILE_CREATE (disposition 2) returns this exact NT status when the name
+      // already exists. The failed atomic create has no file handle or write.
+      if (!directory && disposition == 2 && status == unchecked((int)0xC0000035))
+        throw new FileCreateCollisionException();
+      throw new Win32Exception((int)RtlNtStatusToDosError(status));
     }
     finally
     {

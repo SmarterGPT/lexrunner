@@ -35,6 +35,21 @@ class NativeMissingFileError extends Error {
     super("Boundary path does not exist");
   }
 }
+class NativeFileExistsError extends Error {
+  constructor() {
+    super("Boundary file already exists");
+  }
+}
+class StaleDirectoryCapabilityError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+class InvalidDirectoryArgumentError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
 export interface OwnedWindowsOperationAssociation {
   readonly operationId: string;
   readonly nativeOperations: readonly {
@@ -189,7 +204,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
   writeFile(request: WorkspaceBoundaryWriteFileRequest): Promise<WorkspaceBoundaryResult<void>> {
     const { directory, component, operationId, mode, exclusive } = request;
     const content = Buffer.from(request.content);
-    return this.perform(
+    return this.perform<void>(
       "write-owned-file",
       operationId,
       [directory],
@@ -200,6 +215,18 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
           .snapshotFileCreations()
           .find((item) => item.requestId === result.requestId);
         if (!attempt) throw new Error("missing_creation_evidence");
+        if (result.kind === "file_exists") {
+          if (
+            !attempt.acknowledged ||
+            attempt.outcome !== "file_exists" ||
+            result.requestId !== attempt.requestId ||
+            result.operationId !== attempt.operationId ||
+            result.requestDigest !== attempt.requestDigest
+          )
+            throw new Error("file_exists_evidence_mismatch");
+          return new NativeFileExistsError();
+        }
+        if (attempt.outcome !== "created") throw new Error("missing_creation_outcome");
         // Validate the native acknowledgment without replacing its native operation identity.
         projectOwnedWindowsFileCreationReceipt(
           {
@@ -304,6 +331,10 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
           )
         )
           throw new Error("unsupported_directory_argument");
+        if (
+          args.some((arg) => arg.kind === "directory" && arg.relativeToCwd && arg.directory !== cwd)
+        )
+          throw new InvalidDirectoryArgumentError("cwd_relative_directory_mismatch");
       }
     );
   }
@@ -334,7 +365,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
 
   private scope(capability: WorkspaceBoundaryDirectoryCapability) {
     const value = this.scopes.get(capability);
-    if (!value) throw new Error("foreign_directory_capability");
+    if (!value) throw new StaleDirectoryCapabilityError("foreign_directory_capability");
     return value;
   }
 
@@ -352,7 +383,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
     operationId: string,
     directories: readonly WorkspaceBoundaryDirectoryCapability[],
     mutation: boolean,
-    work: () => Promise<T | NativeMissingFileError>,
+    work: () => Promise<T | NativeMissingFileError | NativeFileExistsError>,
     validate?: () => void
   ): Promise<WorkspaceBoundaryResult<T>> {
     requireOperationId(operationId);
@@ -381,7 +412,9 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
     const beforeDirectory = this.native.session.snapshotDirectoryAttempts().length;
     const beforeProcess = this.native.session.snapshotProcessAttempts().length;
     try {
-      if (this.ended || this.closing || this.busy || this.usedIds.has(operationId))
+      if (this.ended || this.closing)
+        throw new StaleDirectoryCapabilityError("workspace_lease_closed");
+      if (this.busy || this.usedIds.has(operationId))
         throw new Error("workspace_operation_unavailable");
       directories.forEach((item) => this.scope(item));
       if (knownIdentities.length > 32) throw new Error("too_many_directory_identities");
@@ -390,7 +423,8 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
       this.busy = true;
       entered = true;
       const value = await this.native.session.run(work);
-      if (value instanceof NativeMissingFileError) throw value;
+      if (value instanceof NativeMissingFileError || value instanceof NativeFileExistsError)
+        throw value;
       return {
         ok: true,
         value,
@@ -404,6 +438,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
     } catch (cause) {
       const missingFile =
         operation === "read-owned-file" && cause instanceof NativeMissingFileError;
+      const fileExists = operation === "write-owned-file" && cause instanceof NativeFileExistsError;
       const dispatched =
         entered &&
         (this.native.session
@@ -411,10 +446,16 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
           .slice(beforeDirectory)
           .some((item) => item.operation !== "release") ||
           this.native.session.snapshotProcessAttempts().length > beforeProcess);
-      const unknown = dispatched && (mutation || operation === "spawn-process");
+      const unknown = dispatched && (mutation || operation === "spawn-process") && !fileExists;
       const error = {
         schema_version: "1.0.0" as const,
-        code: missingFile ? ("invalid_path" as const) : ("operation_failed" as const),
+        code: missingFile
+          ? ("invalid_path" as const)
+          : cause instanceof InvalidDirectoryArgumentError
+            ? ("invalid_path" as const)
+            : cause instanceof StaleDirectoryCapabilityError
+              ? ("identity_changed" as const)
+              : ("operation_failed" as const),
         message: (cause instanceof Error ? cause.message : "workspace_operation_failed").slice(
           0,
           4096
@@ -430,7 +471,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
           ...common,
           completed_at: new Date().toISOString(),
           outcome: unknown ? "indeterminate" : "rejected",
-          durability: mutation ? (unknown ? "indeterminate" : "not_requested") : "not_applicable",
+          durability: mutation && unknown ? "indeterminate" : "not_applicable",
           error,
         }),
       };

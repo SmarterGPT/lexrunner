@@ -98,18 +98,23 @@ try {
     $receipt.helperSha256 = (Get-FileHash -LiteralPath $env:LEXRUNNER_TEST_NATIVE_HELPER -Algorithm SHA256).Hash.ToLowerInvariant()
     $receipt.faultProbeSha256 = (Get-FileHash -LiteralPath $env:LEXRUNNER_TEST_REMOVAL_FAULT_HELPER -Algorithm SHA256).Hash.ToLowerInvariant()
     $testReport = Join-Path $artifacts 'native-tests.json'
-    Invoke-Recorded 'native-session-tests' 'npx.cmd' @('vitest', 'run', '-c', 'vitest.git.config.ts', 'tests/workspaces/windows-native-removal.spec.ts', 'tests/workspaces/windows-native-helper.spec.ts', 'tests/workspaces/windows-native-directory.spec.ts', 'tests/workspaces/node-git-worktree-native.spec.ts', 'tests/workspaces/node-git-worktree-shared.spec.ts', 'tests/workspaces/owned-windows-workspace-lease.spec.ts', 'tests/workspaces/owned-windows-directory-session.spec.ts', 'tests/workspaces/owned-windows-directory.spec.ts', '--maxWorkers=1', '--reporter=verbose', '--reporter=json', "--outputFile.json=$testReport") $repoRoot
+    Invoke-Recorded 'native-session-tests' 'npx.cmd' @('vitest', 'run', '-c', 'vitest.git.config.ts', 'tests/workspaces/windows-native-removal.spec.ts', 'tests/workspaces/windows-native-helper.spec.ts', 'tests/workspaces/windows-native-directory.spec.ts', 'tests/workspaces/node-git-worktree-native.spec.ts', 'tests/workspaces/node-git-worktree-shared.spec.ts', 'tests/workspaces/workspace-boundary-shared.spec.ts', 'tests/workspaces/owned-windows-workspace-lease.spec.ts', 'tests/workspaces/owned-windows-directory-session.spec.ts', 'tests/workspaces/owned-windows-directory.spec.ts', '--maxWorkers=1', '--reporter=verbose', '--reporter=json', "--outputFile.json=$testReport") $repoRoot
     $tests = Get-Content -LiteralPath $testReport -Raw | ConvertFrom-Json
     $removalCases = @($tests.testResults | Where-Object { $_.name.EndsWith('windows-native-removal.spec.ts') } | ForEach-Object { $_.assertionResults })
     if ($removalCases.Count -lt 18 -or @($removalCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
         throw 'Actual removal qualification must execute every required case without skips'
     }
     $sharedBrokerCases = @($tests.testResults | Where-Object { $_.name.EndsWith('node-git-worktree-shared.spec.ts') } | ForEach-Object { $_.assertionResults })
-    if ($sharedBrokerCases.Count -lt 9 -or @($sharedBrokerCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
+    if ($sharedBrokerCases.Count -lt 13 -or @($sharedBrokerCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
         throw 'Shared native broker contract must execute every required case without skips'
+    }
+    $sharedBoundaryCases = @($tests.testResults | Where-Object { $_.name.EndsWith('workspace-boundary-shared.spec.ts') } | ForEach-Object { $_.assertionResults })
+    if ($sharedBoundaryCases.Count -lt 3 -or @($sharedBoundaryCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
+        throw 'Shared boundary contract must execute every required case without skips'
     }
     $receipt.nativeRemovalTests = $removalCases.Count
     $receipt.sharedBrokerTests = $sharedBrokerCases.Count
+    $receipt.sharedBoundaryTests = $sharedBoundaryCases.Count
     $receipt.nativeTestsPassed = $tests.numPassedTests
     $receipt.nativeTestsPending = $tests.numPendingTests
     $receipt.outcome = 'passed'
