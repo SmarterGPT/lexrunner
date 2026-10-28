@@ -7,6 +7,7 @@ import { parseWindowsHelperActiveSelectionValue } from "./windows-helper-active-
 
 const OS_ROOT_READER = String.raw`\\?\GLOBALROOT\SystemRoot\System32\reg.exe`;
 const SELECTION_KEY = String.raw`HKEY_LOCAL_MACHINE\Software\SmarterGPT.LexRunner.WindowsHelper`;
+const GENERATIONS_KEY = String.raw`HKEY_LOCAL_MACHINE\Software\SmarterGPT.LexRunner.WindowsHelper\Generations`;
 const QUERY_ARGS = [
   "query",
   String.raw`HKLM\Software\SmarterGPT.LexRunner.WindowsHelper`,
@@ -22,6 +23,26 @@ export type WindowsHelperSelectionReadReason =
   | "system_reader_identity_mismatch"
   | "registry_query_failed"
   | "registry_output_invalid";
+
+export type WindowsHelperCatalogReadReason =
+  WindowsHelperSelectionReadReason | "generation_id_invalid";
+
+export type WindowsHelperCatalogReadObservation =
+  | {
+      readonly state: "observed";
+      readonly catalog: {
+        readonly ManifestDigest: string;
+        readonly State: "provisioned-unqualified" | "qualified";
+        readonly ProductCode: string;
+      };
+      readonly systemRoot: string;
+      readonly authorizesLaunch: false;
+    }
+  | {
+      readonly state: "unavailable";
+      readonly reason: WindowsHelperCatalogReadReason;
+      readonly authorizesLaunch: false;
+    };
 
 export type WindowsHelperSelectionReadObservation =
   | {
@@ -61,6 +82,52 @@ export function parseWindowsHelperRegQueryOutput(bytes: Uint8Array): string {
   return value;
 }
 
+/** Strict shape of the installed generation's three descriptive REG_SZ rows. */
+export function parseWindowsHelperCatalogRegQueryOutput(
+  bytes: Uint8Array,
+  generationId: string
+): {
+  readonly ManifestDigest: string;
+  readonly State: "provisioned-unqualified" | "qualified";
+  readonly ProductCode: string;
+} {
+  if (
+    !/^[a-f0-9]{64}$/u.test(generationId) ||
+    !(bytes instanceof Uint8Array) ||
+    bytes.byteLength === 0 ||
+    bytes.byteLength > MAX_OUTPUT_BYTES ||
+    bytes.some((byte) => byte > 0x7f || (byte < 0x20 && byte !== 0x0d && byte !== 0x0a))
+  )
+    throw new Error("Invalid generation catalog bytes");
+  const output = Buffer.from(bytes).toString("ascii");
+  if (output.replace(/\r\n/gu, "").includes("\r"))
+    throw new Error("Unexpected reg.exe line ending");
+  const lines = output.split(/\r?\n/u).filter((line) => line !== "");
+  if (
+    lines.length !== 4 ||
+    lines[0]!.toLowerCase() !== `${GENERATIONS_KEY}\\${generationId}`.toLowerCase()
+  )
+    throw new Error("Unexpected generation catalog structure");
+  const values: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const line of lines.slice(1)) {
+    const match = /^ {4}(ManifestDigest|State|ProductCode) {4}REG_SZ {4}(\S+)$/u.exec(line);
+    if (!match || Object.prototype.hasOwnProperty.call(values, match[1]!))
+      throw new Error("Ambiguous generation catalog row");
+    values[match[1]!] = match[2]!;
+  }
+  if (
+    !/^[a-f0-9]{64}$/u.test(values.ManifestDigest ?? "") ||
+    !["provisioned-unqualified", "qualified"].includes(values.State ?? "") ||
+    !/^\{[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}\}$/u.test(values.ProductCode ?? "")
+  )
+    throw new Error("Invalid generation catalog values");
+  return {
+    ManifestDigest: values.ManifestDigest!,
+    State: values.State as "provisioned-unqualified" | "qualified",
+    ProductCode: values.ProductCode!,
+  };
+}
+
 function ordinarySystemReaderPath(value: string): boolean {
   if (!/^[A-Za-z]:\\/u.test(value) || path.win32.normalize(value) !== value) return false;
   const directory = path.win32.dirname(value);
@@ -73,18 +140,21 @@ function ordinarySystemReaderPath(value: string): boolean {
 }
 
 /**
- * A bounded, read-only observation from one machine-wide registry value.
+ * A bounded, read-only query of one fixed machine-wide registry location.
  *
  * File identity is a preflight only. It does not bind the actual reg.exe child,
  * authenticate the selection, protect the helper image/loader, or permit launch.
  */
-export function observeWindowsHelperActiveSelection(): WindowsHelperSelectionReadObservation {
+function queryFixedWindowsHelperRegistry(
+  args: readonly string[]
+):
+  | { readonly state: "observed"; readonly stdout: Buffer; readonly systemRoot: string }
+  | { readonly state: "unavailable"; readonly reason: WindowsHelperSelectionReadReason } {
   const stop = (
     reason: WindowsHelperSelectionReadReason
-  ): WindowsHelperSelectionReadObservation => ({
+  ): { readonly state: "unavailable"; readonly reason: WindowsHelperSelectionReadReason } => ({
     state: "unavailable",
     reason,
-    authorizesLaunch: false,
   });
   if (platform() !== "win32" || arch() !== "x64") return stop("unsupported_host");
 
@@ -114,7 +184,7 @@ export function observeWindowsHelperActiveSelection(): WindowsHelperSelectionRea
 
   let result: ReturnType<typeof spawnSync>;
   try {
-    result = spawnSync(executable, [...QUERY_ARGS], {
+    result = spawnSync(executable, [...args], {
       cwd: systemDirectory,
       env: { SystemRoot: systemRoot, WINDIR: systemRoot },
       shell: false,
@@ -136,6 +206,12 @@ export function observeWindowsHelperActiveSelection(): WindowsHelperSelectionRea
     result.stderr.byteLength !== 0
   )
     return stop("registry_query_failed");
+  return { state: "observed", stdout: result.stdout, systemRoot };
+}
+
+export function observeWindowsHelperActiveSelection(): WindowsHelperSelectionReadObservation {
+  const result = queryFixedWindowsHelperRegistry(QUERY_ARGS);
+  if (result.state === "unavailable") return { ...result, authorizesLaunch: false };
   try {
     return {
       state: "observed",
@@ -143,6 +219,30 @@ export function observeWindowsHelperActiveSelection(): WindowsHelperSelectionRea
       authorizesLaunch: false,
     };
   } catch {
-    return stop("registry_output_invalid");
+    return { state: "unavailable", reason: "registry_output_invalid", authorizesLaunch: false };
+  }
+}
+
+/** A fixed, bounded observation; supplied generation IDs never become paths. */
+export function observeWindowsHelperGenerationCatalog(
+  generationId: string
+): WindowsHelperCatalogReadObservation {
+  if (!/^[a-f0-9]{64}$/u.test(generationId))
+    return { state: "unavailable", reason: "generation_id_invalid", authorizesLaunch: false };
+  const result = queryFixedWindowsHelperRegistry([
+    "query",
+    String.raw`HKLM\Software\SmarterGPT.LexRunner.WindowsHelper\Generations` + `\\${generationId}`,
+    "/reg:64",
+  ]);
+  if (result.state === "unavailable") return { ...result, authorizesLaunch: false };
+  try {
+    return {
+      state: "observed",
+      catalog: parseWindowsHelperCatalogRegQueryOutput(result.stdout, generationId),
+      systemRoot: result.systemRoot,
+      authorizesLaunch: false,
+    };
+  } catch {
+    return { state: "unavailable", reason: "registry_output_invalid", authorizesLaunch: false };
   }
 }

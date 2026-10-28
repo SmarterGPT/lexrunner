@@ -21,6 +21,8 @@ vi.mock("node:os", async (importOriginal) => ({
 
 import {
   observeWindowsHelperActiveSelection,
+  observeWindowsHelperGenerationCatalog,
+  parseWindowsHelperCatalogRegQueryOutput,
   parseWindowsHelperRegQueryOutput,
 } from "../../src/workspaces/windows-helper-active-selection-reader.js";
 
@@ -36,6 +38,13 @@ const selectionValue =
 const output =
   "\r\nHKEY_LOCAL_MACHINE\\Software\\SmarterGPT.LexRunner.WindowsHelper\r\n" +
   `    ActiveSelection    REG_SZ    ${selectionValue}\r\n`;
+const generationId = "a".repeat(64);
+const catalogOutput =
+  "\r\nHKEY_LOCAL_MACHINE\\Software\\SmarterGPT.LexRunner.WindowsHelper\\Generations\\" +
+  `${generationId}\r\n` +
+  `    ManifestDigest    REG_SZ    ${"b".repeat(64)}\r\n` +
+  "    State    REG_SZ    provisioned-unqualified\r\n" +
+  "    ProductCode    REG_SZ    {B4631CCA-77F3-5A51-8812-ADBCBB8296D1}\r\n\r\n";
 
 function stat(ino: bigint = 123n) {
   return { dev: 77n, ino, size: 110_592n, isFile: () => true };
@@ -198,6 +207,85 @@ describe("fixed Windows ActiveSelection reader", () => {
     expect(observeWindowsHelperActiveSelection()).toMatchObject({
       state: "unavailable",
       reason: "registry_query_failed",
+      authorizesLaunch: false,
+    });
+  });
+});
+
+describe("fixed Windows generation catalog reader", () => {
+  it("parses exactly the three bounded catalog values", () => {
+    expect(
+      parseWindowsHelperCatalogRegQueryOutput(Buffer.from(catalogOutput), generationId)
+    ).toEqual({
+      ManifestDigest: "b".repeat(64),
+      State: "provisioned-unqualified",
+      ProductCode: "{B4631CCA-77F3-5A51-8812-ADBCBB8296D1}",
+    });
+  });
+
+  it("refuses wrong key, duplicate, extra, type, state, encoding and generation", () => {
+    const invalid = [
+      catalogOutput.replace("HKEY_LOCAL_MACHINE", "HKEY_CURRENT_USER"),
+      catalogOutput + "    State    REG_SZ    qualified\r\n",
+      catalogOutput.replace("    State    REG_SZ", "    Other    REG_SZ"),
+      catalogOutput.replace("    State    REG_SZ", "    State    REG_EXPAND_SZ"),
+      catalogOutput.replace("provisioned-unqualified", "ready"),
+      catalogOutput.replace("    State", "\tState"),
+      catalogOutput.replace("REG_SZ    {", "REG_SZ    {é"),
+      catalogOutput.replace("\r\n", "\r"),
+      "x".repeat(8193),
+    ];
+    for (const value of invalid)
+      expect(() =>
+        parseWindowsHelperCatalogRegQueryOutput(Buffer.from(value), generationId)
+      ).toThrow();
+    expect(() =>
+      parseWindowsHelperCatalogRegQueryOutput(Buffer.from(catalogOutput), "../bad")
+    ).toThrow();
+  });
+
+  it("uses the OS-root-derived reader and only the fixed 64-bit generation query", () => {
+    host.spawn.mockReturnValueOnce({
+      status: 0,
+      signal: null,
+      stdout: Buffer.from(catalogOutput),
+      stderr: Buffer.alloc(0),
+    });
+    expect(observeWindowsHelperGenerationCatalog(generationId)).toEqual({
+      state: "observed",
+      catalog: {
+        ManifestDigest: "b".repeat(64),
+        State: "provisioned-unqualified",
+        ProductCode: "{B4631CCA-77F3-5A51-8812-ADBCBB8296D1}",
+      },
+      systemRoot: String.raw`D:\Windows`,
+      authorizesLaunch: false,
+    });
+    expect(host.spawn.mock.calls[0]?.[0]).toBe(dosPath);
+    expect(host.spawn.mock.calls[0]?.[1]).toEqual([
+      "query",
+      String.raw`HKLM\Software\SmarterGPT.LexRunner.WindowsHelper\Generations` +
+        `\\${generationId}`,
+      "/reg:64",
+    ]);
+  });
+
+  it("rejects an invalid ID before any OS access and malformed successful output", () => {
+    expect(observeWindowsHelperGenerationCatalog("../outside")).toEqual({
+      state: "unavailable",
+      reason: "generation_id_invalid",
+      authorizesLaunch: false,
+    });
+    expect(host.spawn).not.toHaveBeenCalled();
+    host.spawn.mockReturnValueOnce({
+      status: 0,
+      signal: null,
+      stdout: Buffer.from(catalogOutput.replace("REG_SZ", "REG_BINARY")),
+      stderr: Buffer.alloc(0),
+    });
+    expect(observeWindowsHelperGenerationCatalog(generationId)).toEqual({
+      state: "unavailable",
+      reason: "registry_output_invalid",
       authorizesLaunch: false,
     });
   });
