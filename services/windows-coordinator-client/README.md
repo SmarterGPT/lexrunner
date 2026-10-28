@@ -8,6 +8,20 @@ bounded diagnostic, but it still reports `helper_missing` even if that service
 exists. No caller argument can supply a pipe name, PID, image path, or pin in
 the ordinary image.
 
+The ordinary `--status` path also makes a read-only observation of the proposed
+service-specific `ActiveSelection` under the 64-bit
+`HKLM\Software\SmarterGPT.LexRunner.WindowsCoordinator` key. It parses a bounded,
+exact canonical `windows-coordinator-active-selection/1` value, reads the
+digest-named catalog and generation metadata under a fixed Program Files path,
+hashes the image, and compares the fixed `LexRunnerCoordinator` SCM configuration
+using `QueryServiceConfigW`. A repeated selection read detects a changed value.
+All outcomes are descriptive and carry `AuthorizesLaunch = false`; `--status`
+still reports `helper_missing`, and no result can construct a production
+endpoint or send a request. The initial MSI authors no selection or catalog and
+marks its manifest unqualified. These reads do not establish protected ACLs,
+rollback resistance, atomic file custody, loader closure, actual running-image
+binding, or cross-account peer authority.
+
 The source binding sequence for a future protected selection is:
 
 1. Read `LexRunnerCoordinator` through SCM and require an exact RUNNING

@@ -107,6 +107,11 @@ try {
   if (($excludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
     throw 'Fixture mode was available in the ordinary image.'
   }
+  $sendText = Invoke-CheckedStep 'ordinary_send_refused' $normalImage @('--execute') `
+    $projectRoot 3
+  if (($sendText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
+    throw 'Ordinary image accepted an execution argument.'
+  }
   Invoke-CheckedStep 'fixture_publish' 'dotnet' ($buildArgs + @(
       '-p:CoordinatorClientFixtureTests=true', '-o', $fixtureRoot)) `
     $projectRoot 0 | Out-Null
@@ -116,7 +121,7 @@ try {
   $testCount = $test.results.Count
   if ($test.state -ne 'pass' -or
       $test.profile -ne 'synthetic_same_user_non_authorizing' -or
-      $test.failures.Count -ne 0 -or $test.results.Count -ne 12 -or
+      $test.failures.Count -ne 0 -or $test.results.Count -ne 26 -or
       @($test.results | Where-Object { -not $_.passed }).Count -ne 0) {
     throw 'Native fixture tests did not all pass.'
   }
@@ -138,6 +143,8 @@ finally {
   $sources = [ordered]@{}
   foreach ($name in @('.gitignore', 'LexRunner.WindowsCoordinator.Client.csproj',
       'global.json', 'Program.cs', 'NativeClient.cs', 'FixtureTests.cs',
+      'CoordinatorSelection.cs', 'CoordinatorSources.cs',
+      'CoordinatorAcquisition.cs', 'CoordinatorSelectionFixtureTests.cs',
       'README.md', 'verify.ps1')) {
     $path = Join-Path $projectRoot $name
     if (Test-Path -LiteralPath $path) {
