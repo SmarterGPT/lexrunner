@@ -298,6 +298,12 @@ jobs:
       - name: Qualify inactive Windows coordinator checkout source build
         shell: pwsh
         run: ./services/windows-coordinator-checkout/verify-portable.ps1
+      - name: Qualify non-installable Windows coordinator v2 MSI source offline
+        shell: pwsh
+        run: |
+          $id = [guid]::NewGuid().ToString('N')
+          $artifact = Join-Path $PWD "artifacts/windows-coordinator-v2-msi-offline/source-$id"
+          ./installers/windows-coordinator/v2/verify.ps1 -ArtifactDirectory $artifact
       - name: Run native Windows handle-authority proof
         shell: pwsh
         run: ./proofs/windows-workspace-boundary/verify.ps1
@@ -336,6 +342,7 @@ jobs:
             artifacts/windows-selection-custody-*/verification-receipt.json
             artifacts/windows-coordinator-git-portable/receipt-*.json
             artifacts/windows-coordinator-checkout-portable/receipt-*.json
+            artifacts/windows-coordinator-v2-msi-offline/source-*/verification-receipt.json
           if-no-files-found: warn
 
   # Full manual-only determinism and license gate.
