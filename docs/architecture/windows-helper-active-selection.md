@@ -1,8 +1,8 @@
 # Proposed Windows helper ActiveSelection content
 
-Status: source-only consistency and observation contracts. No protected selection
-producer or launch binding is connected, and these modules cannot authorize native
-execution.
+Status: source-only consistency and bounded acquisition contracts. No protected
+selection producer or launch binding is connected, and these modules cannot
+authorize native execution.
 
 The selected optional MSI/direct-launch profile proposes one coherent `REG_SZ`
 value named `ActiveSelection` under
@@ -60,3 +60,39 @@ the installed generation's `ManifestDigest` returned exactly four spaces before
 the value name and between its columns. That is an observed format, not a claim
 for every Windows version or locale; other output refuses closed. Production
 readiness still requires protected launch and publication-race qualification.
+
+## Fixed generation acquisition
+
+`observeWindowsHelperGenerationCatalog(generationId)` accepts only a lowercase
+64-character SHA-256 generation identifier. It uses the same preflighted system
+`reg.exe` reader with a fixed 64-bit HKLM key under `Generations`, an 8 KiB output
+cap, and an exact three-row `REG_SZ` grammar for `ManifestDigest`, `State`, and
+`ProductCode`. Invalid IDs fail before an OS read; unknown or duplicate rows,
+encoding changes, and malformed values fail closed. This is still an observation
+of registry content, not protected registry custody.
+
+`observeWindowsHelperSelectionAcquisition()` composes the ActiveSelection reader,
+the derived catalog query, fixed installed `generation.json` and `installed.json`
+reads, and the existing consistency evaluator. It takes no caller path, catalog,
+or metadata bytes. It derives the generation directory from the preflighted
+system drive as
+`<drive>\Program Files\SmarterGPT.LexRunner.WindowsHelper\generations\<generationId>`.
+This is the first tested direct-launch profile; a redirected Program Files root
+is unsupported and fails closed. It checks each component's directory type and
+resolved path, bounds each metadata file before reading, compares its open-handle
+and path file IDs before and after, closes handles, and rereads ActiveSelection.
+A failed read or changed selection returns unavailable. A completed comparison
+returns the evaluator's `consistent` or `inconsistent` result. Every outcome has
+`authorizesLaunch: false`.
+
+These reads do not authenticate the publisher, prove protected ACL continuity,
+hold a registry snapshot, prevent an ABA selection change, bind path lookup to
+open file handles across all ancestors, or verify the helper image/loader through
+child creation. The repeated registry query and path/file-ID checks only narrow
+the observed race window. The installed MSI has no ActiveSelection producer;
+the scoped native host probe observed an absent selection. On that host, the
+source catalog reader returned the installed generation's
+`provisioned-unqualified` state, and the source acquisition returned
+`selection_unavailable` with `authorizesLaunch: false` before catalog or file
+reads. Production still reports `helper_missing`. No resolver imports this
+module. Protection and activation remain separate reviewed work.
