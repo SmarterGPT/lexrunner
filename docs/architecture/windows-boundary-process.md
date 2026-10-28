@@ -67,16 +67,19 @@ repository-selected config under a different process identity, provide a
 protected creation transition, or change production `helper_missing`.
 
 The shared native broker test is routed to Linux Git CI and native Windows
-qualification for the same 13 public behaviors. Its Windows fixture supplies a
+qualification for the same 16 public behaviors. Its Windows fixture supplies a
 source-built development helper; it does not select or activate an installed
 helper. The fixture seeds an existing worktree through Git only to exercise
 reuse, observation, and preservation. Windows creation and fresh removal assert
 a structured `containment_violation` with no first effect. The native Windows
-qualification script requires all 13 cases without skips and records their
+qualification script requires all 16 cases without skips and records their
 count. The shared workspace-boundary suite also runs the same three public
 lease cases on Linux and source-built Windows, including a confirmed no-effect
 exclusive-create collision and subsequent read. Its fixture accepts the host's
-directory identity; it does not use production Windows selection.
+directory identity; it does not use production Windows selection. The shared
+broker cases also reject an occupied target and replacement of the repository
+or allocation root after broker bootstrap, without transferring work to the
+substituted path.
 
 This is a partial #893 conformance slice. The older 28-case functional broker
 suite still has Linux-only fixture setup and is skipped on Windows. Protected
