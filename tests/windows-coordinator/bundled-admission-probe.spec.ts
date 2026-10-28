@@ -33,7 +33,11 @@ function sha256(bytes: Uint8Array): string {
 }
 
 async function checkedCleanup(root: string): Promise<void> {
-  if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith(fixturePrefix))
+  // Hosted Windows TEMP may be an alias or junction. Create and compare the
+  // fixture under the canonical temp directory so the probe's exact-member
+  // checks never rely on that caller-visible alias.
+  const canonicalTemp = await realpath(tmpdir());
+  if (path.dirname(root) !== canonicalTemp || !path.basename(root).startsWith(fixturePrefix))
     throw new Error("Unexpected bundle fixture root");
   const actual = await realpath(root);
   if (actual.toLowerCase() !== root.toLowerCase() || (await lstat(root)).isSymbolicLink())
@@ -53,7 +57,7 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const root = await mkdtemp(path.join(tmpdir(), fixturePrefix));
+  const root = await mkdtemp(path.join(await realpath(tmpdir()), fixturePrefix));
   roots.push(root);
   const memberPaths = [
     ["bin/service.exe", "service-image"],
