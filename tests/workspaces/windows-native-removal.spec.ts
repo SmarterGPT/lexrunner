@@ -66,7 +66,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         throw new Error(`Fixture Git failed (${result.status}): ${result.stderr}`);
       return result.stdout.trim();
     }
-    async function setup(brokerCreate = false, selectedExecutable = executable!) {
+    async function setup(selectedExecutable = executable!, fixtureAutocrlf = false) {
       await mkdir(artifactParent, { recursive: true });
       const fixtureRoot = await mkdtemp(path.join(artifactParent, "native-removal-"));
       fixtureRoots.push(fixtureRoot);
@@ -142,8 +142,17 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       ]);
       const baseSha = git(repository, ["rev-parse", "HEAD"]),
         worktree = path.join(allocation, "worker");
-      if (!brokerCreate)
-        git(repository, ["worktree", "add", "-b", "fixture/work", worktree, baseSha]);
+      // Fixture creation is ordinary Git without a racing actor; product
+      // native creation remains closed until a protected transition exists.
+      git(repository, [
+        ...(fixtureAutocrlf ? ["-c", "core.autocrlf=true"] : []),
+        "worktree",
+        "add",
+        "-b",
+        "fixture/work",
+        worktree,
+        baseSha,
+      ]);
       const registration = path.join(repository, ".git", "worktrees", "worker");
       const database = path.join(root, "state.db"),
         lifecycle = new SqliteWorkspaceLifecycleStore(database);
@@ -205,24 +214,20 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         gitExecutable: gitExecutable!,
         testOnlyAllowUnboundBoundaryAuthority: true,
       };
-      if (brokerCreate) {
-        const broker = await NodeGitWorktreeBroker.open(brokerOptions);
-        expect(await broker.create(lease)).toMatchObject({ ok: true, outcome: "created" });
-      } else
-        await writeFile(
-          path.join(registration, "lexrunner-attempt.json"),
-          `${JSON.stringify({
-            schemaVersion: 1,
-            repositoryId: lease.repositoryId,
-            attemptId: lease.attemptId,
-            hostId: lease.hostId,
-            gitRuntime: lease.gitRuntime,
-            projectRoot: lease.projectRoot,
-            worktreePath: lease.worktreePath,
-            branch: lease.branch,
-            baseSha: lease.baseSha,
-          })}\n`
-        );
+      await writeFile(
+        path.join(registration, "lexrunner-attempt.json"),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          repositoryId: lease.repositoryId,
+          attemptId: lease.attemptId,
+          hostId: lease.hostId,
+          gitRuntime: lease.gitRuntime,
+          projectRoot: lease.projectRoot,
+          worktreePath: lease.worktreePath,
+          branch: lease.branch,
+          baseSha: lease.baseSha,
+        })}\n`
+      );
       const selectedSlot = windowsRemovalSlot(lease.leaseId);
       const store = new SqliteWindowsRemovalStore(database);
       stores.push(store);
@@ -465,8 +470,8 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       expect(f.store.readOperation("remove")?.resolution).toBeNull();
       expect(await readFile(path.join(f.worktree, "replacement"), "utf8")).toBe("preserved");
     }, 30000);
-    it("connects real broker create/observe/dirty-preserve/remove through the prepared native executor", async () => {
-      const f = await setup(true);
+    it("connects real broker observe/dirty-preserve/remove through the prepared native executor", async () => {
+      const f = await setup();
       const transition = createOwnedWindowsRemovalTransition({
         helper: f.options,
         store: f.store,
@@ -528,14 +533,14 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       },
       30000
     );
-    it("uses the broker's global Git normalization without projecting general credentials", async () => {
+    it("normalizes a globally configured CRLF fixture before native removal", async () => {
       await mkdir(artifactParent, { recursive: true });
       const configurationRoot = await mkdtemp(path.join(artifactParent, "native-removal-config-"));
       fixtureRoots.push(configurationRoot);
       const global = path.join(configurationRoot, "gitconfig");
       await writeFile(global, "[core]\n    autocrlf = true\n");
       vi.stubEnv("GIT_CONFIG_GLOBAL", global);
-      const f = await setup(true);
+      const f = await setup(executable!, true);
       const transition = createOwnedWindowsRemovalTransition({
         helper: f.options,
         store: f.store,
@@ -632,7 +637,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
     ] as const)(
       "recovers after owned helper termination at %s and database reopen",
       async (phase, expectedState) => {
-        const f = await setup(false, faultExecutable!),
+        const f = await setup(faultExecutable!),
           abort = new AbortController();
         const slot = path.join(f.slots, f.selectedSlot.component);
         await writeFile(slot + ".fault", phase);
