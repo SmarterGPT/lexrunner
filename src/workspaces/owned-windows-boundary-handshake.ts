@@ -116,7 +116,10 @@ export interface OwnedWindowsDirectoryScope {
   openChild(component: string): Promise<OwnedWindowsDirectoryScope>;
   tryOpenChild(component: string): Promise<OwnedWindowsDirectoryScope | null>;
   createChild(component: string): Promise<OwnedWindowsDirectoryScope>;
-  readFile(component: string, maxBytes: number): Promise<OwnedWindowsFileRead>;
+  readFile(
+    component: string,
+    maxBytes: number
+  ): Promise<OwnedWindowsFileRead | OwnedWindowsFileMissing>;
   createFile(component: string, content: Uint8Array): Promise<OwnedWindowsFileCreated>;
   runProcess(request: OwnedWindowsProcessRequest): Promise<OwnedWindowsProcessResult>;
 }
@@ -227,9 +230,13 @@ export interface OwnedWindowsFileRead {
   readonly fileId: string;
   readonly volumeSerialNumber: string;
 }
+export interface OwnedWindowsFileMissing {
+  readonly kind: "file_missing";
+}
 type ScopeReply =
   | DirectoryReply
   | OwnedWindowsFileRead
+  | OwnedWindowsFileMissing
   | OwnedWindowsFileCreated
   | OwnedWindowsProcessResult
   | { kind: "removal_completed"; payload: WindowsRemovalResultPayload }
@@ -857,7 +864,8 @@ async function runOwnedWindowsBoundary(
             "read-file",
             component,
             (reply) => {
-              if (!reply || reply.kind !== "file_read") throw new Error("Unexpected file response");
+              if (!reply || (reply.kind !== "file_read" && reply.kind !== "file_missing"))
+                throw new Error("Unexpected file response");
               return reply;
             },
             maxBytes
@@ -1222,6 +1230,39 @@ async function runOwnedWindowsBoundary(
                 volumeSerialNumber: message.volume_serial_number,
               })
             );
+            drainDeadline();
+            continue;
+          }
+          if (seenReply && directory && message.kind === "file_missing") {
+            if (
+              directoryOperation !== "read-file" ||
+              !directoryTarget ||
+              readLimit === undefined ||
+              !assertion ||
+              message.lease_token !== directoryTarget.lease_token
+            ) {
+              fail("protocol_error");
+              return;
+            }
+            if (stopExpiredGrace()) return;
+            const match = exchange!.correlate({
+              client_nonce: message.client_nonce,
+              session_nonce: message.session_nonce,
+              request_id: message.request_id,
+              operation_id: message.operation_id,
+              request_digest: message.request_digest,
+            });
+            if (!match.correlated) {
+              fail(match.failure.reason === "deadline" ? "operation_timeout" : "protocol_error");
+              return;
+            }
+            clearTimeout(handshakeTimer);
+            acknowledgeDirectory(message.request_id);
+            operationCount++;
+            directoryOperation = undefined;
+            const waiter = assertion;
+            assertion = undefined;
+            waiter.resolve(Object.freeze({ kind: "file_missing" }));
             drainDeadline();
             continue;
           }

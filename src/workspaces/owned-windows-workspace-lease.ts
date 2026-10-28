@@ -30,6 +30,11 @@ type RootSession = Extract<
   Awaited<ReturnType<typeof acquireOwnedWindowsRootSession>>,
   { ok: true }
 >;
+class NativeMissingFileError extends Error {
+  constructor() {
+    super("Boundary path does not exist");
+  }
+}
 export interface OwnedWindowsOperationAssociation {
   readonly operationId: string;
   readonly nativeOperations: readonly {
@@ -172,13 +177,13 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
 
   readFile(request: WorkspaceBoundaryReadFileRequest) {
     const { directory, component, maxBytes, operationId } = request;
-    return this.perform(
-      "read-owned-file",
-      operationId,
-      [directory],
-      false,
-      async () => (await this.scope(directory).readFile(component, maxBytes)).bytes
-    );
+    return this.perform("read-owned-file", operationId, [directory], false, async () => {
+      const result = await this.scope(directory).readFile(component, maxBytes);
+      // A callback rejection ends the owned native session. Carry a typed
+      // absence out of run() so the held scopes remain releasable.
+      if (result.kind === "file_missing") return new NativeMissingFileError();
+      return result.bytes;
+    });
   }
 
   writeFile(request: WorkspaceBoundaryWriteFileRequest): Promise<WorkspaceBoundaryResult<void>> {
@@ -347,7 +352,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
     operationId: string,
     directories: readonly WorkspaceBoundaryDirectoryCapability[],
     mutation: boolean,
-    work: () => Promise<T>,
+    work: () => Promise<T | NativeMissingFileError>,
     validate?: () => void
   ): Promise<WorkspaceBoundaryResult<T>> {
     requireOperationId(operationId);
@@ -385,6 +390,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
       this.busy = true;
       entered = true;
       const value = await this.native.session.run(work);
+      if (value instanceof NativeMissingFileError) throw value;
       return {
         ok: true,
         value,
@@ -396,6 +402,8 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
         }),
       };
     } catch (cause) {
+      const missingFile =
+        operation === "read-owned-file" && cause instanceof NativeMissingFileError;
       const dispatched =
         entered &&
         (this.native.session
@@ -406,7 +414,7 @@ export class OwnedWindowsWorkspaceLease implements WorkspaceBoundaryLease {
       const unknown = dispatched && (mutation || operation === "spawn-process");
       const error = {
         schema_version: "1.0.0" as const,
-        code: "operation_failed" as const,
+        code: missingFile ? ("invalid_path" as const) : ("operation_failed" as const),
         message: (cause instanceof Error ? cause.message : "workspace_operation_failed").slice(
           0,
           4096

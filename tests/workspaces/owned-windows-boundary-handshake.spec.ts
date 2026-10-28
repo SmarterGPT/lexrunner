@@ -233,6 +233,45 @@ describe("owned Windows boundary development handshake", () => {
       sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
     });
   });
+  it("keeps a correlated missing-file reply and the directory session live", async () => {
+    state.mode = "directory-file-missing-valid";
+    let observed: unknown;
+    const report = await withOwnedWindowsBoundaryDirectory(
+      options(),
+      { path: "D:\\fixture" },
+      async (root) => {
+        observed = await root.readFile("absent", 1);
+        await root.assertCurrent();
+      }
+    );
+    expect(observed).toEqual({ kind: "file_missing" });
+    expect(Object.isFrozen(observed)).toBe(true);
+    expect(report).toMatchObject({
+      outcome: "matched",
+      directory: { filesRead: 0, bytesRead: 0, assertions: 1, releaseAcknowledged: true },
+      sessionOperations: { requested: 4, correlated: 4 },
+    });
+    expect(state.write).toHaveBeenCalledTimes(5); // hello, acquire, read, assert, release
+  });
+  it.each(["wrong-token", "wrong-digest", "on-assert"])(
+    "rejects forged file_missing %s without acknowledging the operation",
+    async (mode) => {
+      state.mode = `directory-file-missing-${mode}`;
+      const report = await withOwnedWindowsBoundaryDirectory(
+        options(),
+        { path: "D:\\fixture" },
+        async (root) => {
+          if (mode === "on-assert") await root.assertCurrent();
+          else await root.readFile("absent", 1);
+        }
+      );
+      expect(report).toMatchObject({
+        reason: "protocol_error",
+        directory: { filesRead: 0, bytesRead: 0, releaseAcknowledged: false },
+        sessionOperations: { failure: { outstanding: { operation_id: expect.any(String) } } },
+      });
+    }
+  );
   it("retains an unanswered file request without retry", async () => {
     state.mode = "directory-file-silent";
     const report = await withOwnedWindowsBoundaryDirectory(
@@ -562,7 +601,7 @@ describe("owned Windows boundary development handshake", () => {
     vi.stubEnv("LD_PRELOAD", "/do-not-load-this");
     vi.stubEnv("PRIVATE_TEST_SECRET", "must-not-be-forwarded");
     expect((await probeOwnedWindowsBoundaryHandshake(options())).outcome).toBe("matched");
-    expect(state.calls[0][1]).toEqual(["--boundary-protocol", "2.0.0"]);
+    expect(state.calls[0][1]).toEqual(["--boundary-protocol", "2.1.0"]);
     const launch = state.calls[0][2] as any;
     expect(launch).toMatchObject({
       shell: false,

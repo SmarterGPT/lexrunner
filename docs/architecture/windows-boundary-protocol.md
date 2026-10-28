@@ -32,6 +32,23 @@ The [owned handshake probe](owned-windows-boundary-handshake.md) now exercises a
 one-shot development child with private pipes, a deadline and explicit cleanup.
 It remains non-authorizing and does not supply a production helper.
 
+## Current read absence reply (2.1.0)
+
+Protocol `2.1.0` adds a strict `file_missing` reply for a `read-file` request.
+The native helper emits it only when a handle-relative file open fails with
+Windows error 2 or 3 and the held parent still passes `AssertCurrent`. It echoes
+the session, lease token, request and operation identities, and request digest.
+The caller accepts it only for the matching pending read. It carries no file
+contents or file identity, means no file read effect, and keeps the helper and
+child scopes live for later work and confirmed release. Other native errors and
+unexpected or malformed replies remain terminal. The portable lease maps the
+correlated absence to `invalid_path` with `no_effect`, allowing the broker to
+preserve ambiguous ownership without removing a worktree.
+
+Version checks remain exact. An installed `2.0.0` helper cannot negotiate with
+the `2.1.0` client; it requires a separately reviewed upgrade. This protocol
+change does not activate a helper or establish production readiness.
+
 Production integration must bind these frames to owned inherited private pipes, verify
 the actual helper artifact against independently trusted release metadata and
 signer policy before launch, correlate replies with the actual child, enforce a

@@ -1,7 +1,8 @@
 # Bounded persistent development session
 
 > Version note: the v1 limits/launch examples below are historical. Current protocol
-> 2.0.0 requires a new helper; see [v2 session budgets](windows-boundary-budget-v2.md).
+> 2.1.0 requires a new helper for the correlated missing-file reply; see
+> [v2 session budgets](windows-boundary-budget-v2.md) for the retained budgets.
 
 `probeOwnedWindowsBoundarySession(options, rounds)` connects the reviewed exchange
 tracker to the existing owned-process lifecycle and the actual NativeAOT peer.

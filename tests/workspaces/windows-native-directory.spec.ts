@@ -58,7 +58,7 @@ async function setup() {
   const parent = path.join(root, "parent");
   const directory = path.join(parent, "café");
   await mkdir(directory, { recursive: true });
-  const child = spawn(executable!, ["--boundary-session", "2.0.0"], {
+  const child = spawn(executable!, ["--boundary-session", "2.1.0"], {
     windowsHide: true,
     stdio: "pipe",
   });
@@ -111,7 +111,7 @@ async function setup() {
   const nonce = randomBytes(32).toString("hex");
   const hello = await send({
     kind: "hello",
-    protocol_version: "2.0.0",
+    protocol_version: "2.1.0",
     request_id: randomUUID(),
     client_nonce: nonce,
   });
@@ -131,7 +131,7 @@ async function setup() {
   ) {
     const body = {
       kind: "directory_request",
-      protocol_version: "2.0.0",
+      protocol_version: "2.1.0",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
       request_id: randomUUID(),
@@ -158,10 +158,10 @@ async function setup() {
     ).toBe(true);
     return reply;
   }
-  async function read(token: string, component: string, maximum: number) {
+  async function read(token: string, component: string, maximum: number, allowMissing = false) {
     const body = {
       kind: "file_request",
-      protocol_version: "2.0.0",
+      protocol_version: "2.1.0",
       operation: "read-file",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
@@ -177,7 +177,7 @@ async function setup() {
       2000
     );
     const reply = await send({ ...body, request_digest: digest });
-    expect(reply.kind).toBe("file_result");
+    expect(reply.kind).toBe(allowMissing ? "file_missing" : "file_result");
     expect(
       exchange.correlate({
         client_nonce: reply.client_nonce,
@@ -188,6 +188,7 @@ async function setup() {
       }).correlated
     ).toBe(true);
     expect(reply.lease_token).toBe(token);
+    if (allowMissing) return { reply, content: Buffer.alloc(0) };
     const content = Buffer.from(reply.content_base64, "base64");
     expect(content.toString("base64")).toBe(reply.content_base64);
     expect(content.length).toBe(reply.byte_length);
@@ -205,7 +206,7 @@ async function setup() {
   ) {
     const body = {
       kind: "file_create_request",
-      protocol_version: "2.0.0",
+      protocol_version: "2.1.0",
       operation: "create-file",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
@@ -248,7 +249,7 @@ async function setup() {
   ) {
     const body = {
       kind: "process_request",
-      protocol_version: "2.0.0",
+      protocol_version: "2.1.0",
       operation: "run-process",
       client_nonce: nonce,
       session_nonce: hello.session_nonce,
@@ -300,7 +301,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
   "native bound process execution",
   () => {
     it("rejects a malformed one-shot worker frame before command launch", async () => {
-      const worker = spawn(executable!, ["--process-worker", "2.0.0"], {
+      const worker = spawn(executable!, ["--process-worker", "2.1.0"], {
         cwd: path.dirname(executable!),
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
@@ -608,7 +609,24 @@ describe.skipIf(process.platform !== "win32" || !executable)("real native direct
       await f.operation("release", root.lease_token);
     }
   );
-  it.each(["missing", "oversized", "directory", "junction", "stream", "traversal"])(
+  it("reports a missing file, retains the child scope, and confirms both releases", async () => {
+    const f = await setup();
+    const parent = await f.operation("acquire", f.parent);
+    const child = await f.operation("open-child", parent.lease_token, "café");
+    const missing = await f.read(child.lease_token, "absent", 1024, true);
+    expect(missing.reply).toMatchObject({
+      kind: "file_missing",
+      lease_token: child.lease_token,
+    });
+    await writeFile(path.join(f.directory, "present"), "still live");
+    expect((await f.read(child.lease_token, "present", 1024)).content.toString()).toBe(
+      "still live"
+    );
+    expect((await f.operation("assert", child.lease_token)).status).toBe("current");
+    expect((await f.operation("release", child.lease_token)).status).toBe("released");
+    expect((await f.operation("release", parent.lease_token)).status).toBe("released");
+  });
+  it.each(["oversized", "directory", "junction", "stream", "traversal"])(
     "fails %s file reads without returning partial content",
     async (kind) => {
       const f = await setup();

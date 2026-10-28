@@ -125,7 +125,7 @@ internal sealed class DirectoryLease : IDisposable
 
   internal sealed record FileObservation(Identity Identity, byte[] Content);
 
-  internal FileObservation ReadBoundedFile(string component, int maximum)
+  internal FileObservation? ReadBoundedFile(string component, int maximum)
   {
     ValidateComponent(component);
     if (maximum is < 0 or > Program.FileLimit) throw new InvalidDataException();
@@ -133,7 +133,15 @@ internal sealed class DirectoryLease : IDisposable
     var path = System.IO.Path.Combine(Leaf.Path, component);
     if (path.Length > 1024) throw new InvalidDataException();
     // Synchronous read, no reparse following, read sharing only (no write/delete).
-    var file = NativeRelativeFiles.OpenCapabilityFile(LeafHandle, component, false);
+    DirectoryHandle file;
+    try { file = NativeRelativeFiles.OpenCapabilityFile(LeafHandle, component, false); }
+    catch (Win32Exception error) when (error.NativeErrorCode is 2 or 3)
+    {
+      // A missing single component is a nonterminal observation. The held
+      // parent must still be current before reporting absence to the caller.
+      AssertCurrent();
+      return null;
+    }
     try
     {
       if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());

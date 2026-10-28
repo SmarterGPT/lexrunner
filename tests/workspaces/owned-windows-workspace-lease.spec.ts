@@ -100,6 +100,53 @@ describe.skipIf(process.platform !== "win32" || !executable)("owned Windows port
     expect(() => f.lease.root("root")).toThrow("closed");
   });
 
+  it("reports a missing file as rejected no-effect and keeps the same lease usable", async () => {
+    const f = await fixture();
+    try {
+      const missing = await f.lease.readFile({
+        operationId: "missing-file",
+        directory: f.directory,
+        component: "absent-marker",
+        maxBytes: 64,
+      });
+      expect(missing).toMatchObject({
+        ok: false,
+        error: { code: "invalid_path", effect_state: "no_effect" },
+        receipt: { outcome: "rejected", mutation: false, durability: "not_applicable" },
+      });
+      expect(f.lease.snapshotAssociations()[0].nativeOperations).toEqual([
+        expect.objectContaining({ acknowledged: true }),
+      ]);
+
+      expect(
+        await f.lease.writeFile({
+          operationId: "write-after-missing",
+          directory: f.directory,
+          component: "marker",
+          content: Buffer.from("kept live"),
+          exclusive: true,
+        })
+      ).toMatchObject({ ok: true });
+      const read = await f.lease.readFile({
+        operationId: "read-after-missing",
+        directory: f.directory,
+        component: "marker",
+        maxBytes: 64,
+      });
+      if (!read.ok) throw new Error(read.error.message);
+      expect(Buffer.from(read.value).toString()).toBe("kept live");
+      expect(await f.lease.assertCurrent([f.directory], "assert-after-missing")).toMatchObject({
+        ok: true,
+      });
+    } finally {
+      expect(await f.lease.close("completed")).toMatchObject({ phase: "released" });
+    }
+    expect(await f.lease.completion).toMatchObject({
+      outcome: "matched",
+      directory: { releaseAcknowledged: true },
+    });
+  });
+
   it("runs a real command using a held cwd, snapshots env/args and associates its acknowledgment", async () => {
     const f = await fixture();
     try {

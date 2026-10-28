@@ -239,6 +239,17 @@ internal sealed class DirectorySession : IDisposable
     if (digest != expected || !bytes.AsSpan().SequenceEqual(Program.Json(w => Body(w, true))) ||
         !requests.Add(request) || !operations.Add(operation) || !leases.TryGetValue(token, out var lease)) throw new InvalidDataException();
     var observation = lease.ReadBoundedFile(component, maximum);
+    if (observation == null) return Program.Json(writer =>
+    {
+      writer.WriteString("client_nonce", nonce);
+      writer.WriteString("kind", "file_missing");
+      writer.WriteString("lease_token", token);
+      writer.WriteString("operation_id", operation);
+      writer.WriteString("protocol_version", Program.Version);
+      writer.WriteString("request_digest", digest);
+      writer.WriteString("request_id", request);
+      writer.WriteString("session_nonce", sessionNonce);
+    });
     return Program.Json(writer =>
     {
       writer.WriteNumber("byte_length", observation.Content.Length);
