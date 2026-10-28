@@ -17,6 +17,9 @@ import type { WorktreeTarget } from "../../src/workspaces/git-worktree-broker.js
 const mocks = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("../../src/workspaces/workspace-boundary-resolver.js", () => ({
   resolveWorkspaceBoundary: mocks.resolve,
+  NativeWorkspaceBoundaryResolver: class {
+    resolve = mocks.resolve;
+  },
 }));
 import { NodeGitWorktreeBroker } from "../../src/workspaces/node-git-worktree-broker.js";
 

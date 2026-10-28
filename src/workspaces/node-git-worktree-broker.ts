@@ -30,7 +30,10 @@ import {
   reopenDirectoryIdentity,
   type DirectoryIdentity,
 } from "./linux-directory-identity.js";
-import { resolveWorkspaceBoundary } from "./workspace-boundary-resolver.js";
+import {
+  NativeWorkspaceBoundaryResolver,
+  resolveWorkspaceBoundary,
+} from "./workspace-boundary-resolver.js";
 import {
   createWorkspaceBoundaryDirectoryIdentity,
   type WorkspaceBoundaryDirectoryIdentity_v1,
@@ -207,10 +210,9 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
   static async open(input: NodeGitWorktreeBrokerOptions): Promise<NodeGitWorktreeBroker> {
     const options = { ...input };
     validateBrokerOptions(options);
-    const resolution = resolveWorkspaceBoundary(
-      { mode: "native" },
+    const resolution = await new NativeWorkspaceBoundaryResolver(
       options.runner ? { runner: options.runner } : {}
-    );
+    ).resolve({ mode: "native" });
     if (!resolution.ok)
       throw new DirectoryBoundaryError(
         "unsupported_platform",

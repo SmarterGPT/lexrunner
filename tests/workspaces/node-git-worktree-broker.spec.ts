@@ -18,7 +18,7 @@ const REPOSITORY_ID = "repo-integration";
 const HOST_ID = "host-integration";
 const GIT_RUNTIME = "git-linux-integration";
 
-describe("NodeGitWorktreeBroker real Git integration", () => {
+describe.skipIf(process.platform !== "linux")("NodeGitWorktreeBroker real Git integration", () => {
   let sandbox: string;
   let repositoryRoot: string;
   let worktreeRoot: string;
