@@ -22,7 +22,7 @@ internal static class Program
       return WorktreeRemovalProbe.InterruptChild(args[1], args[2], wait: false);
     if (args.Length == 3 && args[0] == "--restart-snapshot" && OperatingSystem.IsWindows())
       return WorktreeRemovalProbe.RestartSnapshot(args[1], args[2]);
-    if (args.Length is not (1 or 2 or 4) || !OperatingSystem.IsWindows()) return 2;
+    if (args.Length is not (1 or 2 or 3 or 4) || !OperatingSystem.IsWindows()) return 2;
     var root = Path.Combine(Path.GetFullPath(args[0]), "removal-probe-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(root);
     var results = new List<string>();
@@ -117,6 +117,7 @@ internal static class Program
         Check(File.ReadAllText(Path.Combine(path, "file")) == "preserve");
       });
       CapabilityIoProbe.Run(root, results);
+      if (args.Length == 3) ProcessImageProbe.Run(root, args[2], results);
       TreeRemovalProbe.Run(root, args.Length >= 2 ? args[1] : null, results);
       if (args.Length >= 2) GitObservationProbe.Run(root, args[1], results);
       if (args.Length >= 2)

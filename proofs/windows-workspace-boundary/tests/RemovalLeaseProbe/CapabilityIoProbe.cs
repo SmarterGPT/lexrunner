@@ -81,6 +81,19 @@ internal static class CapabilityIoProbe
       }, spoofGlobalRoot: true);
       Check(File.ReadAllBytes(Path.Combine(path, "native-root-file")).SequenceEqual(new byte[] { 6 }));
     });
+    Test("nonempty-directory-reparse-refusal", path => {
+      var anchor = Path.Combine(path, "anchor");
+      var outside = Path.Combine(path, "outside");
+      Directory.CreateDirectory(anchor); Directory.CreateDirectory(outside);
+      File.WriteAllText(Path.Combine(anchor, "keep"), "original");
+      File.WriteAllText(Path.Combine(outside, "keep"), "outside");
+      var attached = false;
+      try { SetJunction(anchor, outside); attached = true; }
+      catch (Win32Exception error) when (error.NativeErrorCode == 145) { }
+      finally { if (attached) RemoveJunctionTag(anchor); }
+      Check(!attached && File.ReadAllText(Path.Combine(anchor, "keep")) == "original" &&
+        File.ReadAllText(Path.Combine(outside, "keep")) == "outside");
+    });
     foreach (var operation in new[] { "directory", "create-file", "read-file" })
       Test("reparse-race-" + operation, path => {
         var outside = path + "-outside"; Directory.CreateDirectory(outside);

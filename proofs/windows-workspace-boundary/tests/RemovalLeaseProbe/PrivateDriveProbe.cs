@@ -6,6 +6,9 @@ using System.Runtime.InteropServices;
 internal static class PrivateDriveProbe
 {
   internal static void WithAlias(string drive, string target, Action body, bool spoofGlobalRoot = false)
+    => WithAliasHandle(drive, target, _ => body(), spoofGlobalRoot);
+
+  internal static void WithAliasHandle(string drive, string target, Action<IntPtr> body, bool spoofGlobalRoot = false)
   {
     var owned = new List<IntPtr>(); var switched = false; var original = IntPtr.Zero;
     try
@@ -19,7 +22,7 @@ internal static class PrivateDriveProbe
       Check(NtSetInformationProcess((IntPtr)(-1), 23, ref selected, (uint)IntPtr.Size)); switched = true;
       owned.Add(Link(directory, "GLOBALROOT", spoofGlobalRoot ? @"\Device\Null" : @"\"));
       owned.Add(Link(directory, drive, @"\GLOBAL??\" + target));
-      body();
+      body(directory);
     }
     finally
     {
@@ -33,6 +36,21 @@ internal static class PrivateDriveProbe
       Check(restored);
       if (!closed) throw new IOException("Private device-map probe release uncertain");
     }
+  }
+
+  internal static void SelectOwnedChild(IntPtr process, IntPtr directory)
+  {
+    if (process == IntPtr.Zero || process == (IntPtr)(-1) || directory == IntPtr.Zero) throw new InvalidDataException();
+    Check(NtSetInformationProcess(process, 23, ref directory, (uint)IntPtr.Size));
+  }
+
+  internal static void SelectGlobalChild(IntPtr process)
+  {
+    var directory = Named(@"\GLOBAL??", IntPtr.Zero, (ref Attributes attributes) => {
+      Check(NtOpenDirectoryObject(out var handle, 3, ref attributes)); return handle;
+    });
+    try { SelectOwnedChild(process, directory); }
+    finally { if (!CloseHandle(directory)) throw new IOException("Global map probe handle release uncertain"); }
   }
 
   private static IntPtr Link(IntPtr directory, string name, string target)
