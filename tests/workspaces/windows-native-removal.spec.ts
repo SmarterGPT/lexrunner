@@ -453,7 +453,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       expect(await f.lifecycle.getWorkspaceLease("workspace")).toEqual(f.lease);
       expect(existsSync(f.registration)).toBe(true);
       expect(await f.execute(recovery)).toMatchObject({ kind: "replay" });
-    }, 30000);
+    }, 180000);
     it("refuses recovery while the recorded native process is still alive", async () => {
       const f = await setup(),
         first = await f.open();
@@ -766,14 +766,25 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         const slot = path.join(f.slots, f.selectedSlot.component);
         await writeFile(slot + ".fault", phase);
         const first = await f.open(abort.signal);
-        const execution = f.execute(first).then(
-          (value) => ({ value }),
-          (error: unknown) => ({ error })
-        );
-        const deadline = performance.now() + 5000;
-        while (!existsSync(slot + ".reached") && performance.now() < deadline)
+        let executionSettled = false;
+        const execution = f
+          .execute(first)
+          .then(
+            (value) => ({ value }),
+            (error: unknown) => ({ error })
+          )
+          .then((outcome) => {
+            executionSettled = true;
+            return outcome;
+          });
+        // The native prepare path contains bounded Git calls before the fault
+        // marker. Keep this deadline aligned with the native work deadline and
+        // stop early if the executor exits without reaching the marker.
+        const deadline = performance.now() + 120000;
+        while (!existsSync(slot + ".reached") && !executionSettled && performance.now() < deadline)
           await new Promise((resolve) => setTimeout(resolve, 10));
         const reached = existsSync(slot + ".reached");
+        const preBarrierSettled = executionSettled;
         if (reached && phase === "before-effect") {
           const competitor = await f.open();
           await expect(f.recover(competitor)).rejects.toThrow(); // Original native executor still owns the same slot.
@@ -781,13 +792,21 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
           await competitor.session.close();
         }
         abort.abort(); // Existing owner terminates its actual child, never an arbitrary PID.
-        expect("error" in (await execution)).toBe(true);
+        const outcome = await execution;
         const closed = await first.session.close();
+        const preBarrier =
+          "error" in outcome
+            ? `executor error: ${String(outcome.error).slice(0, 512)}`
+            : `executor returned: ${String(JSON.stringify(outcome.value)).slice(0, 512)}`;
+        expect(
+          reached,
+          `Native fault barrier must establish the tested order (${preBarrierSettled ? preBarrier : "marker deadline"})`
+        ).toBe(true);
+        expect("error" in outcome).toBe(true);
         expect(closed).toMatchObject({
           outcome: "failed",
           cleanup: { processExited: true, disposition: "closed", terminationRequested: true },
         });
-        expect(reached, "Native fault barrier must establish the tested order").toBe(true);
         expect(f.store.readOperation("remove")?.resolution).toBeNull();
         await f.store.close();
         stores.splice(stores.indexOf(f.store), 1);
@@ -807,7 +826,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         expect(await f.lifecycle.getWorkspaceLease("workspace")).toEqual(f.lease);
         expect(reopened.readOperation("remove")?.admission).toEqual(operation.admission);
       },
-      30000
+      180000
     );
   }
 );
