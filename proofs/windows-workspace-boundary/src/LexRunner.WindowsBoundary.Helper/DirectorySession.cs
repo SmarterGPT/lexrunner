@@ -121,7 +121,7 @@ internal sealed class DirectorySession : IDisposable
       return prefix + (arg.GetProperty("relative_to_cwd").GetBoolean() ? "." : directory.Leaf.Path);
     }).ToArray();
     foreach (var directory in bound) directory.AssertCurrent();
-    var result = NativeProcess.Run(executable, rendered, cwd.Leaf.Path, timeout, maximum, variables);
+    var result = NativeProcessWorker.RunBound(executable, rendered, cwd.Leaf.Path, timeout, maximum, variables);
     foreach (var directory in bound) directory.AssertCurrent();
     return Program.Json(writer =>
     {

@@ -14,9 +14,10 @@ internal static class Program
 
   private static int Main(string[] args)
   {
-    if (!OperatingSystem.IsWindows() || args.Length != 2 ||
-        (args[0] != "--boundary-protocol" && args[0] != "--boundary-session") || args[1] != Version)
+    if (!OperatingSystem.IsWindows() || args.Length != 2 || args[1] != Version)
       return 2;
+    if (args[0] == "--process-worker") return NativeProcessWorker.RunEntrypoint();
+    if (args[0] != "--boundary-protocol" && args[0] != "--boundary-session") return 2;
     try
     {
       using var input = Console.OpenStandardInput();
