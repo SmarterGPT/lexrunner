@@ -14,6 +14,7 @@ on:
       - "tests/**"
       - "proofs/windows-workspace-boundary/**"
       - "services/windows-coordinator-host/**"
+      - "services/windows-coordinator-client/**"
       - "package*.json"
       - "tsconfig*.json"
       - ".github/workflows/**"
@@ -228,6 +229,9 @@ jobs:
       - name: Qualify native Windows coordinator console peer probe
         shell: pwsh
         run: ./services/windows-coordinator-host/verify.ps1
+      - name: Qualify native Windows coordinator client source
+        shell: pwsh
+        run: ./services/windows-coordinator-client/verify.ps1
       - name: Run native Windows handle-authority proof
         shell: pwsh
         run: ./proofs/windows-workspace-boundary/verify.ps1
@@ -259,6 +263,7 @@ jobs:
             artifacts/windows-helper-msi-install-ci/*.json
             artifacts/windows-helper-msi-install-ci/*.log
             artifacts/windows-coordinator-host-probe/verification-receipt.json
+            artifacts/windows-coordinator-client/verification-receipt.json
           if-no-files-found: warn
 
   # Full manual-only determinism and license gate.
