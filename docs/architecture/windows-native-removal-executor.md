@@ -20,6 +20,23 @@ and slot ancestor chains. The stable, exclusive slot is selected by the SHA-256 
 lease ID; its original physical identity and contents must match. It is provisioned explicitly
 before execution, never recreated when missing or replaced. Raw tokens stay in the live session.
 
+`createDurableWindowsRemovalProvider` is a separate per-operation recovery connection. Given an
+operation ID, it reads the immutable admission and Windows binding, then reads the referenced
+workspace lease, Attempt and current run controller. It checks the recorded paths, marker and
+deterministic slot against the durable lease before opening any native owner. Recovery acquires
+the recorded parent directories, compares their original identities in the native recovery path,
+and derives the current controller credential and run revision from the store. A stale controller
+or changed record fails the existing resolver fence. A completed operation returns historical
+status; no second commit is dispatched. The owner must close with confirmed child exit before
+the provider returns a resolution result.
+
+This provider deliberately refuses **fresh** removal. The durable lease does not contain the
+registration and slot physical identities needed for first dispatch, and a fresh helper
+observation cannot create its own approved expectation. Its injected owner-opening callback is
+not authenticated by this module. A separately qualified protected selection, slot-provisioning
+and launch authority must supply those expectations before production can connect first dispatch
+or treat recovery as an authenticated result. The production resolver remains unavailable.
+
 Preparation opens every selected child relative to retained native parent handles. It refuses
 reparse points, unsupported filesystems/names, identity mismatches, open writers and inventory
 budget failures. Read handles allow Git inspection before DELETE access is acquired. The target

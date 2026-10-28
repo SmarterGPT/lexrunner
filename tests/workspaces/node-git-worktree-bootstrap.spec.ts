@@ -4,6 +4,9 @@ import { createWorkspaceBoundaryDirectoryIdentity } from "../../src/workspaces/w
 const mocks = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("../../src/workspaces/workspace-boundary-resolver.js", () => ({
   resolveWorkspaceBoundary: mocks.resolve,
+  NativeWorkspaceBoundaryResolver: class {
+    resolve = mocks.resolve;
+  },
 }));
 vi.mock("../../src/workspaces/linux-directory-identity.js", async (original) => {
   const actual =
@@ -53,6 +56,20 @@ function fixture() {
 }
 beforeEach(() => vi.clearAllMocks());
 describe("portable broker bootstrap", () => {
+  it("waits for asynchronous resolution before acquiring a boundary", async () => {
+    const { boundary } = fixture();
+    let release!: (value: { ok: true; boundary: typeof boundary }) => void;
+    mocks.resolve.mockReturnValueOnce(
+      new Promise<{ ok: true; boundary: typeof boundary }>((resolve) => {
+        release = resolve;
+      })
+    );
+    const opening = NodeGitWorktreeBroker.open(options());
+    expect(boundary.acquire).not.toHaveBeenCalled();
+    release({ ok: true, boundary });
+    expect(await opening).toBeInstanceOf(NodeGitWorktreeBroker);
+    expect(boundary.acquire).toHaveBeenCalledOnce();
+  });
   it("captures through the boundary and closes before returning, without Linux capture", async () => {
     const { lease, boundary } = fixture();
     expect(await NodeGitWorktreeBroker.open(options())).toBeInstanceOf(NodeGitWorktreeBroker);

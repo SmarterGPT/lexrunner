@@ -15,6 +15,7 @@ import {
 import { windowsRemovalSlot } from "../../src/workspaces/windows-removal-binding.js";
 import { WindowsRemovalIdentity } from "../../src/workspaces/windows-removal-protocol.js";
 import { createOwnedWindowsRemovalTransition } from "../../src/workspaces/owned-windows-removal-transition.js";
+import { createDurableWindowsRemovalProvider } from "../../src/workspaces/owned-windows-removal-provider.js";
 import { acquireOwnedWindowsWorkspaceLease } from "../../src/workspaces/owned-windows-workspace-lease.js";
 import type { OwnedWindowsWorkspaceLease } from "../../src/workspaces/owned-windows-workspace-lease.js";
 import { NodeGitWorktreeBroker } from "../../src/workspaces/node-git-worktree-broker.js";
@@ -24,7 +25,14 @@ import { resolveWorkspaceBoundary } from "../../src/workspaces/workspace-boundar
 vi.mock("../../src/workspaces/workspace-boundary-resolver.js", async (original) => {
   const actual =
     await original<typeof import("../../src/workspaces/workspace-boundary-resolver.js")>();
-  return { ...actual, resolveWorkspaceBoundary: vi.fn(actual.resolveWorkspaceBoundary) };
+  const resolve = vi.fn(actual.resolveWorkspaceBoundary);
+  return {
+    ...actual,
+    resolveWorkspaceBoundary: resolve,
+    NativeWorkspaceBoundaryResolver: class {
+      resolve = resolve;
+    },
+  };
 });
 
 const executable = process.env.LEXRUNNER_TEST_NATIVE_HELPER;
@@ -317,6 +325,24 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
           })
         );
       }
+      function durableProvider(recoveryStore = store, recoveryLifecycle = lifecycle) {
+        return createDurableWindowsRemovalProvider({
+          store: recoveryStore,
+          lifecycle: recoveryLifecycle,
+          now,
+          async openRoots(selectedRoots, signal) {
+            const acquired = await acquireOwnedWindowsRootSession(
+              options,
+              { workTimeoutMs: 120000 },
+              selectedRoots,
+              16,
+              signal
+            );
+            if (acquired.ok) roots.push(acquired);
+            return acquired;
+          },
+        });
+      }
       return {
         root,
         repository,
@@ -330,6 +356,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         open,
         execute,
         recover,
+        durableProvider,
         selectedSlot,
         options,
         selected,
@@ -470,6 +497,21 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       expect(f.store.readOperation("remove")?.resolution).toBeNull();
       expect(await readFile(path.join(f.worktree, "replacement"), "utf8")).toBe("preserved");
     }, 30000);
+    it("refuses a fresh broker removal without protected first-dispatch selection", async () => {
+      const f = await setup();
+      const broker = await NodeGitWorktreeBroker.open({
+        ...f.brokerOptions,
+        nativeRemoval: f.durableProvider(),
+      });
+      expect(await broker.remove(f.lease)).toMatchObject({
+        ok: false,
+        reason: "containment_violation",
+      });
+      expect(f.store.readOperation("remove")).toBeNull();
+      expect(await readFile(path.join(f.worktree, "nested", "tracked.txt"), "utf8")).toBe(
+        "tracked content\n"
+      );
+    }, 30000);
     it("connects real broker observe/dirty-preserve/remove through the prepared native executor", async () => {
       const f = await setup();
       const transition = createOwnedWindowsRemovalTransition({
@@ -588,7 +630,41 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       const { rename } = await import("node:fs/promises");
       await rename(slot, slot + ".original");
       await writeFile(slot, f.selectedSlot.content);
-      await expect(f.recover(await f.open())).rejects.toThrow();
+      await expect(f.durableProvider().recover("remove")).rejects.toThrow();
+      expect(f.store.readOperation("remove")?.resolution).toBeNull();
+    }, 30000);
+    it("rejects a missing operation without opening a native owner", async () => {
+      const f = await setup();
+      expect(await f.durableProvider().recover("unknown")).toEqual({
+        kind: "rejected",
+        reason: "durable_native_binding_missing",
+      });
+      expect(f.store.readOperation("remove")).toBeNull();
+    }, 30000);
+    it("rejects a changed durable lease before opening a recovery owner", async () => {
+      const f = await setup(),
+        first = await f.open();
+      await f.execute(first);
+      await first.session.close();
+      const provider = createDurableWindowsRemovalProvider({
+        store: f.store,
+        lifecycle: {
+          getAttempt: f.lifecycle.getAttempt.bind(f.lifecycle),
+          getRunCoordination: f.lifecycle.getRunCoordination.bind(f.lifecycle),
+          async getWorkspaceLease(leaseId) {
+            const lease = await f.lifecycle.getWorkspaceLease(leaseId);
+            return lease && { ...lease, worktreePath: path.join(f.root, "wrong-target") };
+          },
+        },
+        now: f.now,
+        async openRoots() {
+          throw new Error("Recovery must reject before owner acquisition");
+        },
+      });
+      expect(await provider.recover("remove")).toEqual({
+        kind: "rejected",
+        reason: "durable_native_binding_mismatch",
+      });
       expect(f.store.readOperation("remove")?.resolution).toBeNull();
     }, 30000);
     it("refuses a junction inside the selected tree and preserves its target", async () => {
@@ -669,11 +745,13 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         stores.splice(stores.indexOf(f.store), 1);
         const reopened = new SqliteWindowsRemovalStore(f.database);
         stores.push(reopened);
+        const reopenedLifecycle = new SqliteWorkspaceLifecycleStore(f.database);
+        stores.push(reopenedLifecycle);
         const operation = reopened.readOperation("remove")!;
         expect(operation.admission.executorId).toMatch(/^windows:/u);
         // Remove only the test-only directive; recovery never sends another commit.
         await rm(slot + ".fault");
-        const result = await f.recover(await f.open(), reopened);
+        const result = await f.durableProvider(reopened, reopenedLifecycle).recover("remove");
         expect(result).toMatchObject({
           kind: "resolved",
           operation: { resolution: { observedState: expectedState } },
