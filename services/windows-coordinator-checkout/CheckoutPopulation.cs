@@ -278,7 +278,9 @@ internal static class CheckoutPopulation
 
     private static void RequireOnlyGitPointer(string stage)
     {
-        var entries = Directory.EnumerateFileSystemEntries(stage).ToArray();
+        // Only one entry is permitted. Stop after the second one so a writer
+        // cannot force an unbounded snapshot before this refusal.
+        var entries = Directory.EnumerateFileSystemEntries(stage).Take(2).ToArray();
         if (entries.Length != 1 || Path.GetFileName(entries[0]) != ".git" ||
             !File.Exists(entries[0]) || File.GetAttributes(entries[0]).HasFlag(FileAttributes.ReparsePoint))
             throw new InvalidDataException("checkout_stage_not_empty");
