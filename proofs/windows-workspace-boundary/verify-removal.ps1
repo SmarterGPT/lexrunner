@@ -101,8 +101,17 @@ try {
     Invoke-Recorded 'native-session-tests' 'npx.cmd' @('vitest', 'run', '-c', 'vitest.git.config.ts', 'tests/workspaces/windows-native-removal.spec.ts', 'tests/workspaces/windows-native-helper.spec.ts', 'tests/workspaces/windows-native-directory.spec.ts', 'tests/workspaces/node-git-worktree-native.spec.ts', 'tests/workspaces/node-git-worktree-shared.spec.ts', 'tests/workspaces/workspace-boundary-shared.spec.ts', 'tests/workspaces/owned-windows-workspace-lease.spec.ts', 'tests/workspaces/owned-windows-directory-session.spec.ts', 'tests/workspaces/owned-windows-directory.spec.ts', '--maxWorkers=1', '--reporter=verbose', '--reporter=json', "--outputFile.json=$testReport") $repoRoot
     $tests = Get-Content -LiteralPath $testReport -Raw | ConvertFrom-Json
     $removalCases = @($tests.testResults | Where-Object { $_.name.EndsWith('windows-native-removal.spec.ts') } | ForEach-Object { $_.assertionResults })
-    if ($removalCases.Count -lt 18 -or @($removalCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
+    if ($removalCases.Count -lt 21 -or @($removalCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
         throw 'Actual removal qualification must execute every required case without skips'
+    }
+    $requiredIndexFlagCases = @(
+        "real Windows removal executor and journal recovery refuses hidden dirty 'assume-unchanged' index before admission"
+        "real Windows removal executor and journal recovery refuses hidden dirty 'skip-worktree' index before admission"
+        "real Windows removal executor and journal recovery refuses hidden dirty 'both-flags' index before admission"
+    )
+    $observedRemovalCases = @($removalCases | ForEach-Object { $_.fullName })
+    if (@($requiredIndexFlagCases | Where-Object { $_ -cnotin $observedRemovalCases }).Count -ne 0) {
+        throw 'Required native index-flag refusal cases were not executed'
     }
     $sharedBrokerCases = @($tests.testResults | Where-Object { $_.name.EndsWith('node-git-worktree-shared.spec.ts') } | ForEach-Object { $_.assertionResults })
     if ($sharedBrokerCases.Count -lt 16 -or @($sharedBrokerCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
@@ -113,6 +122,7 @@ try {
         throw 'Shared boundary contract must execute every required case without skips'
     }
     $receipt.nativeRemovalTests = $removalCases.Count
+    $receipt.indexFlagControls = $requiredIndexFlagCases
     $receipt.sharedBrokerTests = $sharedBrokerCases.Count
     $receipt.sharedBoundaryTests = $sharedBoundaryCases.Count
     $receipt.nativeTestsPassed = $tests.numPassedTests

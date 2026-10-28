@@ -478,6 +478,45 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       );
       expect(existsSync(f.registration)).toBe(true);
     }, 30000);
+    it.each([
+      { name: "assume-unchanged", flags: ["--assume-unchanged"], tag: "h" },
+      { name: "skip-worktree", flags: ["--skip-worktree"], tag: "S" },
+      {
+        name: "both-flags",
+        flags: ["--assume-unchanged", "--skip-worktree"],
+        tag: "s",
+      },
+    ])(
+      "refuses hidden dirty $name index before admission",
+      async ({ flags, tag }) => {
+        vi.stubEnv("GIT_CONFIG_GLOBAL", "NUL");
+        vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+        const f = await setup();
+        const tracked = path.join(f.worktree, "nested", "tracked.txt");
+        for (const flag of flags)
+          git(f.worktree, ["update-index", flag, "--", "nested/tracked.txt"]);
+        await writeFile(tracked, "hidden dirty content\n");
+        // These bits can make status report clean even though tracked bytes differ.
+        expect(
+          git(f.worktree, ["ls-files", "-v", "--cached", "--full-name", "--", "nested/tracked.txt"])
+        ).toBe(`${tag} nested/tracked.txt`);
+        expect(
+          git(f.worktree, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"])
+        ).toBe("");
+        const before = await readFile(tracked);
+        const session = await f.open();
+        await expect(f.execute(session)).rejects.toThrow("Directory session ended");
+        expect(await session.session.completion).toMatchObject({
+          outcome: "failed",
+          reason: "child_exit",
+          cleanup: { disposition: "closed", processExited: true, exitCode: 3 },
+        });
+        expect(f.store.readOperation("remove")).toBeNull();
+        expect(await readFile(tracked)).toEqual(before);
+        expect(existsSync(f.registration)).toBe(true);
+      },
+      30000
+    );
     it("rejects a stale controller after preparation without deleting anything", async () => {
       const f = await setup();
       expect(

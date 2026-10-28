@@ -94,6 +94,7 @@ internal sealed class RemovalSession : IDisposable
               !Path.GetFullPath(Metadata(registration, "commondir"), registrationPath).Equals(common, StringComparison.OrdinalIgnoreCase) ||
               Hash(registration.Metadata("lexrunner-attempt.json")) != S(payload, "marker_sha256") ||
               Metadata(registration, "HEAD") != "ref: refs/heads/" + marker.RootElement.GetProperty("branch").GetString() ||
+               !registration.HasRootEntry(name => name.Equals("index", StringComparison.OrdinalIgnoreCase)) ||
               registration.HasRootEntry(name => name.Equals("locked", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".lock", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("Removal registration mismatch");
           // Fixed read-only Git command. Preserve public config-location semantics
@@ -117,10 +118,18 @@ internal sealed class RemovalSession : IDisposable
           if (environment.Sum(p => p.Key.Length + p.Value.Length + 2) + 1 > 32767) throw new InvalidDataException("Git environment block");
           var environmentDigest = Hash(Program.Json(w => { w.WritePropertyName("git_environment"); WriteValue(w, gitEnvironment); }));
           var gitExecutable = S(payload, "git_executable");
+          string[] indexArguments = ["--git-dir=" + registrationPath, "--work-tree=" + rootPath, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL", "ls-files", "-v", "-z", "--cached", "--full-name"];
           string[] gitArguments = ["--git-dir=" + registrationPath, "--work-tree=" + rootPath, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"];
           // Pin names without granting DELETE until the ordinary Git readers
           // exit. Preparation handles alone deliberately allow replacement.
           tree.SealForObservation(); registration.SealForObservation();
+          // The registration index is now held against writers and replacement.
+          // -v exposes assume-unchanged (h) and skip-worktree (S/s), which can
+          // hide changed bytes from status. Parse raw -z records, not decoded paths.
+          var index = NativeProcess.Run(gitExecutable, indexArguments, common, 30000, 65536, environment);
+          if (index.Status != "exited" || index.ExitCode != 0 || index.Stderr.Length != 0 || index.StdoutTruncated || index.StderrTruncated)
+            throw new InvalidDataException("Removal requires ordinary Git index");
+          RequireOrdinaryIndex(index.Stdout);
           var clean = NativeProcess.Run(gitExecutable, gitArguments, common, 30000, 65536, environment);
           if (clean.Status != "exited" || clean.ExitCode != 0 || clean.Stdout.Length != 0 || clean.Stderr.Length != 0 || clean.StdoutTruncated || clean.StderrTruncated)
             throw new InvalidDataException("Removal requires clean Git observation");
@@ -283,6 +292,20 @@ internal sealed class RemovalSession : IDisposable
     return bytes.AsSpan(0, (int)read).ToArray();
   }
   private static string S(JsonElement value, string name) => value.GetProperty(name).GetString() ?? throw new InvalidDataException();
+  private static void RequireOrdinaryIndex(byte[] output)
+  {
+    var offset = 0;
+    while (offset < output.Length)
+    {
+      // An ordinary cached entry is exactly H SP nonempty-path NUL. Other
+      // Git tags, malformed framing and partial output refuse before admission.
+      if (output.Length - offset < 4 || output[offset] != (byte)'H' || output[offset + 1] != (byte)' ')
+        throw new InvalidDataException("Removal index flags or framing");
+      var end = Array.IndexOf(output, (byte)0, offset + 2);
+      if (end <= offset + 2) throw new InvalidDataException("Removal index flags or framing");
+      offset = end + 1;
+    }
+  }
   private static string Hash(byte[] bytes) => "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
   private static bool Digest(string value) => value.Length == 71 && value.StartsWith("sha256:", StringComparison.Ordinal) && value[7..].All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
   private static void Keys(JsonElement value, params string[] names)

@@ -45,6 +45,12 @@ A registration `locked` marker or `.lock` file prevents preparation. Fixed nativ
 includes untracked and ignored files, disables optional locks/hooks/fsmonitor, uses explicit Git
 routing/environment, and runs under the existing native process Job Object. Its command, cwd,
 process, duration, exit and output digests are bound into the prepared selection.
+Before status, the helper also requires the registration `index` in its held inventory and runs
+bounded `git ls-files -v -z --cached --full-name` through that same process and environment.
+It accepts only raw `H SP nonempty-path NUL` records. The `h` assume-unchanged and `S`/`s`
+skip-worktree tags, all other tags, malformed output, process failure and truncation refuse
+before native preparation returns or durable removal admission begins. This guard does not add
+a separate index-command field to the existing `clean_git` wire receipt.
 Public Git configuration-location variables match the broker, including global newline
 normalization. Their digest is recorded; general credential variables are not forwarded.
 Inline Git environment configuration is explicitly unsupported rather than projected blindly.
@@ -124,6 +130,12 @@ unchanged. Outer execution admission, installed-helper discovery, approved signa
 launch profile and full supported-host worker conformance remain separate qualification. Power
 loss/reboot, arbitrary filesystem versions, kernel stalls, cross-volume roots and ARM64 are not
 established by this x64 lane.
+
+The index guard observes the selected worktree's main index, not submodule internals. Sparse
+checkout may clear a skip-worktree bit before observation. The held registration index prevents
+ordinary writers during this preparation, but the guard is not a general atomic Git transaction.
+Repository-selected clean filters may still execute during `git status`; this lane does not
+qualify that command for a privileged service token.
 
 npm installs only LexRunner. The native helper remains a separately downloaded, completely
 optional normal application, installed by a user or explicitly authorized agent. No npm dependency,
