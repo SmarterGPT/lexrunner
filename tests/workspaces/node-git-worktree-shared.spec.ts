@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { execa } from "execa";
@@ -20,7 +19,9 @@ import { NativeWorkspaceBoundaryResolver } from "../../src/workspaces/workspace-
 const windows = process.platform === "win32";
 const helper = process.env.LEXRUNNER_TEST_NATIVE_HELPER;
 const gitExecutable = process.env.LEXRUNNER_TEST_GIT ?? "git";
-const fixtureParent = path.join(tmpdir(), "lexrunner-shared-broker");
+// Hosted Node can return a short-name TEMP alias (RUNNER~1), which the native
+// boundary intentionally refuses. Use the ordinary checkout-local fixture root.
+const fixtureParent = path.resolve("artifacts", "shared-broker");
 
 /** Public broker behavior shared by Linux and native Windows. Windows uses an
  * explicit development lease because production selection is still unavailable.
