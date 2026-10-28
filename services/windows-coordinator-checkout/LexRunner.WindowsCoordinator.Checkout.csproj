@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AssemblyName>LexRunner.WindowsCoordinator.Checkout</AssemblyName>
+    <PublishAot>true</PublishAot>
+    <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <StripSymbols>true</StripSymbols>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(CheckoutFixture)' == 'true'">
+    <DefineConstants>$(DefineConstants);CHECKOUT_FIXTURE;GIT_IMPORT_FIXTURE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="obj/**/*.cs;bin/**/*.cs;tmp/**/*.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(CheckoutFixture)' != 'true'">
+    <Compile Remove="CheckoutPopulation.cs;HeldCheckout.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(CheckoutFixture)' == 'true'">
+    <Compile Include="../windows-coordinator-git/BoundedGitChild.cs" Link="BoundedGitChild.cs" />
+    <Compile Include="../windows-coordinator-git/GitBundleImport.cs" Link="GitBundleImport.cs" />
+    <Compile Include="../windows-coordinator-git/GitWorktreeStage.cs" Link="GitWorktreeStage.cs" />
+    <Compile Include="../windows-coordinator-git/GraphSelectedGitProfile.cs" Link="GraphSelectedGitProfile.cs" />
+    <Compile Include="../windows-coordinator-git/StaticGitImports.cs" Link="StaticGitImports.cs" />
+    <Compile Include="../../installers/windows-coordinator/v2/GraphV2.cs" Link="GraphV2.cs" />
+  </ItemGroup>
+</Project>
