@@ -74,6 +74,14 @@ try {
     Invoke-Recorded 'build-tree-probe' 'dotnet.exe' @('build', 'tests/RemovalLeaseProbe/RemovalLeaseProbe.csproj', '-c', 'Release', '--nologo') $proofRoot
     $treeProbe = Join-Path $proofRoot 'tests\RemovalLeaseProbe\bin\Release\net8.0\RemovalLeaseProbe.exe'
     Invoke-Recorded 'tree-probe' $treeProbe @($fixtureRoot, $GitExecutable) $proofRoot
+    $treeResult = Get-Content -LiteralPath (Join-Path $artifacts 'tree-probe.log') -Raw | ConvertFrom-Json
+    $requiredObservation = @('git-observation-weakened-clean-swap', 'git-observation-guarded-dirty-preserved')
+    if ($treeResult.filesystem -ne $filesystem -or @($treeResult.passed).Count -lt 35 -or
+        @($requiredObservation | Where-Object { $_ -notin $treeResult.passed }).Count -ne 0) {
+        throw 'Git observation guard controls did not complete on the selected filesystem'
+    }
+    $receipt.treeProbeCases = @($treeResult.passed).Count
+    $receipt.gitObservationControls = $requiredObservation
     $env:LEXRUNNER_TEST_NATIVE_HELPER = $HelperExecutable
     $env:LEXRUNNER_TEST_REMOVAL_FAULT_HELPER = Join-Path $artifacts 'fault-probe\lexrunner-windows-removal-session-probe.exe'
     $env:LEXRUNNER_TEST_GIT_EXE = $GitExecutable

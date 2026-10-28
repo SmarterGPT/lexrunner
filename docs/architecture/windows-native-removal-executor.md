@@ -32,6 +32,17 @@ Public Git configuration-location variables match the broker, including global n
 normalization. Their digest is recorded; general credential variables are not forwarded.
 Inline Git environment configuration is explicitly unsupported rather than projected blindly.
 
+Before Git observes cleanliness, the helper reopens every selected root and registration entry
+relative to its retained parent with a no-DELETE-sharing observation handle and compares the
+complete identity. These handles stay live until Git exits. Only then does the helper close each
+observation handle and acquire its DELETE handle while retaining the original identity handle.
+A failed observation or identity comparison refuses removal. The original preparation handles
+alone are insufficient: an owned-fixture control on NTFS and ReFS moved a dirty tracked file,
+put clean bytes at its name for Git status, then restored the dirty original before identity
+recheck. Git reported clean in that weakened sequence. The observation handles denied the move
+and Git reported dirty in the guarded sequence. The control preserves the dirty file and never
+deletes it.
+
 DELETE handles are acquired parent-first relative to retained parents. Each original handle stays
 live until the new handle's complete identity matches. A replacement cannot reuse that still-live
 object's ID. An incompatible ordinary scope or competing seal refuses before deletion.
