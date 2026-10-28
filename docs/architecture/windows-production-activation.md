@@ -87,6 +87,14 @@ open; WSL projection requires separate explicit authorization and configuration.
    `GIT_CONFIG_*` fsmonitor canary during disposable status inspections; it also
    ran three read-oriented Git commands before refusing fresh creation. Do not
    forward the request client's Git configuration into a service-token process.
+   A disposable ReFS status probe also confirmed that the exact broker `git status`
+   command can launch a repository-selected clean filter with a constructed
+   environment and fixed hooks/fsmonitor overrides. An empty-tree attribute
+   source suppressed worktree `.gitattributes` in that fixture, but a user-owned
+   `.git/info/attributes` restored the filter. The development Git profile only
+   closes ambient configuration inheritance; it is not safe for a service token.
+   Keep privileged status and automatic removal closed until the Git metadata
+   or execution-token boundary is independently qualified.
    Exercise create, exact retry/observe, dirty preservation and safe removal
    against disposable native Git repositories. Check isolation,
    marker/receipt provenance, bounded graceful deadlines and cleanup observations.

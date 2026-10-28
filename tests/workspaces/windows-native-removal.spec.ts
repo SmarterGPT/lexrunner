@@ -19,6 +19,7 @@ import { createDurableWindowsRemovalProvider } from "../../src/workspaces/owned-
 import { acquireOwnedWindowsWorkspaceLease } from "../../src/workspaces/owned-windows-workspace-lease.js";
 import type { OwnedWindowsWorkspaceLease } from "../../src/workspaces/owned-windows-workspace-lease.js";
 import { NodeGitWorktreeBroker } from "../../src/workspaces/node-git-worktree-broker.js";
+import { makeWindowsGitFixtureProfile } from "./windows-git-fixture-profile.js";
 import { createWorkspaceBoundaryCapabilityDecision } from "../../src/workspaces/workspace-boundary.js";
 import { resolveWorkspaceBoundary } from "../../src/workspaces/workspace-boundary-resolver.js";
 
@@ -221,6 +222,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
         pathComparison: "case-insensitive" as const,
         gitExecutable: gitExecutable!,
         testOnlyAllowUnboundBoundaryAuthority: true,
+        testOnlyWindowsGitProfile: await makeWindowsGitFixtureProfile(root, gitExecutable!),
       };
       await writeFile(
         path.join(registration, "lexrunner-attempt.json"),
@@ -575,7 +577,7 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
       },
       30000
     );
-    it("normalizes a globally configured CRLF fixture before native removal", async () => {
+    it("preserves CRLF bytes that fixed Git configuration classifies as dirty", async () => {
       await mkdir(artifactParent, { recursive: true });
       const configurationRoot = await mkdtemp(path.join(artifactParent, "native-removal-config-"));
       fixtureRoots.push(configurationRoot);
@@ -616,9 +618,16 @@ describe.skipIf(process.platform !== "win32" || !executable || !gitExecutable)(
           Buffer.from("\r\n")
         )
       ).toBe(true);
+      const before = await readFile(path.join(f.worktree, "nested", "tracked.txt"));
       const removed = await broker.remove(f.lease);
-      expect(removed, JSON.stringify(removed)).toMatchObject({ ok: true, outcome: "removed" });
-      expect(f.store.readOperation("remove")?.resolution?.observedState).toBe("absence_observed");
+      expect(removed, JSON.stringify(removed)).toMatchObject({
+        ok: true,
+        outcome: "preserved",
+        preservationReason: "dirty",
+      });
+      expect(await readFile(path.join(f.worktree, "nested", "tracked.txt"))).toEqual(before);
+      expect(existsSync(f.registration)).toBe(true);
+      expect(f.store.readOperation("remove")).toBeNull();
     }, 45000);
     it("refuses a replaced stable slot during recovery", async () => {
       const f = await setup(),

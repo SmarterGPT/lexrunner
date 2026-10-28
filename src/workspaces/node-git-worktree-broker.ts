@@ -42,6 +42,13 @@ import {
   type WorkspaceBoundaryLease,
   type WorkspaceBoundaryProcessArgument,
 } from "./workspace-boundary.js";
+import {
+  snapshotWindowsGitFixtureProfile,
+  windowsGitFixtureProcessPlan,
+  type WindowsBrokerGitVerb,
+  type WindowsGitFixtureProfile,
+  type WindowsGitFixtureProfileInput,
+} from "./windows-git-command-profile.js";
 
 const FULL_GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -50,6 +57,11 @@ const EVIDENCE_TAIL_BYTES = 4_096;
 const ATTEMPT_MARKER_FILE = "lexrunner-attempt.json";
 const MAX_ATTEMPT_MARKER_BYTES = 64 * 1024;
 const MAX_GITDIR_FILE_BYTES = 16 * 1024;
+const SYNTHETIC_WINDOWS_GIT_COMPOSITIONS = new Set([
+  "native-fixture:test-composition",
+  "shared-broker-development-fixture:shared-broker-development-fixture",
+  "native-removal-fixture:windows-removal-fixture",
+]);
 
 export interface NodeGitWorktreeBrokerOptions {
   repositoryId: string;
@@ -65,6 +77,9 @@ export interface NodeGitWorktreeBrokerOptions {
   maxDirtyPaths?: number;
   /** Enables synthetic lineage only for direct broker tests outside the coordinator. */
   testOnlyAllowUnboundBoundaryAuthority?: boolean;
+  /** Development fixture only. Never selects a production Git image or grants
+   * authority to run Git under an installed coordinator identity. */
+  testOnlyWindowsGitProfile?: WindowsGitFixtureProfileInput;
   /** Explicit native transition injection. Production resolution must separately
    * qualify the boundary; supplying this port never makes a backend ready. */
   nativeRemoval?: NativeWorktreeRemovalTransition;
@@ -141,6 +156,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
   private readonly defaultTimeoutMs: number;
   private readonly maxDirtyPaths: number;
   private readonly testOnlyAllowUnboundBoundaryAuthority: boolean;
+  private readonly windowsGitProfile?: WindowsGitFixtureProfile;
   private readonly repositoryIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
   private readonly repositoryGitIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
   private readonly worktreeRootIdentity: WorkspaceBoundaryDirectoryIdentity_v1;
@@ -169,6 +185,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
         "Physical worktree containment currently requires a case-sensitive Linux Git runtime"
       );
     }
+    assertWindowsGitFixtureComposition(options, resolution.boundary);
     this.boundary = resolution.boundary;
     if (bootstrap) {
       this.repositoryIdentity = bootstrap.repository;
@@ -204,12 +221,19 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
     this.maxDirtyPaths = options.maxDirtyPaths ?? DEFAULT_MAX_DIRTY_PATHS;
     this.testOnlyAllowUnboundBoundaryAuthority =
       options.testOnlyAllowUnboundBoundaryAuthority ?? false;
+    this.windowsGitProfile = options.testOnlyWindowsGitProfile
+      ? snapshotWindowsGitFixtureProfile(options.testOnlyWindowsGitProfile)
+      : undefined;
   }
 
   /** Capture native identity observations before opening the lifecycle store. */
   static async open(input: NodeGitWorktreeBrokerOptions): Promise<NodeGitWorktreeBroker> {
     const options = { ...input };
     validateBrokerOptions(options);
+    if (options.testOnlyWindowsGitProfile)
+      options.testOnlyWindowsGitProfile = snapshotWindowsGitFixtureProfile(
+        options.testOnlyWindowsGitProfile
+      );
     const resolution = await new NativeWorkspaceBoundaryResolver(
       options.runner ? { runner: options.runner } : {}
     ).resolve({ mode: "native" });
@@ -224,6 +248,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
         "unsupported_platform",
         "Boundary path comparison does not match the declared Git runtime"
       );
+    assertWindowsGitFixtureComposition(options, boundary);
     const bootstrapId = `broker-bootstrap:${randomUUID()}`;
     // Discovery lease lineage identifies this read-only capture, never a worker execution grant.
     const acquired = await boundary.acquire({
@@ -282,6 +307,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       const branchValidation = await this.gitMain(
         boundary,
         "create",
+        "check_branch",
         ["check-ref-format", "--branch", target.branch],
         options
       );
@@ -298,6 +324,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       const commit = await this.gitMain(
         boundary,
         "create",
+        "verify_commit",
         ["rev-parse", "--verify", `${target.baseSha}^{commit}`],
         options
       );
@@ -371,6 +398,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       const branch = await this.gitMain(
         boundary,
         "create",
+        "show_ref",
         ["show-ref", "--verify", "--quiet", `refs/heads/${target.branch}`],
         options,
         [1]
@@ -408,6 +436,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       const created = await this.gitMain(
         boundary,
         "create",
+        "worktree_add",
         [
           { kind: "literal", value: "worktree" },
           { kind: "literal", value: "add" },
@@ -470,6 +499,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
     const listed = await this.gitMain(
       boundary,
       "observe",
+      "list_worktrees",
       ["worktree", "list", "--porcelain", "-z"],
       options
     );
@@ -522,6 +552,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
           boundary,
           worktreeGit,
           "observe",
+          "status_worktree",
           ["status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=all"],
           options
         );
@@ -664,6 +695,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       const removed = await this.gitMain(
         boundary,
         "remove",
+        "worktree_remove",
         [
           { kind: "literal", value: "worktree" },
           { kind: "literal", value: "remove" },
@@ -860,6 +892,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
   private gitMain(
     boundary: OperationBoundary,
     operation: BrokerOperation,
+    verb: WindowsBrokerGitVerb,
     args: readonly (string | WorkspaceBoundaryProcessArgument)[],
     options: BrokerOperationOptions,
     allowedNonzeroExitCodes: readonly number[] = []
@@ -885,6 +918,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
     return this.git(
       boundary,
       operation,
+      verb,
       boundaryArgs,
       boundary.repositoryGit,
       options,
@@ -897,6 +931,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
     boundary: OperationBoundary,
     worktreeGit: WorkspaceBoundaryDirectoryCapability,
     operation: BrokerOperation,
+    verb: WindowsBrokerGitVerb,
     args: readonly string[],
     options: BrokerOperationOptions
   ): Promise<GitExecutionResult> {
@@ -923,7 +958,7 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
       `--work-tree=${boundary.target.identity.canonical_path}`,
       ...args,
     ];
-    return this.git(boundary, operation, boundaryArgs, boundary.target, options, [], {
+    return this.git(boundary, operation, verb, boundaryArgs, boundary.target, options, [], {
       args: evidenceArgs,
       cwd: boundary.target.identity.canonical_path,
     });
@@ -1162,27 +1197,62 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
   private async git(
     boundary: OperationBoundary,
     operation: BrokerOperation,
+    verb: WindowsBrokerGitVerb,
     args: readonly WorkspaceBoundaryProcessArgument[],
     cwd: WorkspaceBoundaryDirectoryCapability,
     options: BrokerOperationOptions,
     allowedNonzeroExitCodes: readonly number[] = [],
     evidence?: { args: readonly string[]; cwd: string }
   ): Promise<GitExecutionResult> {
+    const windows = this.boundary.capability.backend_kind === "windows-native";
+    let processPlan: ReturnType<typeof windowsGitFixtureProcessPlan> | undefined;
+    if (windows) {
+      if (!this.windowsGitProfile)
+        return this.failure(
+          operation,
+          "containment_violation",
+          "A protected Windows Git process profile is unavailable"
+        );
+      try {
+        processPlan = windowsGitFixtureProcessPlan(this.windowsGitProfile, verb, args);
+      } catch (error) {
+        return this.containmentFailure(operation, error);
+      }
+    }
+    const executable = processPlan?.gitExecutable ?? this.gitExecutable;
+    const commandArgs = processPlan?.args ?? args;
+    const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
+    if (windows && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30_000))
+      return this.failure(
+        operation,
+        "containment_violation",
+        "Windows Git timeout is outside the supported 1–30000 ms profile bound"
+      );
     const result = await boundary.lease.runProcess({
       operationId: nextBoundaryOperationId(boundary, "run-git"),
-      executable: this.gitExecutable,
-      args,
+      executable,
+      args: commandArgs,
       cwd,
-      timeoutMs: options.timeoutMs ?? this.defaultTimeoutMs,
+      timeoutMs,
+      ...(processPlan
+        ? {
+            env: processPlan.env,
+            extendEnv: processPlan.extendEnv,
+            maxOutputBytes: processPlan.maxOutputBytes,
+          }
+        : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
     if (!result.ok) return this.containmentFailure(operation, result.error);
     const commandResult = result.value;
     const commandEvidence: CommandRequest = {
-      executable: this.gitExecutable,
-      args: evidence?.args ?? args.map(evidenceArgument),
+      executable,
+      args: [
+        ...(processPlan?.evidencePrefix ?? []),
+        ...(evidence?.args ?? args.map(evidenceArgument)),
+      ],
       cwd: evidence?.cwd ?? cwd.identity.canonical_path,
-      timeoutMs: options.timeoutMs ?? this.defaultTimeoutMs,
+      timeoutMs,
       ...(options.signal ? { signal: options.signal } : {}),
     };
     if (
@@ -1368,6 +1438,8 @@ function tail(value: string, maxBytes: number): string {
 }
 
 function validateBrokerOptions(options: NodeGitWorktreeBrokerOptions): void {
+  if (options.testOnlyWindowsGitProfile && !options.testOnlyAllowUnboundBoundaryAuthority)
+    throw new Error("Windows Git fixture profile requires direct-test boundary authority");
   if (
     !options.repositoryId ||
     !options.repositoryRoot ||
@@ -1402,4 +1474,20 @@ function validateBrokerOptions(options: NodeGitWorktreeBrokerOptions): void {
   if (nativePathsOverlap(options.repositoryRoot, options.worktreeRoot, options.pathComparison)) {
     throw new Error("repositoryRoot and worktreeRoot must not overlap");
   }
+}
+
+function assertWindowsGitFixtureComposition(
+  options: NodeGitWorktreeBrokerOptions,
+  boundary: WorkspaceBoundary
+): void {
+  if (!options.testOnlyWindowsGitProfile) return;
+  const capability = boundary.capability;
+  if (
+    capability.backend_kind !== "windows-native" ||
+    capability.backend.transport !== "native_helper" ||
+    !SYNTHETIC_WINDOWS_GIT_COMPOSITIONS.has(
+      `${capability.decision_id}:${capability.backend.implementation}`
+    )
+  )
+    throw new Error("Windows Git fixture profile requires explicit synthetic test composition");
 }
