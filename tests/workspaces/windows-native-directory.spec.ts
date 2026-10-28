@@ -301,7 +301,7 @@ describe.skipIf(process.platform !== "win32" || !executable)(
   () => {
     it("rejects a malformed one-shot worker frame before command launch", async () => {
       const worker = spawn(executable!, ["--process-worker", "2.0.0"], {
-        cwd: artifacts,
+        cwd: path.dirname(executable!),
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       });
