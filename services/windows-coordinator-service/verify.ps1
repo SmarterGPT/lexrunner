@@ -35,6 +35,14 @@ $normalLifecycleProbe = & $normalImage --lifecycle-selftest 2>&1
 if ($LASTEXITCODE -ne 2 -or ($normalLifecycleProbe -join '') -ne 'scm_only') {
     throw 'normal image exposed lifecycle fixture mode'
 }
+$normalLaunchProbe = & $normalImage --private-launch-selftest 2>&1
+if ($LASTEXITCODE -ne 2 -or ($normalLaunchProbe -join '') -ne 'scm_only') {
+    throw 'normal image exposed private launch fixture mode'
+}
+$normalChildProbe = & $normalImage --private-child-fixture Normal 2>&1
+if ($LASTEXITCODE -ne 2 -or ($normalChildProbe -join '') -ne 'scm_only') {
+    throw 'normal image exposed private child fixture mode'
+}
 $consoleProbe = & $normalImage --service 2>&1
 if ($LASTEXITCODE -ne 3 -or ($consoleProbe -join '') -ne 'scm_required') {
     throw 'normal image did not refuse direct service launch'
@@ -56,8 +64,14 @@ $lifecycleProbe = & $fixtureImage --lifecycle-selftest 2>&1
 if ($LASTEXITCODE -ne 0 -or ($lifecycleProbe -join '') -ne 'lifecycle_selftest_pass') {
     throw 'fixture lifecycle selftest failed'
 }
+$privateLaunchProbe = & $fixtureImage --private-launch-selftest 2>&1
+if ($LASTEXITCODE -ne 0 -or ($privateLaunchProbe -join '') -ne 'private_launch_selftest_pass') {
+    throw "fixture private launch selftest failed: $(($privateLaunchProbe | Select-Object -Last 12) -join ' | ')"
+}
 
-$sources = @('CoordinatorPipe.cs', 'CoordinatorProtocol.cs', 'PipeFixtureTests.cs', 'Program.cs', 'ServiceLifecycle.cs',
+$sources = @('CoordinatorPipe.cs', 'CoordinatorPrivateNode.cs', 'CoordinatorProtocol.cs',
+    'ObservedPipePeer.cs', 'PipeFixtureTests.cs', 'PrivateLaunchFixture.cs', 'Program.cs',
+    'ProtectedGenerationLease.cs', 'ServiceLifecycle.cs',
     'LexRunner.WindowsCoordinator.Service.csproj', 'global.json', '.gitignore',
     'README.md', 'verify.ps1')
 $hashes = [ordered]@{}
@@ -105,6 +119,9 @@ $receipt = [pscustomobject]@{
     fixtureProtocolSelfTest = 'protocol_selftest_pass'
     fixturePipeSelfTest = 'pipe_selftest_pass'
     fixtureLifecycleSelfTest = 'lifecycle_selftest_pass'
+    fixturePrivateLaunchSelfTest = 'private_launch_selftest_pass'
+    normalPrivateLaunchMode = 'scm_only'
+    normalPrivateChildMode = 'scm_only'
     installedServiceQualified = $false
     buildCleanup = $cleanup
     sourceSha256 = $hashes
@@ -119,6 +136,7 @@ $json = ($receipt | ConvertTo-Json -Depth 5).Replace("`r`n", "`n") + "`n"
     fixtureProtocolSelfTest = $receipt.fixtureProtocolSelfTest
     fixturePipeSelfTest = $receipt.fixturePipeSelfTest
     fixtureLifecycleSelfTest = $receipt.fixtureLifecycleSelfTest
+    fixturePrivateLaunchSelfTest = $receipt.fixturePrivateLaunchSelfTest
     buildCleanup = $receipt.buildCleanup
     receiptPath = $receiptPath
 } | ConvertTo-Json -Depth 3 -Compress

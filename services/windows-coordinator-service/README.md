@@ -41,11 +41,32 @@ current pipe; only SYSTEM, Administrators and the service SID have access.
 There is no protected store, admission, Node launch, helper launch, Git launch, worktree effect, or
 production client selection in this image.
 
+## Inactive private Node launch source
+
+`CoordinatorPrivateNode.Run` is an internal launch primitive. The normal image
+cannot construct its `ProtectedGenerationLease`: `TryOpenInstalled` always
+refuses, and no service request calls the primitive. `Prepare` also refuses
+before child creation because protected admission and a durable operation
+intent are absent. The only fixture success returns the exact conservative
+`attempt.status` frame, never an execution grant.
+
+The compile-gated `--private-launch-selftest` opens its own disposable image,
+then checks creation-time Job and inherited-handle binding, the suspended
+child's Job membership, image path and token SID, a fixed command and newly
+constructed environment, nonce-bound private pipes, bounded output and time,
+and terminal process/Job drain. Bad nonce, output flood, nonzero exit, timeout,
+cancelled or disposed lease, and duplicate child use remain uncertain or
+refused. A pipe cleanup fault is classified as uncertain while the kill-on-close
+Job handle is still released. These tests exercise source mechanics only; they
+do not prove a signed installed Node/addon/loader graph, protected selection,
+SCM process identity, service-owned store, or cross-account behavior.
+
 The compile-gated `--protocol-selftest` checks canonical status parsing,
 duplicate-key/noncanonical rejection, deterministic v2 indeterminate-status
 encoding, and bounded v1 denial encoding for an isolated fixture;
 `--pipe-selftest` exercises same-user status replay, malformed close and
 mid-header disconnect recovery; `--lifecycle-selftest` checks the state order.
+`--private-launch-selftest` exercises only the compile-gated private child.
 That fixture's `no_effect` response is not reachable in the normal image.
 Run `pwsh -NoLogo -NoProfile -File .\verify.ps1` from this directory to
 publish both images and run the selftest plus direct-launch refusals. It does
