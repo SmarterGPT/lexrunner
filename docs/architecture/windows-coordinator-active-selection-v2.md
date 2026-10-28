@@ -27,16 +27,22 @@ rows: `GraphDigest`, `ManifestDigest`, `ServiceImageDigest`, `State`, and
 not authenticate the writer or qualify the host.
 
 The source observer uses a fixed native `reg.exe` path and `/reg:64`, rejects
-other output grammar, and reads only
+other output grammar, and requires the root's typed `HighWaterRevision`
+`REG_QWORD` to equal the selected positive safe `revision` on both the initial
+read and final recheck. Missing, mistyped, overflowing, mismatched, or changed
+high-water observations fail closed. The native publisher fixture models a
+retained high-water value, but this source reader does not authenticate that
+writer or prove retained state on a deployed host. It reads only
 `<system-volume>\Program Files\SmarterGPT.LexRunner.WindowsCoordinator\generations\<generationId>\generation-graph.json`.
 It checks directory spelling/reparse observations, holds the manifest file
-while reading bounded bytes, and compares the catalog and selection again
-afterward. These reads are not an atomic snapshot: same-value ABA, hard-link
-replacement, inherited ACLs, SCM image/config changes, loader substitution,
-and an old but internally consistent revision remain unresolved. A positive
-revision number alone is no rollback defense; a protected high-water mark or
-equivalent installer/provisioner transaction is required. The v1 selection
-contract is separate and cannot be promoted to v2 by the reader.
+while reading bounded bytes, and compares the catalog, selection, and high-water
+again afterward. These reads are not an atomic snapshot: same-value ABA,
+registry links and key replacement, hard-link replacement, inherited ACLs,
+SCM image/config changes, loader substitution, and an attacker-controlled old
+but internally consistent selection/high-water pair remain unresolved. A
+matching high-water number alone is no rollback defense; protected publication,
+retention, and custody still require qualification. The v1 selection contract
+is separate and cannot be promoted to v2 by the reader.
 
 Before this contract can become authoritative, a reviewed installer and
 provisioner must protect the full runtime graph, catalog, ActiveSelection,

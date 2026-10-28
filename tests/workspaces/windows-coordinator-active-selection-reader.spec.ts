@@ -19,8 +19,10 @@ vi.mock("node:os", async (importOriginal) => ({
 import {
   observeWindowsCoordinatorActiveSelection,
   observeWindowsCoordinatorGenerationCatalog,
+  observeWindowsCoordinatorV2HighWater,
   parseWindowsCoordinatorCatalogRegQueryOutput,
   parseWindowsCoordinatorRegQueryOutput,
+  parseWindowsCoordinatorV2HighWaterRegQueryOutput,
 } from "../../src/workspaces/windows-coordinator-active-selection-reader.js";
 
 const osRoot = String.raw`\\?\GLOBALROOT\SystemRoot\System32\reg.exe`;
@@ -36,6 +38,9 @@ const selectionValue =
 const selectionOutput =
   "\r\nHKEY_LOCAL_MACHINE\\Software\\SmarterGPT.LexRunner.WindowsCoordinator\r\n" +
   `    ActiveSelection    REG_SZ    ${selectionValue}\r\n`;
+const highWaterOutput =
+  "\r\nHKEY_LOCAL_MACHINE\\Software\\SmarterGPT.LexRunner.WindowsCoordinator\r\n" +
+  "    HighWaterRevision    REG_QWORD    0x2\r\n";
 const catalogOutput =
   "\r\nHKEY_LOCAL_MACHINE\\Software\\SmarterGPT.LexRunner.WindowsCoordinator\\Generations\\" +
   `${imageDigest}\r\n` +
@@ -110,6 +115,52 @@ describe("fixed Windows coordinator registry observer", () => {
       "x".repeat(8193),
     ])
       expect(() => parseWindowsCoordinatorRegQueryOutput(Buffer.from(invalid, "utf8"))).toThrow();
+  });
+
+  it("reads only the typed positive safe high-water revision from the fixed 64-bit root", () => {
+    expect(
+      parseWindowsCoordinatorV2HighWaterRegQueryOutput(Buffer.from(highWaterOutput, "ascii"))
+    ).toBe(2);
+    host.spawn.mockReturnValue(queryOutput(highWaterOutput));
+    expect(observeWindowsCoordinatorV2HighWater()).toEqual({
+      state: "observed",
+      revision: 2,
+      authorizesLaunch: false,
+    });
+    expect(host.spawn.mock.calls[0]![1]).toEqual([
+      "query",
+      String.raw`HKLM\Software\SmarterGPT.LexRunner.WindowsCoordinator`,
+      "/v",
+      "HighWaterRevision",
+      "/reg:64",
+    ]);
+  });
+
+  it("rejects absent, mistyped, duplicate, and out-of-range high-water values", () => {
+    host.spawn.mockReturnValueOnce(queryOutput("", 1));
+    expect(observeWindowsCoordinatorV2HighWater()).toMatchObject({
+      state: "unavailable",
+      reason: "registry_query_failed",
+      authorizesLaunch: false,
+    });
+    for (const invalid of [
+      highWaterOutput.replace("REG_QWORD", "REG_DWORD"),
+      highWaterOutput.replace("0x2", "0x0"),
+      highWaterOutput.replace("0x2", "0x20000000000000"),
+      highWaterOutput.replace("0x2", "0x10000000000000000"),
+      highWaterOutput.replace("WindowsCoordinator", "WindowsHelper"),
+      highWaterOutput + "    HighWaterRevision    REG_QWORD    0x2\r\n",
+    ]) {
+      expect(() =>
+        parseWindowsCoordinatorV2HighWaterRegQueryOutput(Buffer.from(invalid, "ascii"))
+      ).toThrow();
+      host.spawn.mockReturnValueOnce(queryOutput(invalid));
+      expect(observeWindowsCoordinatorV2HighWater()).toMatchObject({
+        state: "unavailable",
+        reason: "registry_output_invalid",
+        authorizesLaunch: false,
+      });
+    }
   });
 
   it("accepts only four exact service catalog rows under the selected generation", () => {

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const host = vi.hoisted(() => ({
   selection: vi.fn(),
+  highWater: vi.fn(),
   catalog: vi.fn(),
   open: vi.fn(),
   close: vi.fn(),
@@ -15,6 +16,7 @@ const host = vi.hoisted(() => ({
 
 vi.mock("../../src/workspaces/windows-coordinator-active-selection-reader.js", () => ({
   observeWindowsCoordinatorV2ActiveSelection: host.selection,
+  observeWindowsCoordinatorV2HighWater: host.highWater,
   observeWindowsCoordinatorV2GenerationCatalog: host.catalog,
 }));
 vi.mock("node:fs", () => ({
@@ -117,6 +119,7 @@ beforeEach(() => {
     selectionValue: input.selectionValue,
     authorizesLaunch: false,
   });
+  host.highWater.mockReturnValue({ state: "observed", revision: 2, authorizesLaunch: false });
   host.catalog.mockReturnValue({
     state: "observed",
     catalog: input.catalog,
@@ -147,6 +150,7 @@ describe("v2 coordinator selection acquisition remains non-authorizing", () => {
     expect(host.catalog).toHaveBeenCalledTimes(2);
     expect(host.catalog).toHaveBeenNthCalledWith(1, input.graph.graphDigest);
     expect(host.selection).toHaveBeenCalledTimes(2);
+    expect(host.highWater).toHaveBeenCalledTimes(2);
     expect(host.open).toHaveBeenCalledExactlyOnceWith(input.filePath, "r");
     expect(host.close).toHaveBeenCalledExactlyOnceWith(10);
   });
@@ -163,6 +167,51 @@ describe("v2 coordinator selection acquisition remains non-authorizing", () => {
     host.selection.mockReturnValueOnce({ state: "observed", selectionValue: "{}" });
     expect(observeWindowsCoordinatorV2SelectionAcquisition()).toMatchObject({
       reason: "selection_invalid",
+      authorizesLaunch: false,
+    });
+  });
+
+  it("requires a present, matching high-water revision before reading the generation", () => {
+    host.highWater.mockReturnValueOnce({
+      state: "unavailable",
+      reason: "registry_query_failed",
+      authorizesLaunch: false,
+    });
+    expect(observeWindowsCoordinatorV2SelectionAcquisition()).toEqual({
+      state: "unavailable",
+      reason: "high_water_unavailable",
+      authorizesLaunch: false,
+    });
+    expect(host.catalog).not.toHaveBeenCalled();
+    expect(host.open).not.toHaveBeenCalled();
+
+    host.highWater.mockReturnValueOnce({ state: "observed", revision: 3 });
+    expect(observeWindowsCoordinatorV2SelectionAcquisition()).toMatchObject({
+      state: "unavailable",
+      reason: "high_water_mismatch",
+      authorizesLaunch: false,
+    });
+    expect(host.catalog).not.toHaveBeenCalled();
+    expect(host.open).not.toHaveBeenCalled();
+  });
+
+  it("rejects a high-water change or failed re-read after metadata acquisition", () => {
+    host.highWater
+      .mockReturnValueOnce({ state: "observed", revision: 2 })
+      .mockReturnValueOnce({ state: "observed", revision: 3 });
+    expect(observeWindowsCoordinatorV2SelectionAcquisition()).toMatchObject({
+      state: "unavailable",
+      reason: "high_water_changed",
+      authorizesLaunch: false,
+    });
+    expect(host.close).toHaveBeenCalledExactlyOnceWith(10);
+
+    host.highWater
+      .mockReturnValueOnce({ state: "observed", revision: 2 })
+      .mockReturnValueOnce({ state: "unavailable", reason: "registry_output_invalid" });
+    expect(observeWindowsCoordinatorV2SelectionAcquisition()).toMatchObject({
+      state: "unavailable",
+      reason: "high_water_changed",
       authorizesLaunch: false,
     });
   });
