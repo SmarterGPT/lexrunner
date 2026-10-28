@@ -354,6 +354,18 @@ export class NodeGitWorktreeBroker implements GitWorktreeBroker {
         );
       }
 
+      // On Windows the initially empty target can accept a same-user reparse
+      // point before Git writes .git. A held target handle alone does not bind
+      // Git's first child lookup to that directory. Keep native creation closed
+      // until a protected creation transition owns the entire first effect.
+      if (this.boundary.capability.backend_kind === "windows-native") {
+        return this.failure(
+          "create",
+          "containment_violation",
+          "Native Windows worktree creation requires a qualified protected creation transition"
+        );
+      }
+
       const branch = await this.gitMain(
         boundary,
         "create",

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
@@ -35,6 +35,15 @@ describe.skipIf(process.platform !== "win32" || !helper)(
     const commands: WorkspaceBoundaryProcessRequest[] = [];
     async function git(...args: string[]) {
       return (await execa(executable!, args, { cwd: repo, timeout: 10000 })).stdout.trim();
+    }
+    async function seedFixtureWorktree() {
+      // Fixture setup uses ordinary Git without a racing actor. It is not a
+      // qualified product creation path.
+      await git("worktree", "add", "-b", target.branch, target.worktreePath, target.baseSha);
+      await writeFile(
+        path.join(repo, ".git", "worktrees", "worker", "lexrunner-attempt.json"),
+        `${JSON.stringify({ schemaVersion: 1, ...target })}\n`
+      );
     }
     beforeEach(async () => {
       if (!executable) throw new Error("LEXRUNNER_TEST_GIT required for native qualification");
@@ -138,8 +147,22 @@ describe.skipIf(process.platform !== "win32" || !helper)(
       }
     });
 
-    it("creates, reuses and observes the real native workspace", async () => {
-      expect(await broker.create(target)).toMatchObject({ ok: true, outcome: "created" });
+    it("refuses a new native target before Git add or target creation", async () => {
+      expect(await broker.create(target)).toMatchObject({
+        ok: false,
+        reason: "containment_violation",
+        message: expect.stringContaining("qualified protected creation transition"),
+      });
+      expect(existsSync(target.worktreePath)).toBe(false);
+      expect(await git("branch", "--list", target.branch)).toBe("");
+      expect(
+        commands.some((command) =>
+          command.args.some((arg) => arg.kind === "literal" && arg.value === "add")
+        )
+      ).toBe(false);
+    });
+    it("reuses and observes an existing fixture worktree", async () => {
+      await seedFixtureWorktree();
       expect(await broker.create(target)).toMatchObject({ ok: true, outcome: "reused" });
       expect(await broker.observe(target)).toMatchObject({
         ok: true,
@@ -150,7 +173,7 @@ describe.skipIf(process.platform !== "win32" || !helper)(
       );
     });
     it("refuses incompatible removal without changing tracked bytes or registration", async () => {
-      expect(await broker.create(target)).toMatchObject({ ok: true });
+      await seedFixtureWorktree();
       commands.length = 0;
       expect(await broker.remove(target)).toMatchObject({
         ok: false,
@@ -195,7 +218,7 @@ describe.skipIf(process.platform !== "win32" || !helper)(
       );
     });
     it("preserves dirty content through the normal product outcome", async () => {
-      expect(await broker.create(target)).toMatchObject({ ok: true });
+      await seedFixtureWorktree();
       await writeFile(path.join(target.worktreePath, "tracked.txt"), "and wander\n");
       expect(await broker.remove(target)).toMatchObject({
         ok: true,

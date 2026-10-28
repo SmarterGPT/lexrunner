@@ -58,6 +58,14 @@ persistent anchor also requires a reviewed creation transition that does not
 temporarily remove it. Production discovery remains unavailable throughout this
 qualification.
 
+The ordinary worktree broker now refuses a new native-Windows worktree before
+creating the empty target or running `git worktree add`. Exact existing-worktree
+reuse, observation and the separately prepared removal transition remain
+available in development tests. This interlock prevents the known unsafe first
+creation effect; it does not protect the broker's earlier Git inspection from
+repository-selected config under a different process identity, provide a
+protected creation transition, or change production `helper_missing`.
+
 The development session now accepts `process_request` / `run-process`. It runs
 an explicit absolute .exe through CreateProcessW without a shell. The cwd is a
 live directory token; arguments are literal strings or live directory tokens with
