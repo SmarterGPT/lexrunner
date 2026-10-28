@@ -14,6 +14,9 @@ import {
   type WorkspaceBoundaryProcessRequest,
 } from "../../src/workspaces/workspace-boundary.js";
 import type { WorktreeTarget } from "../../src/workspaces/git-worktree-broker.js";
+import type { BrokerFailure } from "../../src/workspaces/git-worktree-broker.js";
+import type { WindowsBrokerGitVerb } from "../../src/workspaces/windows-git-command-profile.js";
+import type { WindowsGitFixtureProfileInput } from "../../src/workspaces/windows-git-command-profile.js";
 const mocks = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("../../src/workspaces/workspace-boundary-resolver.js", () => ({
   resolveWorkspaceBoundary: mocks.resolve,
@@ -21,7 +24,11 @@ vi.mock("../../src/workspaces/workspace-boundary-resolver.js", () => ({
     resolve = mocks.resolve;
   },
 }));
-import { NodeGitWorktreeBroker } from "../../src/workspaces/node-git-worktree-broker.js";
+import {
+  NodeGitWorktreeBroker,
+  type NodeGitWorktreeBrokerOptions,
+} from "../../src/workspaces/node-git-worktree-broker.js";
+import { makeWindowsGitFixtureProfile } from "./windows-git-fixture-profile.js";
 
 const helper = process.env.LEXRUNNER_TEST_NATIVE_HELPER;
 const executable = process.env.LEXRUNNER_TEST_GIT;
@@ -33,6 +40,8 @@ describe.skipIf(process.platform !== "win32" || !helper)(
     let repo: string;
     let allocation: string;
     let broker: NodeGitWorktreeBroker;
+    let brokerOptions: NodeGitWorktreeBrokerOptions;
+    let profileInput: WindowsGitFixtureProfileInput;
     let target: WorktreeTarget;
     const leases: OwnedWindowsWorkspaceLease[] = [];
     const commands: WorkspaceBoundaryProcessRequest[] = [];
@@ -119,7 +128,8 @@ describe.skipIf(process.platform !== "win32" || !helper)(
         },
       };
       mocks.resolve.mockReturnValue({ ok: true, boundary });
-      broker = await NodeGitWorktreeBroker.open({
+      profileInput = await makeWindowsGitFixtureProfile(root, executable!);
+      brokerOptions = {
         repositoryId: "native",
         repositoryRoot: repo,
         worktreeRoot: allocation,
@@ -128,7 +138,9 @@ describe.skipIf(process.platform !== "win32" || !helper)(
         gitExecutable: executable,
         pathComparison: "case-insensitive",
         testOnlyAllowUnboundBoundaryAuthority: true,
-      });
+        testOnlyWindowsGitProfile: profileInput,
+      };
+      broker = await NodeGitWorktreeBroker.open(brokerOptions);
       target = {
         repositoryId: "native",
         hostId: "host",
@@ -231,6 +243,147 @@ describe.skipIf(process.platform !== "win32" || !helper)(
       expect(await readFile(path.join(target.worktreePath, "tracked.txt"), "utf8")).toBe(
         "and wander\n"
       );
+    });
+    it("runs broker Git with a fixed process profile despite ambient Git configuration", async () => {
+      await seedFixtureWorktree();
+      const originalSearch = profileInput.searchPath[0]!;
+      (profileInput.searchPath as string[])[0] = "C:\\mutable-input-should-not-reach-git";
+      const canary = path.join(root, "ambient-canary.txt");
+      const script = path.join(root, "ambient-fsmonitor");
+      if (!/^[A-Za-z]:\\/u.test(canary) || canary.includes("'"))
+        throw new Error("Unsafe fixture canary path");
+      const msysCanary = `/${canary[0]!.toLowerCase()}/${canary.slice(3).replace(/\\/gu, "/")}`;
+      await writeFile(
+        script,
+        `#!/bin/sh\nprintf 'ambient:%s\\n' "$1" >> '${msysCanary}'\nprintf 'probe-token\\000/\\000'\n`
+      );
+      await writeFile(canary, "");
+      const saved = {
+        count: process.env.GIT_CONFIG_COUNT,
+        key: process.env.GIT_CONFIG_KEY_0,
+        value: process.env.GIT_CONFIG_VALUE_0,
+      };
+      try {
+        process.env.GIT_CONFIG_COUNT = "1";
+        process.env.GIT_CONFIG_KEY_0 = "core.fsmonitor";
+        process.env.GIT_CONFIG_VALUE_0 = script.replace(/\\/gu, "/");
+        // Positive control is fixture setup, outside the broker process ledger.
+        await git("status", "--porcelain=v1");
+        expect(await readFile(canary, "utf8")).toContain("ambient:");
+        await writeFile(canary, "");
+        commands.length = 0;
+        expect(await broker.observe(target)).toMatchObject({ ok: true });
+        expect(await readFile(canary, "utf8")).toBe("");
+        expect(commands.length).toBeGreaterThan(0);
+        for (const command of commands) {
+          expect(command.executable).toBe(executable);
+          expect(command.extendEnv).toBe(false);
+          expect(command.maxOutputBytes).toBe(256 * 1024);
+          expect(command.timeoutMs).toBeLessThanOrEqual(30_000);
+          expect(command.env).not.toHaveProperty("GIT_CONFIG_COUNT");
+          expect(command.env).not.toHaveProperty("GIT_CONFIG_KEY_0");
+          expect(command.env).not.toHaveProperty("GIT_CONFIG_VALUE_0");
+          expect(command.env?.PATH).toContain(originalSearch);
+          expect(command.env?.PATH).not.toContain("mutable-input-should-not-reach-git");
+          expect(command.args.slice(0, 2)).toEqual([
+            { kind: "literal", value: "--no-pager" },
+            { kind: "literal", value: "-c" },
+          ]);
+          expect(command.args).toContainEqual({ kind: "literal", value: "core.fsmonitor=false" });
+        }
+      } finally {
+        for (const [name, value] of [
+          ["GIT_CONFIG_COUNT", saved.count],
+          ["GIT_CONFIG_KEY_0", saved.key],
+          ["GIT_CONFIG_VALUE_0", saved.value],
+        ] as const) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      }
+    });
+    it("returns structured containment failures before a child for missing or closed Git profiles", async () => {
+      const runProcess = vi.fn();
+      const operationBoundary = { lease: { runProcess } } as never;
+      const cwd = {} as never;
+      const directory = {} as never;
+      const prefix = [
+        { kind: "directory", directory, prefix: "--git-dir=" },
+        { kind: "directory", directory, prefix: "--work-tree=" },
+      ];
+      const dispatch = broker as unknown as {
+        git(
+          boundary: never,
+          operation: "create",
+          verb: WindowsBrokerGitVerb,
+          args: never,
+          cwd: never,
+          options: {}
+        ): Promise<BrokerFailure>;
+      };
+      for (const verb of ["worktree_add", "worktree_remove"] as const) {
+        const args = [
+          ...prefix,
+          { kind: "literal", value: "worktree" },
+          { kind: "literal", value: verb === "worktree_add" ? "add" : "remove" },
+        ];
+        expect(
+          await dispatch.git(operationBoundary, "create", verb, args as never, cwd, {})
+        ).toMatchObject({ ok: false, operation: "create", reason: "containment_violation" });
+      }
+      expect(
+        await dispatch.git(
+          operationBoundary,
+          "create",
+          "check_branch",
+          [
+            ...prefix,
+            { kind: "literal", value: "check-ref-format" },
+            { kind: "literal", value: "--branch" },
+            { kind: "literal", value: "agent/work" },
+          ] as never,
+          cwd,
+          { timeoutMs: 30_001 }
+        )
+      ).toMatchObject({ ok: false, reason: "containment_violation" });
+      expect(runProcess).not.toHaveBeenCalled();
+      const selected = Reflect.get(broker, "windowsGitProfile");
+      try {
+        Reflect.set(broker, "windowsGitProfile", undefined);
+        expect(
+          await dispatch.git(operationBoundary, "create", "check_branch", prefix as never, cwd, {})
+        ).toMatchObject({
+          ok: false,
+          operation: "create",
+          reason: "containment_violation",
+          message: expect.stringContaining("process profile is unavailable"),
+        });
+        expect(runProcess).not.toHaveBeenCalled();
+      } finally {
+        Reflect.set(broker, "windowsGitProfile", selected);
+      }
+    });
+    it("rejects fixture Git selection against a non-synthetic boundary before acquisition", async () => {
+      const resolved = mocks.resolve() as { ok: true; boundary: WorkspaceBoundary };
+      mocks.resolve.mockReturnValue({
+        ok: true,
+        boundary: {
+          ...resolved.boundary,
+          capability: {
+            ...resolved.boundary.capability,
+            backend: {
+              ...resolved.boundary.capability.backend,
+              implementation: "installed-service",
+            },
+          },
+        },
+      });
+      const count = leases.length;
+      await expect(NodeGitWorktreeBroker.open(brokerOptions)).rejects.toThrow(
+        /explicit synthetic test composition/u
+      );
+      expect(leases.length).toBe(count);
+      expect(commands).toEqual([]);
     });
   }
 );

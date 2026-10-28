@@ -15,6 +15,7 @@ import {
   type WorkspaceBoundaryLease,
 } from "../../src/workspaces/workspace-boundary.js";
 import { NativeWorkspaceBoundaryResolver } from "../../src/workspaces/workspace-boundary-resolver.js";
+import { makeWindowsGitFixtureProfile } from "./windows-git-fixture-profile.js";
 
 const windows = process.platform === "win32";
 const helper = process.env.LEXRUNNER_TEST_NATIVE_HELPER;
@@ -168,6 +169,9 @@ describe("shared native broker behavior", () => {
       gitExecutable,
       pathComparison: windows ? "case-insensitive" : "case-sensitive",
       testOnlyAllowUnboundBoundaryAuthority: true,
+      ...(windows
+        ? { testOnlyWindowsGitProfile: await makeWindowsGitFixtureProfile(root, gitExecutable) }
+        : {}),
     });
     target = {
       repositoryId: "shared-broker",
