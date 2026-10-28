@@ -93,6 +93,7 @@ internal static class TreeRemovalProbe
       Git("add", "tracked"); Git("-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
       Directory.Delete(path); Git("worktree", "add", "--detach", path, "HEAD");
       using var tree = NativeRemovalTree.Acquire(root, Path.GetFileName(path), Snapshot(path));
+      tree.SealForObservation();
       Check(Git("--git-dir=" + Path.Combine(repo, ".git"), "--work-tree=" + path, "status", "--porcelain").Length == 0);
       Check(tree.Commit(30000).Outcome == "selected_tree_removed" && !Directory.Exists(path));
       Git("worktree", "remove", path);

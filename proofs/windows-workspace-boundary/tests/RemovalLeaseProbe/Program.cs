@@ -118,6 +118,7 @@ internal static class Program
       });
       CapabilityIoProbe.Run(root, results);
       TreeRemovalProbe.Run(root, args.Length >= 2 ? args[1] : null, results);
+      if (args.Length >= 2) GitObservationProbe.Run(root, args[1], results);
       if (args.Length >= 2)
       {
         var node = args.Length == 4 ? args[2] : null;

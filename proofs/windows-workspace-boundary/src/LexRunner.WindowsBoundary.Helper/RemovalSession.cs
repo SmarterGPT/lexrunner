@@ -118,6 +118,9 @@ internal sealed class RemovalSession : IDisposable
           var environmentDigest = Hash(Program.Json(w => { w.WritePropertyName("git_environment"); WriteValue(w, gitEnvironment); }));
           var gitExecutable = S(payload, "git_executable");
           string[] gitArguments = ["--git-dir=" + registrationPath, "--work-tree=" + rootPath, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"];
+          // Pin names without granting DELETE until the ordinary Git readers
+          // exit. Preparation handles alone deliberately allow replacement.
+          tree.SealForObservation(); registration.SealForObservation();
           var clean = NativeProcess.Run(gitExecutable, gitArguments, common, 30000, 65536, environment);
           if (clean.Status != "exited" || clean.ExitCode != 0 || clean.Stdout.Length != 0 || clean.Stderr.Length != 0 || clean.StdoutTruncated || clean.StderrTruncated)
             throw new InvalidDataException("Removal requires clean Git observation");

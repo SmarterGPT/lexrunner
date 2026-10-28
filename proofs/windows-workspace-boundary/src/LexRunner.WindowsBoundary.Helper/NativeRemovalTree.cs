@@ -18,6 +18,7 @@ internal sealed class NativeRemovalTree : IDisposable
     internal readonly bool Directory = directory;
     internal readonly DirectoryLease.Identity Identity = identity;
     internal DirectoryLease.DirectoryHandle Handle = handle;
+    internal DirectoryLease.DirectoryHandle? Observation;
     internal readonly long Length = length;
     internal readonly string? ContentHash = contentHash;
     internal readonly Entry? Parent = parent;
@@ -27,6 +28,7 @@ internal sealed class NativeRemovalTree : IDisposable
   private readonly List<Entry> entries = [];
   private bool disposed;
   private bool sealedForMutation;
+  private bool observationStarted, observationComplete;
   private Result? result;
   internal DirectoryLease.Identity Identity => entries[0].Identity;
   internal int EntryCount => entries.Count;
@@ -161,16 +163,51 @@ internal sealed class NativeRemovalTree : IDisposable
     if (disposed || result != null) throw new InvalidOperationException("Removal tree is terminal");
     parent.AssertCurrent();
     foreach (var entry in entries)
-      if (DirectoryLease.Capture(entry.Handle, entry.Directory) != entry.Identity)
+      if (DirectoryLease.Capture(entry.Handle, entry.Directory) != entry.Identity ||
+          (entry.Observation != null && DirectoryLease.Capture(entry.Observation, entry.Directory) != entry.Identity))
         throw new InvalidDataException("Removal tree changed");
+  }
+
+  internal void SealForObservation()
+  {
+    AssertCurrent();
+    if (sealedForMutation || (observationStarted && !observationComplete))
+      throw new InvalidOperationException("Removal observation is not available");
+    if (observationComplete) return;
+    observationStarted = true;
+    foreach (var entry in entries)
+    {
+      var heldParent = entry.Parent?.Observation ?? entry.Parent?.Handle ?? parent.LeafHandle;
+      var component = Path.GetFileName(entry.Identity.Path);
+      var guard = entry.Directory
+          ? NativeRelativeFiles.OpenCapabilityDirectory(heldParent, component, false)
+          : NativeRelativeFiles.OpenCapabilityFile(heldParent, component, false);
+      try
+      {
+        if (DirectoryLease.Capture(guard, entry.Directory) != entry.Identity)
+          throw new InvalidDataException("Removal observation changed identity");
+        entry.Observation = guard;
+        guard = null!;
+      }
+      finally { if (guard != null) Close(guard); }
+    }
+    AssertCurrent();
+    observationComplete = true;
   }
 
   internal void SealForMutation()
   {
     AssertCurrent();
     if (sealedForMutation) return;
+    if (observationStarted && !observationComplete)
+      throw new InvalidOperationException("Removal observation did not complete");
     foreach (var entry in entries)
     {
+      // Git readers must not coexist with an existing DELETE grant. After Git
+      // exits, drop this entry's no-delete observation guard while its original
+      // object stays live, then reopen by retained parent and compare full ID.
+      // A replacement cannot reuse the original object's still-live identity.
+      CloseObservation(entry);
       // Resolve one name relative to the retained parent while the original
       // object remains held. Validate the full identity BEFORE transferring
       // ownership. A replacement cannot reuse the still-live object's ID.
@@ -251,12 +288,20 @@ internal sealed class NativeRemovalTree : IDisposable
     var uncertain = false;
     for (var i = entries.Count - 1; i >= 0; i--)
     {
+      try { CloseObservation(entries[i]); } catch { uncertain = true; }
       if (entries[i].Closed) continue;
       entries[i].Closed = true;
       try { Close(entries[i].Handle); } catch { uncertain = true; }
     }
     try { parent.Dispose(); } catch { uncertain = true; }
     if (uncertain) throw new IOException("Removal tree release uncertain");
+  }
+
+  private static void CloseObservation(Entry entry)
+  {
+    var handle = entry.Observation;
+    entry.Observation = null;
+    if (handle != null) Close(handle);
   }
 
   private static void Close(DirectoryLease.DirectoryHandle handle)
