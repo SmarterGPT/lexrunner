@@ -9,6 +9,8 @@ import { createAgentTaskPacket } from "../../src/schemas/agent-work.js";
 import { computeCanonicalHash } from "../../src/schemas/task-contract.js";
 import { canonicalJSONStringify } from "../../src/util/canonicalJson.js";
 import {
+  WindowsAttemptAdmissionBody_v1,
+  WindowsAttemptAdmission_v1,
   WindowsAttemptIntentBody_v1,
   WindowsAttemptIntent_v1,
   WindowsCoordinatorEnrollmentBody_v1,
@@ -20,6 +22,7 @@ import { SqliteWindowsCoordinatorAdmissionStore } from "../../src/windows-coordi
 
 const T0 = "2026-10-28T12:00:00.000Z";
 const T1 = "2026-10-28T12:00:01.000Z";
+const T2 = "2026-10-28T12:00:02.000Z";
 const SID = "S-1-5-21-1000-1001-1002-1003";
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const PREFIX = "lexrunner-admission-store-";
@@ -92,9 +95,12 @@ describe("Windows coordinator source-only admission store", () => {
     const record = enrollment(overrides);
     raw
       .prepare(
-        `INSERT OR REPLACE INTO windows_coordinator_enrollments
+        `INSERT INTO windows_coordinator_enrollments
          (enrollmentId,revision,status,clientSid,enrollmentJson,enrollmentDigest)
-         VALUES (?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?)
+         ON CONFLICT(enrollmentId) DO UPDATE SET
+           revision=excluded.revision,status=excluded.status,clientSid=excluded.clientSid,
+           enrollmentJson=excluded.enrollmentJson,enrollmentDigest=excluded.enrollmentDigest`
       )
       .run(
         record.enrollment_id,
@@ -117,6 +123,19 @@ describe("Windows coordinator source-only admission store", () => {
     ];
     if (!allowed.includes(table)) throw new Error("unexpected table");
     return (raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+  }
+
+  function effectIntentInput(operation_id: string, admission_digest: string) {
+    return {
+      operation_id,
+      admission_digest,
+      observed_repository_identity_digest: input.observed_repository_identity_digest,
+      observed_allocation_root_identity_digest: input.observed_allocation_root_identity_digest,
+      observed_volume_profile: input.observed_volume_profile,
+      selected_helper_generation_digest: digest("3"),
+      selected_git_profile_digest: digest("4"),
+      now: T2,
+    };
   }
 
   beforeEach(async () => {
@@ -292,6 +311,67 @@ describe("Windows coordinator source-only admission store", () => {
     expect(count("windows_attempt_admissions")).toBe(1);
   });
 
+  it("recomputes the request binding even when admission and intent digests are updated together", () => {
+    const first = store.recordCandidate(input);
+    if (first.kind !== "candidate_recorded") throw new Error("candidate fixture failed");
+    const { admission_digest: _oldAdmissionDigest, ...admissionBody } = first.admission;
+    const wrongBody = WindowsAttemptAdmissionBody_v1.parse({
+      ...admissionBody,
+      request_digest: digest("9"),
+    });
+    const wrongAdmission = WindowsAttemptAdmission_v1.parse({
+      ...wrongBody,
+      admission_digest: computeCanonicalHash(wrongBody),
+    });
+    const { intent_digest: _oldIntentDigest, ...intentBody } = first.intent;
+    const wrongIntentBody = WindowsAttemptIntentBody_v1.parse({
+      ...intentBody,
+      admission_digest: wrongAdmission.admission_digest,
+    });
+    const wrongIntent = WindowsAttemptIntent_v1.parse({
+      ...wrongIntentBody,
+      intent_digest: computeCanonicalHash(wrongIntentBody),
+    });
+    raw
+      .prepare(
+        `UPDATE windows_attempt_admissions
+         SET requestDigest=?,admissionJson=?,admissionDigest=? WHERE operationId=?`
+      )
+      .run(
+        wrongAdmission.request_digest,
+        canonicalJSONStringify(wrongAdmission),
+        wrongAdmission.admission_digest,
+        wrongAdmission.operation_id
+      );
+    raw
+      .prepare(`UPDATE windows_attempt_intents SET intentJson=?,intentDigest=? WHERE operationId=?`)
+      .run(
+        canonicalJSONStringify(wrongIntent),
+        wrongIntent.intent_digest,
+        wrongIntent.operation_id
+      );
+    raw
+      .prepare(
+        `UPDATE windows_attempt_intent_events
+         SET intentJson=?,intentDigest=? WHERE operationId=? AND revision=0`
+      )
+      .run(
+        canonicalJSONStringify(wrongIntent),
+        wrongIntent.intent_digest,
+        wrongIntent.operation_id
+      );
+    expect(count("windows_attempt_admissions")).toBe(1);
+    expect(count("windows_attempt_intent_events")).toBe(1);
+    expect(() => store.recordCandidate(input)).toThrow("Corrupt Windows coordinator operation");
+    expect(() =>
+      store.observeAttemptStatus({
+        run_id: input.packet.run_id,
+        attempt_id: input.packet.attempt_id,
+        observed_client_sid: SID,
+      })
+    ).toThrow("Corrupt Windows coordinator operation");
+  });
+
   it("rolls back admission when the no-effect intent insert fails", () => {
     raw
       .prepare(
@@ -325,10 +405,10 @@ describe("Windows coordinator source-only admission store", () => {
     expect(count("windows_attempt_admissions")).toBe(1);
   });
 
-  it("only reads a synthetic historical unknown effect; no source API can create or retry it", async () => {
+  it("refuses an event without a matching current row and replays verified unknown effect", async () => {
     const first = store.recordCandidate(input);
     if (first.kind !== "candidate_recorded") throw new Error("candidate fixture failed");
-    // Fixture-only prior state. Source-only code exposes no dispatch or unknown-effect transition.
+    // Deliberately create an unbalanced history row to test the consistency check.
     const { intent_digest: _priorDigest, ...priorBody } = first.intent;
     const body = WindowsAttemptIntentBody_v1.parse({
       ...priorBody,
@@ -379,5 +459,119 @@ describe("Windows coordinator source-only admission store", () => {
       .prepare("DELETE FROM windows_attempt_intent_events WHERE operationId=? AND revision=0")
       .run(first.admission.operation_id);
     expect(() => store.recordCandidate(input)).toThrow("Corrupt Windows coordinator operation");
+  });
+
+  it("reads only peer-matched historical state and latches uncertainty before a future effect", async () => {
+    const first = store.recordCandidate(input);
+    if (first.kind !== "candidate_recorded") throw new Error("candidate fixture failed");
+    const status = {
+      run_id: input.packet.run_id,
+      attempt_id: input.packet.attempt_id,
+      observed_client_sid: SID,
+    };
+    expect(store.observeAttemptStatus(status)).toMatchObject({
+      kind: "observed",
+      operation_id: first.admission.operation_id,
+      intent_revision: 0,
+      effect_state: "no_effect",
+      authorizes_execution: false,
+    });
+    for (const wrong of [
+      { ...status, run_id: "another-run" },
+      { ...status, attempt_id: "another-attempt" },
+      { ...status, observed_client_sid: "S-1-5-21-1000-1001-1002-9999" },
+      { ...status, observed_client_sid: "invalid" },
+    ])
+      expect(store.observeAttemptStatus(wrong)).toEqual({
+        kind: "unavailable",
+        effect_state: "effect_unknown",
+        authorizes_execution: false,
+      });
+
+    const latch = effectIntentInput(first.admission.operation_id, first.admission.admission_digest);
+    expect(store.latchEffectUnknown(latch)).toMatchObject({
+      kind: "effect_unknown_latched",
+      intent: { revision: 1, status: "indeterminate", effect_state: "effect_unknown" },
+      authorizes_execution: false,
+    });
+    expect(count("windows_attempt_intent_events")).toBe(2);
+    expect(store.observeAttemptStatus(status)).toMatchObject({
+      kind: "observed",
+      intent_revision: 1,
+      effect_state: "effect_unknown",
+    });
+    await store.close();
+    store = new SqliteWindowsCoordinatorAdmissionStore(path);
+    raw.prepare("UPDATE windows_coordinator_enrollments SET status='revoked'").run();
+    raw.prepare("UPDATE run_coordination SET expiresAt=?").run(T1);
+    expect(store.latchEffectUnknown(latch)).toMatchObject({
+      kind: "historical_effect_unknown",
+      intent: { effect_state: "effect_unknown" },
+      authorizes_execution: false,
+    });
+    expect(store.observeAttemptStatus(status)).toMatchObject({
+      kind: "observed",
+      effect_state: "effect_unknown",
+    });
+    expect(count("windows_attempt_intent_events")).toBe(2);
+  });
+
+  it("rejects changed selection, policy and fence before an uncertainty event", () => {
+    const first = store.recordCandidate(input);
+    if (first.kind !== "candidate_recorded") throw new Error("candidate fixture failed");
+    const latch = effectIntentInput(first.admission.operation_id, first.admission.admission_digest);
+    expect(store.latchEffectUnknown({ ...latch, admission_digest: digest("9") })).toMatchObject({
+      kind: "rejected",
+      reason: "admission_mismatch",
+    });
+    expect(
+      store.latchEffectUnknown({ ...latch, observed_repository_identity_digest: digest("9") })
+    ).toMatchObject({ kind: "rejected", reason: "admission_mismatch" });
+    expect(
+      store.latchEffectUnknown({ ...latch, selected_helper_generation_digest: digest("9") })
+    ).toMatchObject({ kind: "rejected", reason: "admission_mismatch" });
+    raw
+      .prepare("UPDATE run_coordination SET fencingToken=fencingToken+1 WHERE runId=?")
+      .run(input.packet.run_id);
+    expect(store.latchEffectUnknown(latch)).toMatchObject({
+      kind: "rejected",
+      reason: "fence_unavailable",
+    });
+    raw
+      .prepare("UPDATE run_coordination SET fencingToken=? WHERE runId=?")
+      .run(input.controller.fencing_token, input.packet.run_id);
+    seedEnrollment({ status: "revoked" });
+    expect(store.latchEffectUnknown(latch)).toMatchObject({
+      kind: "rejected",
+      reason: "policy_unavailable",
+    });
+    expect(count("windows_attempt_intent_events")).toBe(1);
+  });
+
+  it("rolls back an incomplete latch and treats corrupt status as unverified", () => {
+    const first = store.recordCandidate(input);
+    if (first.kind !== "candidate_recorded") throw new Error("candidate fixture failed");
+    const latch = effectIntentInput(first.admission.operation_id, first.admission.admission_digest);
+    raw.exec(
+      "CREATE TRIGGER injected_latch_failure BEFORE UPDATE ON windows_attempt_intents BEGIN SELECT RAISE(ABORT, 'injected interruption'); END"
+    );
+    expect(() => store.latchEffectUnknown(latch)).toThrow("injected interruption");
+    expect(count("windows_attempt_intent_events")).toBe(1);
+    expect(store.recordCandidate(input)).toMatchObject({
+      kind: "historical_replay",
+      intent: { status: "candidate", effect_state: "no_effect" },
+    });
+    raw.exec("DROP TRIGGER injected_latch_failure");
+    raw
+      .prepare("DELETE FROM windows_attempt_intent_events WHERE operationId=?")
+      .run(first.admission.operation_id);
+    expect(() =>
+      store.observeAttemptStatus({
+        run_id: input.packet.run_id,
+        attempt_id: input.packet.attempt_id,
+        observed_client_sid: SID,
+      })
+    ).toThrow("Corrupt Windows coordinator operation");
+    expect(count("windows_attempt_intent_events")).toBe(0);
   });
 });

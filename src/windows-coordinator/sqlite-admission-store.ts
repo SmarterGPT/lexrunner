@@ -22,6 +22,56 @@ import {
 import { WINDOWS_COORDINATOR_MAX_FRAME_BYTES } from "./client-protocol.js";
 
 const MAX_RECORD_BYTES = 65_536;
+const effectIntentInput = z.strictObject({
+  operation_id: z.string().uuid(),
+  admission_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  observed_repository_identity_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  observed_allocation_root_identity_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  observed_volume_profile: z.enum(["NTFS", "ReFS"]),
+  selected_helper_generation_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  selected_git_profile_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  now: z.string().datetime({ offset: true }),
+});
+const attemptStatusInput = z.strictObject({
+  run_id: z
+    .string()
+    .min(1)
+    .max(128)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+  attempt_id: z
+    .string()
+    .min(1)
+    .max(128)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+  observed_client_sid: z
+    .string()
+    .min(7)
+    .max(184)
+    .regex(/^S-1-(?:[0-9]+-){1,14}[0-9]+$/u),
+});
+
+type AdmissionRequestDigestInput = Pick<
+  z.infer<typeof WindowsCoordinatorReservationInput_v1>,
+  | "enrollment_id"
+  | "observed_client_sid"
+  | "client_idempotency_key"
+  | "packet"
+  | "observed_repository_identity_digest"
+  | "observed_allocation_root_identity_digest"
+  | "observed_volume_profile"
+>;
+
+function admissionRequestDigest(input: AdmissionRequestDigestInput): string {
+  return computeCanonicalHash({
+    enrollment_id: input.enrollment_id,
+    observed_client_sid: input.observed_client_sid,
+    client_idempotency_key: input.client_idempotency_key,
+    packet: input.packet,
+    observed_repository_identity_digest: input.observed_repository_identity_digest,
+    observed_allocation_root_identity_digest: input.observed_allocation_root_identity_digest,
+    observed_volume_profile: input.observed_volume_profile,
+  });
+}
 
 const MIGRATION = `
 CREATE TABLE IF NOT EXISTS windows_coordinator_enrollments (
@@ -107,6 +157,51 @@ export type WindowsAdmissionReservationResult =
       authorizes_execution: false;
     };
 
+export type WindowsAdmissionEffectIntentResult =
+  | {
+      kind: "effect_unknown_latched" | "historical_effect_unknown";
+      intent: Intent;
+      authorizes_execution: false;
+    }
+  | {
+      kind: "rejected";
+      reason:
+        | "invalid_input"
+        | "store_read_only"
+        | "operation_unavailable"
+        | "admission_mismatch"
+        | "policy_unavailable"
+        | "fence_unavailable";
+      authorizes_execution: false;
+    };
+
+export type WindowsAdmissionAttemptStatus =
+  | {
+      kind: "observed";
+      operation_id: string;
+      intent_revision: number;
+      effect_state: "no_effect" | "effect_unknown";
+      authorizes_execution: false;
+    }
+  | {
+      kind: "unavailable";
+      effect_state: "effect_unknown";
+      authorizes_execution: false;
+    };
+
+const intentRejected = (
+  reason: Extract<WindowsAdmissionEffectIntentResult, { kind: "rejected" }>["reason"]
+): WindowsAdmissionEffectIntentResult => ({
+  kind: "rejected",
+  reason,
+  authorizes_execution: false,
+});
+const statusUnavailable = (): WindowsAdmissionAttemptStatus => ({
+  kind: "unavailable",
+  effect_state: "effect_unknown",
+  authorizes_execution: false,
+});
+
 const rejected = (
   reason: Extract<WindowsAdmissionReservationResult, { kind: "rejected" }>["reason"]
 ): WindowsAdmissionReservationResult => ({ kind: "rejected", reason, authorizes_execution: false });
@@ -150,15 +245,7 @@ export class SqliteWindowsCoordinatorAdmissionStore extends SqliteWorkspaceLifec
     }
     // The client request is stable across retries; controller credentials and
     // expected policy revision are service-side observations, not replay keys.
-    const requestDigest = computeCanonicalHash({
-      enrollment_id: input.enrollment_id,
-      observed_client_sid: input.observed_client_sid,
-      client_idempotency_key: input.client_idempotency_key,
-      packet: input.packet,
-      observed_repository_identity_digest: input.observed_repository_identity_digest,
-      observed_allocation_root_identity_digest: input.observed_allocation_root_identity_digest,
-      observed_volume_profile: input.observed_volume_profile,
-    });
+    const requestDigest = admissionRequestDigest(input);
 
     return this.immediateTransaction(() => {
       const prior = this.operationByKey(
@@ -377,6 +464,150 @@ export class SqliteWindowsCoordinatorAdmissionStore extends SqliteWorkspaceLifec
     });
   }
 
+  /**
+   * Persist uncertainty before any effect may begin. This transition itself
+   * grants no execution authority. The selected-image and root observations
+   * must come from held, service-owned native scopes in an installed runtime;
+   * supplied values in a source test are only comparison data.
+   */
+  latchEffectUnknown(inputValue: unknown): WindowsAdmissionEffectIntentResult {
+    if (this.readOnly) return intentRejected("store_read_only");
+    const parsed = effectIntentInput.safeParse(inputValue);
+    if (!parsed.success) return intentRejected("invalid_input");
+    const input = parsed.data;
+    return this.immediateTransaction(() => {
+      const operation = this.operationById(input.operation_id);
+      if (!operation) return intentRejected("operation_unavailable");
+      const { admission, intent, packet } = operation;
+      if (admission.admission_digest !== input.admission_digest)
+        return intentRejected("admission_mismatch");
+
+      // A committed unknown effect is historical state even if policy or the
+      // controller has since changed. Never retry dispatch from this result.
+      if (intent.status === "indeterminate")
+        return { kind: "historical_effect_unknown", intent, authorizes_execution: false } as const;
+      if (
+        intent.status !== "candidate" ||
+        Date.parse(input.now) < Date.parse(intent.updated_at) ||
+        admission.repository_identity_digest !== input.observed_repository_identity_digest ||
+        admission.allocation_root_identity_digest !==
+          input.observed_allocation_root_identity_digest ||
+        admission.volume_profile !== input.observed_volume_profile ||
+        admission.helper_generation_digest !== input.selected_helper_generation_digest ||
+        admission.git_profile_digest !== input.selected_git_profile_digest
+      )
+        return intentRejected("admission_mismatch");
+
+      const policy = this.enrollment(admission.enrollment_id);
+      if (
+        !policy ||
+        policy.status !== "active" ||
+        policy.policy_revision !== admission.policy_revision ||
+        policy.enrollment_digest !== admission.enrollment_digest ||
+        policy.client_sid !== admission.client_sid ||
+        policy.repository_id !== admission.repository_id ||
+        policy.repository_identity_digest !== admission.repository_identity_digest ||
+        policy.allocation_root_identity_digest !== admission.allocation_root_identity_digest ||
+        policy.volume_profile !== admission.volume_profile ||
+        policy.allowed_packet_effects_digest !== admission.packet_effects_digest ||
+        policy.helper_generation_digest !== admission.helper_generation_digest ||
+        policy.git_profile_digest !== admission.git_profile_digest ||
+        !policy.allowed_operation_classes.includes("attempt.prepare") ||
+        Object.entries(packet.authority).some(
+          ([name, granted]) =>
+            granted && !policy.authority_ceiling[name as keyof typeof policy.authority_ceiling]
+        )
+      )
+        return intentRejected("policy_unavailable");
+
+      const controller = this.db
+        .prepare(
+          `SELECT revision,controllerId,leaseId,fencingToken,expiresAt
+           FROM run_coordination WHERE runId=?`
+        )
+        .get(admission.requested_run_id) as
+        | {
+            revision: number;
+            controllerId: string | null;
+            leaseId: string | null;
+            fencingToken: number;
+            expiresAt: string | null;
+          }
+        | undefined;
+      if (
+        !controller ||
+        admission.controller.run_id !== admission.requested_run_id ||
+        controller.revision !== admission.controller.expected_run_revision ||
+        controller.controllerId !== admission.controller.controller_id ||
+        controller.leaseId !== admission.controller.lease_id ||
+        controller.fencingToken !== admission.controller.fencing_token ||
+        !controller.expiresAt ||
+        !Number.isFinite(Date.parse(controller.expiresAt)) ||
+        Date.parse(controller.expiresAt) <= Date.parse(input.now)
+      )
+        return intentRejected("fence_unavailable");
+
+      const body = WindowsAttemptIntentBody_v1.parse({
+        schema_version: "windows-attempt-intent/1",
+        operation_id: admission.operation_id,
+        admission_digest: admission.admission_digest,
+        revision: 1,
+        status: "indeterminate",
+        effect_state: "effect_unknown",
+        authorizes_execution: false,
+        created_at: intent.created_at,
+        updated_at: input.now,
+      });
+      const next = WindowsAttemptIntent_v1.parse({
+        ...body,
+        intent_digest: computeCanonicalHash(body),
+      });
+      this.db
+        .prepare(
+          `INSERT INTO windows_attempt_intent_events
+           (operationId,revision,intentJson,intentDigest) VALUES (?,?,?,?)`
+        )
+        .run(next.operation_id, next.revision, canonicalJSONStringify(next), next.intent_digest);
+      const updated = this.db
+        .prepare(
+          `UPDATE windows_attempt_intents
+           SET revision=1,status='indeterminate',intentJson=?,intentDigest=?
+           WHERE operationId=? AND revision=0 AND intentDigest=?`
+        )
+        .run(
+          canonicalJSONStringify(next),
+          next.intent_digest,
+          next.operation_id,
+          intent.intent_digest
+        );
+      if (updated.changes !== 1) throw new Error("Corrupt Windows coordinator intent transition");
+      return { kind: "effect_unknown_latched", intent: next, authorizes_execution: false } as const;
+    });
+  }
+
+  /** Read one verified historical intent without exposing packet or policy data. */
+  observeAttemptStatus(inputValue: unknown): WindowsAdmissionAttemptStatus {
+    const parsed = attemptStatusInput.safeParse(inputValue);
+    if (!parsed.success) return statusUnavailable();
+    const input = parsed.data;
+    return this.db.transaction(() => {
+      const operation = this.operationByAttempt(input.attempt_id);
+      if (
+        !operation ||
+        operation.admission.requested_run_id !== input.run_id ||
+        operation.admission.client_sid !== input.observed_client_sid
+      )
+        return statusUnavailable();
+      return {
+        kind: "observed",
+        operation_id: operation.admission.operation_id,
+        intent_revision: operation.intent.revision,
+        effect_state: operation.intent.effect_state,
+        authorizes_execution: false,
+      } as const;
+    })();
+  }
+
   private enrollment(enrollmentId: string): z.infer<typeof WindowsCoordinatorEnrollment_v1> | null {
     const row = this.db
       .prepare(
@@ -438,6 +669,7 @@ export class SqliteWindowsCoordinatorAdmissionStore extends SqliteWorkspaceLifec
     row: OperationRow;
     admission: Admission;
     intent: Intent;
+    packet: z.infer<typeof AgentTaskPacket_v1>;
   } {
     const admission = parseRecord(WindowsAttemptAdmission_v1, row.admissionJson);
     const packet = parseRecord(AgentTaskPacket_v1, row.packetJson);
@@ -461,6 +693,16 @@ export class SqliteWindowsCoordinatorAdmissionStore extends SqliteWorkspaceLifec
       admission.client_idempotency_key !== row.clientIdempotencyKey ||
       admission.requested_attempt_id !== row.requestedAttemptId ||
       admission.request_digest !== row.requestDigest ||
+      admission.request_digest !==
+        admissionRequestDigest({
+          enrollment_id: admission.enrollment_id,
+          observed_client_sid: admission.client_sid,
+          client_idempotency_key: admission.client_idempotency_key,
+          packet,
+          observed_repository_identity_digest: admission.repository_identity_digest,
+          observed_allocation_root_identity_digest: admission.allocation_root_identity_digest,
+          observed_volume_profile: admission.volume_profile,
+        }) ||
       admission.admission_digest !== row.admissionDigest ||
       packet.packet_hash !== admission.packet_hash ||
       computeCanonicalHash(packet) !== admission.packet_snapshot_digest ||
@@ -494,7 +736,7 @@ export class SqliteWindowsCoordinatorAdmissionStore extends SqliteWorkspaceLifec
         throw new Error("Corrupt Windows coordinator intent history");
       previous = historical;
     }
-    return { row, admission, intent };
+    return { row, admission, intent, packet };
   }
 }
 

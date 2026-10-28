@@ -40,6 +40,18 @@ describe("source-only Windows admission uncertainty journal", () => {
         .get(operationId) as { count: number }
     ).count;
 
+  const latchNow = () =>
+    latchSyntheticEffectUnknown(store, {
+      operation_id: operationId,
+      admission_digest: admissionDigest,
+      observed_repository_identity_digest: input.observed_repository_identity_digest,
+      observed_allocation_root_identity_digest: input.observed_allocation_root_identity_digest,
+      observed_volume_profile: input.observed_volume_profile,
+      selected_helper_generation_digest: digest("3"),
+      selected_git_profile_digest: digest("4"),
+      now: T2,
+    });
+
   beforeEach(async () => {
     directory = mkdtempSync(join(tmpdir(), PREFIX));
     path = join(directory, "store.db");
@@ -157,11 +169,7 @@ describe("source-only Windows admission uncertainty journal", () => {
   });
 
   it("commits unknown effect before a lost reply and replays it after restart", async () => {
-    const first = latchSyntheticEffectUnknown(db, {
-      operation_id: operationId,
-      admission_digest: admissionDigest,
-      now: T2,
-    });
+    const first = latchNow();
     expect(first).toMatchObject({
       kind: "effect_unknown_latched",
       intent: { status: "indeterminate", effect_state: "effect_unknown" },
@@ -180,13 +188,7 @@ describe("source-only Windows admission uncertainty journal", () => {
     });
     db.prepare("UPDATE windows_coordinator_enrollments SET status='revoked'").run();
     db.prepare("UPDATE run_coordination SET expiresAt=?").run(T1);
-    expect(
-      latchSyntheticEffectUnknown(db, {
-        operation_id: operationId,
-        admission_digest: admissionDigest,
-        now: T2,
-      })
-    ).toMatchObject({
+    expect(latchNow()).toMatchObject({
       kind: "historical_effect_unknown",
       intent: { effect_state: "effect_unknown" },
       authorizes_execution: false,
@@ -198,26 +200,14 @@ describe("source-only Windows admission uncertainty journal", () => {
     db.exec(
       "CREATE TRIGGER injected_intent_failure BEFORE UPDATE ON windows_attempt_intents BEGIN SELECT RAISE(ABORT, 'injected interruption'); END"
     );
-    expect(() =>
-      latchSyntheticEffectUnknown(db, {
-        operation_id: operationId,
-        admission_digest: admissionDigest,
-        now: T2,
-      })
-    ).toThrow("injected interruption");
+    expect(latchNow).toThrow("injected interruption");
     expect(count()).toBe(1);
     expect(store.recordCandidate(input)).toMatchObject({
       kind: "historical_replay",
       intent: { status: "candidate", effect_state: "no_effect" },
     });
     db.exec("DROP TRIGGER injected_intent_failure");
-    expect(
-      latchSyntheticEffectUnknown(db, {
-        operation_id: operationId,
-        admission_digest: admissionDigest,
-        now: T2,
-      }).intent.effect_state
-    ).toBe("effect_unknown");
+    expect(latchNow().intent.effect_state).toBe("effect_unknown");
     expect(count()).toBe(2);
   });
 
@@ -225,23 +215,17 @@ describe("source-only Windows admission uncertainty journal", () => {
     db.prepare("UPDATE run_coordination SET fencingToken=fencingToken+1 WHERE runId=?").run(
       input.packet.run_id
     );
-    const latch = () =>
-      latchSyntheticEffectUnknown(db, {
-        operation_id: operationId,
-        admission_digest: admissionDigest,
-        now: T2,
-      });
-    expect(latch).toThrow("synthetic_admission_fence_unverified");
+    expect(latchNow).toThrow("synthetic_admission_fence_unavailable");
     expect(count()).toBe(1);
     db.prepare("UPDATE run_coordination SET fencingToken=? WHERE runId=?").run(
       input.controller.fencing_token,
       input.packet.run_id
     );
     db.prepare("UPDATE windows_coordinator_enrollments SET status='revoked'").run();
-    expect(latch).toThrow("synthetic_admission_policy_unverified");
+    expect(latchNow).toThrow("Corrupt Windows coordinator enrollment");
     expect(count()).toBe(1);
     db.prepare("UPDATE windows_coordinator_enrollments SET status='active'").run();
     db.prepare("DELETE FROM windows_attempt_intent_events WHERE operationId=?").run(operationId);
-    expect(latch).toThrow("synthetic_admission_intent_unverified");
+    expect(latchNow).toThrow("Corrupt Windows coordinator operation");
   });
 });
