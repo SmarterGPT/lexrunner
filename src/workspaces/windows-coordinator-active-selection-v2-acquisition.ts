@@ -9,6 +9,7 @@ import {
 import {
   observeWindowsCoordinatorV2ActiveSelection,
   observeWindowsCoordinatorV2GenerationCatalog,
+  observeWindowsCoordinatorV2HighWater,
   type WindowsCoordinatorV2CatalogObservation,
 } from "./windows-coordinator-active-selection-reader.js";
 
@@ -23,6 +24,9 @@ export type WindowsCoordinatorV2SelectionAcquisition =
       readonly reason:
         | "selection_unavailable"
         | "selection_invalid"
+        | "high_water_unavailable"
+        | "high_water_mismatch"
+        | "high_water_changed"
         | "catalog_unavailable"
         | "metadata_unavailable"
         | "catalog_changed"
@@ -140,11 +144,17 @@ export function observeWindowsCoordinatorV2SelectionAcquisition(): WindowsCoordi
   const first = observeWindowsCoordinatorV2ActiveSelection();
   if (first.state !== "observed") return stop("selection_unavailable");
   let generationId: string;
+  let revision: number;
   try {
-    generationId = parseWindowsCoordinatorActiveSelectionV2Value(first.selectionValue).generationId;
+    const selection = parseWindowsCoordinatorActiveSelectionV2Value(first.selectionValue);
+    generationId = selection.generationId;
+    revision = selection.revision;
   } catch {
     return stop("selection_invalid");
   }
+  const highWater = observeWindowsCoordinatorV2HighWater();
+  if (highWater.state !== "observed") return stop("high_water_unavailable");
+  if (highWater.revision !== revision) return stop("high_water_mismatch");
   const catalog = observeWindowsCoordinatorV2GenerationCatalog(generationId);
   if (catalog.state !== "observed") return stop("catalog_unavailable");
   let manifestBytes: Uint8Array;
@@ -160,6 +170,9 @@ export function observeWindowsCoordinatorV2SelectionAcquisition(): WindowsCoordi
   const selectionAfter = observeWindowsCoordinatorV2ActiveSelection();
   if (selectionAfter.state !== "observed" || selectionAfter.selectionValue !== first.selectionValue)
     return stop("selection_changed");
+  const highWaterAfter = observeWindowsCoordinatorV2HighWater();
+  if (highWaterAfter.state !== "observed" || highWaterAfter.revision !== revision)
+    return stop("high_water_changed");
   return {
     state: "assessed",
     consistency: assessWindowsCoordinatorV2SelectionConsistency({

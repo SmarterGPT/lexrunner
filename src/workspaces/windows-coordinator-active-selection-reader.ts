@@ -67,6 +67,18 @@ export type WindowsCoordinatorV2CatalogObservation =
       readonly authorizesLaunch: false;
     };
 
+export type WindowsCoordinatorV2HighWaterObservation =
+  | {
+      readonly state: "observed";
+      readonly revision: number;
+      readonly authorizesLaunch: false;
+    }
+  | {
+      readonly state: "unavailable";
+      readonly reason: WindowsCoordinatorRegistryReadReason;
+      readonly authorizesLaunch: false;
+    };
+
 function linesOf(bytes: Uint8Array): string[] {
   if (
     !(bytes instanceof Uint8Array) ||
@@ -102,6 +114,19 @@ export function parseWindowsCoordinatorV2RegQueryOutput(bytes: Uint8Array): stri
   const value = selectionValueFromRegQueryOutput(bytes);
   parseWindowsCoordinatorActiveSelectionV2Value(value);
   return value;
+}
+
+/** Exact one-value REG_QWORD transport grammar at the fixed coordinator root. */
+export function parseWindowsCoordinatorV2HighWaterRegQueryOutput(bytes: Uint8Array): number {
+  const lines = linesOf(bytes);
+  if (lines.length !== 2 || lines[0]!.toLowerCase() !== SELECTION_KEY.toLowerCase())
+    throw new Error("Unexpected high-water query structure");
+  const match = /^ {4}HighWaterRevision {4}REG_QWORD {4}(0x[0-9a-fA-F]{1,16})$/u.exec(lines[1]!);
+  if (!match) throw new Error("Missing exact HighWaterRevision REG_QWORD line");
+  const revision = BigInt(match[1]!);
+  if (revision <= 0n || revision > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("High-water revision outside the safe positive range");
+  return Number(revision);
 }
 
 /** Strict four-row proposed catalog grammar; the first MSI authors no catalog. */
@@ -260,6 +285,21 @@ export function observeWindowsCoordinatorV2ActiveSelection(): WindowsCoordinator
     return {
       state: "observed",
       selectionValue: parseWindowsCoordinatorV2RegQueryOutput(result.stdout),
+      authorizesLaunch: false,
+    };
+  } catch {
+    return { state: "unavailable", reason: "registry_output_invalid", authorizesLaunch: false };
+  }
+}
+
+/** Source-only typed high-water observation; no authenticated writer is established here. */
+export function observeWindowsCoordinatorV2HighWater(): WindowsCoordinatorV2HighWaterObservation {
+  const result = queryFixedRegistry(["query", QUERY_KEY, "/v", "HighWaterRevision", "/reg:64"]);
+  if (result.state === "unavailable") return { ...result, authorizesLaunch: false };
+  try {
+    return {
+      state: "observed",
+      revision: parseWindowsCoordinatorV2HighWaterRegQueryOutput(result.stdout),
       authorizesLaunch: false,
     };
   } catch {
