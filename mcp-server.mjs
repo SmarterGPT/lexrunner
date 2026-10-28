@@ -1134,6 +1134,13 @@ const tools = {
     inputSchema: {
       type: "object",
       properties: {
+        repoRoot: {
+          type: "string",
+          minLength: 1,
+          maxLength: 4096,
+          description:
+            "Repository for initial readiness diagnostics; relative to the server startup directory",
+        },
         phase: {
           type: "string",
           enum: [
@@ -1163,11 +1170,18 @@ const tools = {
         let guide;
         if (phase === "initial") {
           const doctor = await new core.WorkspaceDiagnosticsService().run({
-            baseDir: serverBaseDir,
+            baseDir: resolve(serverBaseDir, parsedArgs.data.repoRoot ?? "."),
           });
-          const remediation = doctor.suggestions.length
-            ? doctor.suggestions.join("; ")
-            : "Run doctor and resolve every reported workspace issue before proceeding";
+          const needsRepositorySession =
+            doctor.hasErrors &&
+            (serverBaseDir !== doctor.diagnosticBase ||
+              resolve(process.cwd()) !== doctor.diagnosticBase);
+          const remediation = needsRepositorySession
+            ? `Start a repository-specific MCP session in ${doctor.diagnosticBase}, rerun workflow.guide, and inspect configuration before initializing. ` +
+              "This session's doctor and local.init are not retargeted by repoRoot."
+            : doctor.suggestions.length
+              ? doctor.suggestions.join("; ")
+              : "Run doctor and resolve every reported workspace issue before proceeding";
           guide = createWorkflowGuide(phase, {
             canProceed: !doctor.hasErrors,
             commonIssues:
@@ -1181,18 +1195,21 @@ const tools = {
                     },
                   ]
                 : [],
-            recommendedAction: doctor.hasErrors
-              ? doctor.configuration.missingFiles.length
-                ? "local.init"
-                : "doctor"
-              : undefined,
+            recommendedAction: needsRepositorySession
+              ? null
+              : doctor.hasErrors
+                ? doctor.configuration.missingFiles.length
+                  ? "local.init"
+                  : "doctor"
+                : undefined,
             observation: {
               source: "doctor",
+              diagnosticBase: doctor.diagnosticBase,
               hasErrors: doctor.hasErrors,
               missingFiles: doctor.configuration.missingFiles,
               compatibilityFiles: doctor.configuration.compatibilityFiles,
               issues: doctor.issues,
-              suggestions: doctor.suggestions,
+              suggestions: needsRepositorySession ? [remediation] : doctor.suggestions,
             },
           });
         } else {

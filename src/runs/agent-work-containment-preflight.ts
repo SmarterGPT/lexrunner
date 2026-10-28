@@ -77,6 +77,8 @@ export type AgentWorkContainmentReasonCode =
 export type AgentWorkContainmentNextAction =
   | "construct_attempt_packet"
   | "install_native_windows_boundary"
+  | "review_windows_boundary_status"
+  | "use_external_worker_workflow"
   | "provision_native_wsl_projection"
   | "select_native_case_sensitive_linux_runtime"
   | "correct_declared_paths"
@@ -106,6 +108,14 @@ export interface AgentWorkContainmentPreflightResult {
     readonly worktreeRoot: AgentWorkContainmentPathStatus;
   };
   readonly nextActions: readonly AgentWorkContainmentNextAction[];
+  readonly prerequisite?: {
+    readonly component: string;
+    readonly status: "production_integration_pending";
+    readonly setupProcedure: "unavailable_in_this_release";
+    readonly message: string;
+    readonly documentation: string;
+    readonly alternativeWorkflow: string;
+  };
 }
 
 export interface AgentWorkContainmentPreflightInputError {
@@ -204,7 +214,7 @@ export class AgentWorkContainmentCapabilityService {
         state: brokerRequired ? "broker_required" : "unsupported",
         reasonCode: support.reasonCode,
         nextActions: brokerRequired
-          ? ["install_native_windows_boundary", "rerun_containment_preflight"]
+          ? ["review_windows_boundary_status", "use_external_worker_workflow"]
           : ["select_native_case_sensitive_linux_runtime", "rerun_containment_preflight"],
       });
     }
@@ -301,6 +311,23 @@ function capabilityResult(input: {
     },
     paths: input.paths,
     nextActions: input.nextActions,
+    ...(input.reasonCode === "windows_native_boundary_unavailable"
+      ? {
+          prerequisite: {
+            component: "LexRunner native Windows WorkspaceBoundary helper and production broker",
+            status: "production_integration_pending" as const,
+            setupProcedure: "unavailable_in_this_release" as const,
+            message:
+              "This release has no supported installation or configuration procedure for native Windows Attempt execution. " +
+              "Optional helper installation alone does not enable the production boundary. " +
+              "Keep the containment refusal; external workers can use the separate planning and verification workflow.",
+            documentation:
+              "https://github.com/SmarterGPT/lexrunner/blob/main/docs/architecture/windows-production-activation.md",
+            alternativeWorkflow:
+              "https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md",
+          },
+        }
+      : {}),
   };
 }
 

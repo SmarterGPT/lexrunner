@@ -50,6 +50,8 @@ export interface WorkflowGuide {
   /** Optional observed workspace readiness used by the published MCP adapter. */
   readiness?: {
     source: "doctor";
+    /** Actual directory inspected; selecting it does not retarget execution. */
+    diagnosticBase?: string;
     hasErrors: boolean;
     missingFiles: string[];
     compatibilityFiles: string[];
@@ -61,7 +63,8 @@ export interface WorkflowGuide {
 export interface WorkflowReadiness {
   canProceed: boolean;
   commonIssues?: CommonIssue[];
-  recommendedAction?: string;
+  /** Explicit null suppresses a phase default that cannot target this repository. */
+  recommendedAction?: string | null;
   observation?: WorkflowGuide["readiness"];
 }
 

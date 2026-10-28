@@ -164,6 +164,13 @@ const PHASE_DEFINITIONS: Record<WorkflowPhase, PhaseDefinition> = {
     ],
     commonIssues: [
       {
+        symptom: "Attempt preflight: windows_native_boundary_unavailable / broker_required",
+        solution:
+          "Native Windows Attempt setup is unavailable in this release; installing a development helper alone does not enable it. " +
+          "Use https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md for planning, externally coordinated workers, integration and verification. " +
+          "Preserve the refusal and record external execution/merge ownership explicitly.",
+      },
+      {
         symptom: "Command execution failed",
         solution: "Check error messages and use doctor tool for diagnostics",
       },
@@ -286,7 +293,10 @@ export function createWorkflowGuide(
     commonIssues: [...def.commonIssues, ...(readiness?.commonIssues ?? [])],
     documentation: def.documentation,
     canProceed: readiness?.canProceed ?? true,
-    recommendedAction: readiness?.recommendedAction ?? def.recommendedAction,
+    recommendedAction:
+      readiness?.recommendedAction === null
+        ? undefined
+        : (readiness?.recommendedAction ?? def.recommendedAction),
     ...(readiness?.observation ? { readiness: readiness.observation } : {}),
   };
 }

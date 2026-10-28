@@ -154,8 +154,13 @@ supported assisted behavior, and deferred guarantees.
   artifacts or run commands even when merge mutations are disabled. See the
   [compatibility and setup guide](docs/first-use-compatibility.md), plus
   [`docs/AX.md`](docs/AX.md) and [`README.mcp.md`](README.mcp.md).
-- **Assisted agent work:** run `attempt preflight` before packet construction. When it reports
-  `broker_required`, use `attempt projection status|prepare` to bind the exact committed base into
+- **Assisted agent work:** run `attempt preflight` before packet construction. A native Windows
+  `windows_native_boundary_unavailable` / `broker_required` result has no supported
+  installation/configuration fix in this release; optional helper installation alone
+  does not enable it. Use the [external-worker workflow](https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md)
+  for planning, external implementation/integration and repository-bound verification.
+  If an explicit Windows-to-WSL projection is already authorized and configured,
+  use `attempt projection status|prepare` to bind the exact committed base into
   native WSL, then continue with `attempt prepare`, `attempt start`, worker
   attachment/heartbeat, receipt submission, verification, and acceptance. The foreground host
   still owns worker launch. Follow the

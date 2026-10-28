@@ -126,7 +126,17 @@ describe("AgentWorkContainmentCapabilityService", () => {
         repositoryGitDirectory: { inspection: "not_checked", filesystem: "unknown" },
         worktreeRoot: { inspection: "syntactic_only", filesystem: "unknown" },
       },
-      nextActions: ["install_native_windows_boundary", "rerun_containment_preflight"],
+      nextActions: ["review_windows_boundary_status", "use_external_worker_workflow"],
+      prerequisite: {
+        component: expect.stringContaining("native Windows WorkspaceBoundary"),
+        status: "production_integration_pending",
+        setupProcedure: "unavailable_in_this_release",
+        message: expect.stringContaining("Optional helper installation alone does not enable"),
+        documentation:
+          "https://github.com/SmarterGPT/lexrunner/blob/main/docs/architecture/windows-production-activation.md",
+        alternativeWorkflow:
+          "https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md",
+      },
     });
     expect(pathProbe).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain("stfc-mod");

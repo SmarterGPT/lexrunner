@@ -42,7 +42,10 @@ LexRunner requires Node.js 24 or newer. A typical MCP client entry is:
 }
 ```
 
-The server diagnoses its startup working directory. Start it in the repository you intend to use.
+`doctor` diagnoses the server's startup working directory. Start it in the repository
+you intend to use. `workflow.guide` also accepts `repoRoot` for its initial readiness
+diagnostics and returns `readiness.diagnosticBase`; relative paths use the captured
+startup directory. This does not retarget other tools or grant execution authority.
 `LEX_PR_PROFILE_DIR` selects a profile root; it is not a per-call repository override. When a tool
 supports `repoRoot`, provide it explicitly for repository-bound work.
 
@@ -64,7 +67,8 @@ environment or a credential provider; do not commit a literal token.
 
 ## Recommended workflow
 
-1. Call `doctor` and `workflow.guide` with phase `initial`. The guide reports observed doctor
+1. Call `doctor` and `workflow.guide` with phase `initial` and an explicit `repoRoot`
+   when the repository differs from the MCP container. The guide reports observed doctor
    readiness and remains explicitly advisory and non-authorizing.
 2. If configuration is absent, call `local.init`, then repeat `doctor`. Use `config.show` to inspect
    resolved values and provenance. Profile-root configuration is canonical; `runner/` is reserved
@@ -84,6 +88,12 @@ or apply that plan as though multiple repositories were one worktree.
 
 For long-running gate idempotency, cooperative cancellation, reconnects, and unknown-state
 recovery, see [durable gate operations](docs/gates.md#long-running-operations-and-reconnects).
+
+If Attempt execution is unavailable, follow the supported
+[external-worker planning/integration/verification workflow](https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md).
+Native Windows `broker_required` is not an instruction to install an unqualified
+helper or automatically switch to WSL; this release has no supported native Attempt
+activation procedure.
 
 ## Published tool inventory
 

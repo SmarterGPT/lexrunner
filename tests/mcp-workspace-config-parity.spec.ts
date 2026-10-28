@@ -108,19 +108,22 @@ describe("published MCP workspace/config parity", () => {
 
   it("rejects missing and invalid workflow phases identically across MCP entrypoints", async () => {
     const root = fixtureRoot();
-    const invalidArguments = [{}, { phase: "not-a-phase" }];
-    const responses = await invokeMany(root, [
-      {
-        id: 12,
+    const invalidArguments = [
+      {},
+      { phase: "not-a-phase" },
+      ...["", " ", "never-print-this\0", "x".repeat(4097), 7, null].map((repoRoot) => ({
+        phase: "initial",
+        repoRoot,
+      })),
+    ];
+    const responses = await invokeMany(
+      root,
+      invalidArguments.map((arguments_, index) => ({
+        id: 12 + index,
         method: "tools/call",
-        params: { name: "workflow.guide", arguments: {} },
-      },
-      {
-        id: 13,
-        method: "tools/call",
-        params: { name: "workflow.guide", arguments: { phase: "not-a-phase" } },
-      },
-    ]);
+        params: { name: "workflow.guide", arguments: arguments_ },
+      }))
+    );
 
     for (const [index, response] of responses.entries()) {
       const error = normalizeMcpError(response.error);
@@ -134,7 +137,100 @@ describe("published MCP workspace/config parity", () => {
       expect(error.message).toContain("published phase values");
       expect(JSON.stringify(error)).not.toContain("Cannot read properties");
       expect(JSON.stringify(error)).not.toContain("not-a-phase");
+      expect(JSON.stringify(error)).not.toContain("never-print-this");
     }
+  });
+
+  it("guides the selected repository without initializing a shared MCP container", async () => {
+    const startupRoot = fixtureRoot();
+    const selectedRoot = fixtureRoot();
+    const laterRoot = fixtureRoot();
+    const missingRoot = fixtureRoot();
+    prepareDiagnosticRoot(selectedRoot, "local");
+    const configuration = path.join(selectedRoot, ".smartergpt");
+    for (const file of ["intent.md", "scope.yml", "deps.yml", "gates.yml"]) {
+      fs.writeFileSync(path.join(configuration, file), "selected-repository-sentinel\n");
+    }
+    const before = fs
+      .readdirSync(configuration)
+      .map((file) => fs.readFileSync(path.join(configuration, file), "utf8"));
+    const argumentsList = [
+      { phase: "initial", repoRoot: selectedRoot },
+      { phase: "initial", repoRoot: path.relative(startupRoot, selectedRoot) },
+      { phase: "initial" },
+      { phase: "initial", repoRoot: missingRoot },
+    ];
+    await withoutProfileEnvironment(async () => {
+      const published = await invokeMany(startupRoot, [
+        { id: 50, method: "tools/list", params: {} },
+        ...argumentsList.map((arguments_, index) => ({
+          id: 51 + index,
+          method: "tools/call",
+          params: { name: "workflow.guide", arguments: arguments_ },
+        })),
+      ]);
+      const previousCwd = process.cwd();
+      process.chdir(startupRoot);
+      const server = createServer({ runStore: new InMemoryRunStore() });
+      const client = new Client({ name: "guide-selected-repo", version: "1.0.0" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await server.connect(serverTransport);
+        await client.connect(clientTransport);
+        process.chdir(laterRoot);
+        const sourceTools = await client.listTools();
+        const sourceSchema = sourceTools.tools.find(
+          (tool) => tool.name === "workflow_guide"
+        )!.inputSchema;
+        const publishedSchema = published[0].result.tools.find(
+          (tool: { name: string }) => tool.name === "workflow.guide"
+        ).inputSchema;
+        expect(sourceSchema).toEqual(publishedSchema);
+        expect(sourceSchema.properties).toHaveProperty("repoRoot");
+        for (const [index, arguments_] of argumentsList.entries()) {
+          const sourceResponse = await client.callTool({
+            name: "workflow_guide",
+            arguments: arguments_,
+          });
+          const source = JSON.parse((sourceResponse.content[0] as { text: string }).text);
+          const deployed = JSON.parse(published[index + 1].result.content[0].text);
+          for (const guide of [source, deployed]) {
+            expect(guide).toMatchObject({
+              authority: "advisory",
+              authorizesExecution: false,
+              authorizesMerge: false,
+              readiness: {
+                diagnosticBase: index < 2 ? selectedRoot : index === 2 ? startupRoot : missingRoot,
+              },
+            });
+            expect(guide.readiness.missingFiles.length === 0).toBe(index < 2);
+            expect(guide.recommendedAction === "local.init").toBe(
+              index === 2 && guide === deployed
+            );
+            if (index !== 2 || guide === source) {
+              expect(guide).not.toHaveProperty("recommendedAction");
+              expect(guide.readiness.suggestions.join(" ")).toContain(
+                "repository-specific MCP session"
+              );
+              expect(guide.readiness.suggestions.join(" ")).toContain(
+                guide.readiness.diagnosticBase
+              );
+            }
+          }
+        }
+      } finally {
+        process.chdir(previousCwd);
+        await client.close();
+        await server.close();
+      }
+    });
+    expect(fs.existsSync(path.join(startupRoot, ".smartergpt.local"))).toBe(false);
+    expect(fs.existsSync(path.join(missingRoot, ".smartergpt.local"))).toBe(false);
+    expect(
+      fs
+        .readdirSync(configuration)
+        .map((file) => fs.readFileSync(path.join(configuration, file), "utf8"))
+    ).toEqual(before);
   });
 
   it("routes CLI and MCP configuration queries through the same bounded result", async () => {
@@ -319,9 +415,9 @@ describe("published MCP workspace/config parity", () => {
           authorizesMerge: false,
           phase: "initial",
           canProceed: false,
-          recommendedAction: "local.init",
           readiness: { source: "doctor", hasErrors: true },
         });
+        expect(initialGuide).not.toHaveProperty("recommendedAction");
         expect(initialGuide.readiness.suggestions.join(" ")).toContain(startupRoot);
         expect(initialGuide.readiness.suggestions.join(" ")).not.toContain(laterRoot);
 
