@@ -27,6 +27,10 @@ $normalProbe = & $normalImage --protocol-selftest 2>&1
 if ($LASTEXITCODE -ne 2 -or ($normalProbe -join '') -ne 'scm_only') {
     throw 'normal image exposed fixture mode'
 }
+$normalPipeProbe = & $normalImage --pipe-selftest 2>&1
+if ($LASTEXITCODE -ne 2 -or ($normalPipeProbe -join '') -ne 'scm_only') {
+    throw 'normal image exposed pipe fixture mode'
+}
 $normalLifecycleProbe = & $normalImage --lifecycle-selftest 2>&1
 if ($LASTEXITCODE -ne 2 -or ($normalLifecycleProbe -join '') -ne 'scm_only') {
     throw 'normal image exposed lifecycle fixture mode'
@@ -44,12 +48,16 @@ $fixtureProbe = & $fixtureImage --protocol-selftest 2>&1
 if ($LASTEXITCODE -ne 0 -or ($fixtureProbe -join '') -ne 'protocol_selftest_pass') {
     throw 'fixture protocol selftest failed'
 }
+$pipeProbe = & $fixtureImage --pipe-selftest 2>&1
+if ($LASTEXITCODE -ne 0 -or ($pipeProbe -join '') -ne 'pipe_selftest_pass') {
+    throw "fixture pipe selftest failed: $(($pipeProbe | Select-Object -Last 12) -join ' | ')"
+}
 $lifecycleProbe = & $fixtureImage --lifecycle-selftest 2>&1
 if ($LASTEXITCODE -ne 0 -or ($lifecycleProbe -join '') -ne 'lifecycle_selftest_pass') {
     throw 'fixture lifecycle selftest failed'
 }
 
-$sources = @('CoordinatorPipe.cs', 'CoordinatorProtocol.cs', 'Program.cs', 'ServiceLifecycle.cs',
+$sources = @('CoordinatorPipe.cs', 'CoordinatorProtocol.cs', 'PipeFixtureTests.cs', 'Program.cs', 'ServiceLifecycle.cs',
     'LexRunner.WindowsCoordinator.Service.csproj', 'global.json', '.gitignore',
     'README.md', 'verify.ps1')
 $hashes = [ordered]@{}
@@ -95,6 +103,7 @@ $receipt = [pscustomobject]@{
     normalDirectLaunch = 'scm_required'
     normalFixtureMode = 'scm_only'
     fixtureProtocolSelfTest = 'protocol_selftest_pass'
+    fixturePipeSelfTest = 'pipe_selftest_pass'
     fixtureLifecycleSelfTest = 'lifecycle_selftest_pass'
     installedServiceQualified = $false
     buildCleanup = $cleanup
@@ -108,6 +117,7 @@ $json = ($receipt | ConvertTo-Json -Depth 5).Replace("`r`n", "`n") + "`n"
     normalImageSha256 = $receipt.normalImageSha256
     fixtureImageSha256 = $receipt.fixtureImageSha256
     fixtureProtocolSelfTest = $receipt.fixtureProtocolSelfTest
+    fixturePipeSelfTest = $receipt.fixturePipeSelfTest
     fixtureLifecycleSelfTest = $receipt.fixtureLifecycleSelfTest
     buildCleanup = $receipt.buildCleanup
     receiptPath = $receiptPath

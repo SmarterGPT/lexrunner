@@ -28,6 +28,12 @@ internal static class Program
             Console.WriteLine(passed ? "protocol_selftest_pass" : "protocol_selftest_fail");
             return passed ? 0 : 1;
         }
+        if (args.Length == 1 && args[0] == "--pipe-selftest")
+        {
+            var passed = PipeFixtureTests.SelfTest();
+            Console.WriteLine(passed ? "pipe_selftest_pass" : "pipe_selftest_fail");
+            return passed ? 0 : 1;
+        }
         if (args.Length == 1 && args[0] == "--lifecycle-selftest")
         {
             var passed = ServiceLifecycle.SelfTest();

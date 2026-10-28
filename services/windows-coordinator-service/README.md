@@ -27,19 +27,25 @@ installed cross-account test must replace and qualify the actual client ACE
 before any Attempt is sent.
 
 The service reads at most one 1 MiB LE32 request frame per connection, with a
-five-second client deadline. After the header read it briefly uses
+five-second client deadline. After the complete request read it briefly uses
 `ImpersonateNamedPipeClient` to observe the peer SID and immediately calls
 `RevertToSelf`; a failed revert terminates the process. It parses only the
-canonical `attempt.status` envelope for source qualification. The normal
-service **never sends an Attempt reply**: the current v1 denial schema requires
-`no_effect`, which a storeless service cannot assert for a historical
-Attempt. It closes the connection instead. There is no protected store,
-admission, Node launch, helper launch, Git launch, worktree effect, or
+canonical v1 `attempt.status` envelope. For that request alone, the normal
+service sends a bounded v2 `kind: status` reply with `state: indeterminate`,
+`effect_state: effect_unknown`, `reason_code: protected_store_unavailable`,
+and `authorizes_execution: false`. These echoed identifiers are untrusted
+correlation data. Without a protected store, the service cannot assert
+`no_effect` for a historical Attempt or establish that one exists. Invalid or
+incomplete requests close without a reply. No ordinary client can open the
+current pipe; only SYSTEM, Administrators and the service SID have access.
+There is no protected store, admission, Node launch, helper launch, Git launch, worktree effect, or
 production client selection in this image.
 
 The compile-gated `--protocol-selftest` checks canonical status parsing,
-duplicate-key rejection and bounded denial encoding for an isolated fixture;
-`--lifecycle-selftest` checks the state order.
+duplicate-key/noncanonical rejection, deterministic v2 indeterminate-status
+encoding, and bounded v1 denial encoding for an isolated fixture;
+`--pipe-selftest` exercises same-user status replay, malformed close and
+mid-header disconnect recovery; `--lifecycle-selftest` checks the state order.
 That fixture's `no_effect` response is not reachable in the normal image.
 Run `pwsh -NoLogo -NoProfile -File .\verify.ps1` from this directory to
 publish both images and run the selftest plus direct-launch refusals. It does

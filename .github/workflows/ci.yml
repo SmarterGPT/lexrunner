@@ -21,6 +21,7 @@ on:
       - "services/windows-coordinator-installed-readback/**"
       - "services/windows-coordinator-job/**"
       - "services/windows-coordinator-root-provisioner/**"
+      - "services/windows-coordinator-selection-provisioner/**"
       - "installers/windows-coordinator/**"
       - "scripts/*WindowsCoordinator*.ps1"
       - "scripts/*windows-coordinator*.ts"
@@ -255,6 +256,8 @@ jobs:
           tests/windows-coordinator/admission-store.spec.ts
           tests/store/sqlite/coordination-store.spec.ts
           tests/store/sqlite/workspace-lifecycle-store.spec.ts
+      - name: Verify inactive Windows coordinator selection publication model
+        run: npx --no-install vitest run services/windows-coordinator-selection-provisioner/synthetic-publication.spec.ts
       - name: Qualify native Windows coordinator console peer probe
         shell: pwsh
         run: ./services/windows-coordinator-host/verify.ps1
