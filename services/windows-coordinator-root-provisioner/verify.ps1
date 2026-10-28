@@ -15,6 +15,7 @@ function Source-Hashes {
     $hashes = [ordered]@{}
     foreach ($name in @('.gitignore', 'global.json',
             'LexRunner.WindowsCoordinator.RootProvisioner.csproj', 'Program.cs',
+            'ProtectedRootPlan.cs',
             'VerifierBoundedProcess.cs', 'verify.ps1', 'verify-portable.ps1',
             'README.md', 'PORTABLE_SOURCE.md')) {
         $path = Join-Path $sourceRoot $name
@@ -237,6 +238,12 @@ try {
     $normal = Step 'normal-fixture-refused' $repo $normalImage @('--fixture', $runNonce) @(3) 30000
     Require ($normal.stderr.Trim() -ceq 'protected_provisioning_unavailable' -and
         $normal.stdout.Length -eq 0) 'Normal image exposed fixture route'
+    $normalProfile = Step 'normal-profile-refused' $repo $normalImage @('--profile-selftest') @(3) 30000
+    Require ($normalProfile.stderr.Trim() -ceq 'protected_provisioning_unavailable' -and
+        $normalProfile.stdout.Length -eq 0) 'Normal image exposed profile fixture route'
+    $normalVolume = Step 'normal-volume-refused' $repo $normalImage @('--host-volume-selftest') @(3) 30000
+    Require ($normalVolume.stderr.Trim() -ceq 'protected_provisioning_unavailable' -and
+        $normalVolume.stdout.Length -eq 0) 'Normal image exposed volume fixture route'
     $fixtureProps = @("-p:BaseIntermediateOutputPath=$fixtureObj\",
         "-p:MSBuildProjectExtensionsPath=$fixtureObj\", "-p:BaseOutputPath=$fixtureBin\",
         "-p:OutputPath=$fixtureBin\")
@@ -248,6 +255,14 @@ try {
     $fixtureImage = Join-Path $fixtureImageDir $imageName
     $fixtureSha = Sha $fixtureImage
     Require ($fixtureSha -cne $normalSha) 'Fixture and normal image bytes match'
+    $profile = Step 'protected-profile-source' $repo $fixtureImage @('--profile-selftest') @(0) 30000
+    Require ($profile.stdout.Trim() -ceq 'protected_root_profile_source_pass' -and
+        $profile.stderr.Length -eq 0) 'Protected root profile source check failed'
+    if (-not $PreEffectOnly) {
+        $volume = Step 'held-volume-source' $repo $fixtureImage @('--host-volume-selftest') @(0) 30000
+        Require ($volume.stdout.Trim() -cmatch '\Aprotected_volume_source_pass:(NTFS|ReFS):(NTFS|ReFS)\z' -and
+            $volume.stderr.Length -eq 0) 'Held supported C:/D: volume profile check failed'
+    }
     $invalid = Step 'fixture-invalid-nonce-refused' $repo $fixtureImage @('--fixture', ($runNonce + "`n")) @(3) 30000
     Require ($invalid.stderr.Trim() -ceq 'protected_provisioning_unavailable' -and
         $invalid.stdout.Length -eq 0) 'Fixture accepted trailing-LF nonce'
