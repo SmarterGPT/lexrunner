@@ -24,6 +24,7 @@ on:
       - "services/windows-coordinator-root-provisioner/**"
       - "services/windows-coordinator-selection-provisioner/**"
       - "services/windows-coordinator-selection-publisher/**"
+      - "services/windows-coordinator-selection-custody/**"
       - "installers/windows-coordinator/**"
       - "scripts/*WindowsCoordinator*.ps1"
       - "scripts/*windows-coordinator*.ts"
@@ -288,6 +289,9 @@ jobs:
       - name: Qualify inactive Windows coordinator selection publisher source
         shell: pwsh
         run: ./services/windows-coordinator-selection-publisher/verify.ps1
+      - name: Qualify inactive Windows coordinator selection custody source
+        shell: pwsh
+        run: ./services/windows-coordinator-selection-custody/verify.ps1
       - name: Qualify inactive graph-selected Windows Git source build
         shell: pwsh
         run: ./services/windows-coordinator-git/verify-portable.ps1
@@ -329,6 +333,7 @@ jobs:
             artifacts/windows-coordinator-service-source/verification-receipt.json
             artifacts/windows-coordinator-root-provisioner/run-*/verification-receipt.json
             artifacts/windows-selection-publisher-*/verification-receipt.json
+            artifacts/windows-selection-custody-*/verification-receipt.json
             artifacts/windows-coordinator-git-portable/receipt-*.json
             artifacts/windows-coordinator-checkout-portable/receipt-*.json
           if-no-files-found: warn

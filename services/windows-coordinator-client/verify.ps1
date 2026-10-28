@@ -99,7 +99,14 @@ try {
     $projectRoot 0
   $status = $statusText.Trim() | ConvertFrom-Json
   if ($status.state -ne 'helper_missing' -or
-      $status.reason -notin @('service_missing', 'service_unavailable', 'selection_unavailable')) {
+      $status.reason -notin @('service_missing', 'service_unavailable',
+          'publisher_unavailable', 'unsupported_host',
+          'registry_unavailable', 'registry_link', 'owner_or_dacl_mismatch',
+          'shape_mismatch', 'selection_unavailable', 'selection_invalid',
+          'high_water_invalid', 'high_water_mismatch', 'catalog_mismatch',
+          'generation_unqualified', 'selection_changed',
+          'registry_structural_match_only') -or
+      ((@($status.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'reason,state')) {
     throw 'Ordinary status did not retain helper_missing.'
   }
   $excludedText = Invoke-CheckedStep 'fixture_excluded' $normalImage @('--selftest') `
@@ -121,7 +128,7 @@ try {
   $testCount = $test.results.Count
   if ($test.state -ne 'pass' -or
       $test.profile -ne 'synthetic_same_user_non_authorizing' -or
-      $test.failures.Count -ne 0 -or $test.results.Count -ne 26 -or
+      $test.failures.Count -ne 0 -or $test.results.Count -ne 29 -or
       @($test.results | Where-Object { -not $_.passed }).Count -ne 0) {
     throw 'Native fixture tests did not all pass.'
   }
@@ -145,11 +152,17 @@ finally {
       'global.json', 'Program.cs', 'NativeClient.cs', 'FixtureTests.cs',
       'CoordinatorSelection.cs', 'CoordinatorSources.cs',
       'CoordinatorAcquisition.cs', 'CoordinatorSelectionFixtureTests.cs',
+      'CoordinatorV2RegistryObservation.cs', 'CoordinatorV2RegistryFixtureTests.cs',
       'README.md', 'verify.ps1')) {
     $path = Join-Path $projectRoot $name
     if (Test-Path -LiteralPath $path) {
       $sources[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+  }
+  foreach ($name in @('CustodyContract.cs', 'NativeRegistryReader.cs')) {
+    $path = Join-Path $repoRoot "services/windows-coordinator-selection-custody/$name"
+    $sources["selection-custody/$name"] =
+      (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
   }
   foreach ($name in @('package.json', 'scripts/validate-package-boundary.ts')) {
     $path = Join-Path $repoRoot $name

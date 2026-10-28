@@ -13,4 +13,8 @@
   <PropertyGroup Condition="'$(CoordinatorClientFixtureTests)' == 'true'">
     <DefineConstants>$(DefineConstants);COORDINATOR_CLIENT_FIXTURE_TESTS</DefineConstants>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\windows-coordinator-selection-custody\CustodyContract.cs" Link="SelectionCustody\CustodyContract.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\NativeRegistryReader.cs" Link="SelectionCustody\NativeRegistryReader.cs" />
+  </ItemGroup>
 </Project>
