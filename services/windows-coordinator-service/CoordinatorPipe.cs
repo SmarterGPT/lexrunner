@@ -3,7 +3,6 @@ using System.ComponentModel;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 
 internal static class CoordinatorPipe
@@ -92,7 +91,7 @@ internal static class CoordinatorPipe
                     // The last pipe read fixes the peer token for this
                     // synchronous observation. Never await or perform an
                     // effect while carrying the client token.
-                    _ = ReadPeerSidAndRevert(pipe.SafePipeHandle);
+                    _ = ObservedPipePeer.Observe(pipe.SafePipeHandle);
 
                     var parsed = CoordinatorProtocol.ParseStatusOnly(payload);
                     if (parsed.Request is { } request)
@@ -125,25 +124,6 @@ internal static class CoordinatorPipe
         }
     }
 
-    [SupportedOSPlatform("windows")]
-    private static string ReadPeerSidAndRevert(SafePipeHandle handle)
-    {
-        if (!ImpersonateNamedPipeClient(handle))
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-        try
-        {
-            return WindowsIdentity.GetCurrent().User?.Value ??
-                throw new InvalidOperationException("peer_sid_unavailable");
-        }
-        finally
-        {
-            // A failed revert leaves this service thread carrying client
-            // identity. Terminate the process rather than continue.
-            if (!RevertToSelf())
-                Environment.FailFast("Named-pipe client impersonation did not revert");
-        }
-    }
-
     [StructLayout(LayoutKind.Sequential)]
     private struct SecurityAttributes
     {
@@ -162,12 +142,6 @@ internal static class CoordinatorPipe
     private static extern SafePipeHandle CreateNamedPipe(string name, uint openMode, uint pipeMode,
         int maxInstances, int outBufferSize, int inBufferSize, int defaultTimeout,
         ref SecurityAttributes securityAttributes);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern bool ImpersonateNamedPipeClient(SafePipeHandle handle);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern bool RevertToSelf();
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr LocalFree(IntPtr memory);

@@ -40,6 +40,14 @@ internal static class Program
             Console.WriteLine(passed ? "lifecycle_selftest_pass" : "lifecycle_selftest_fail");
             return passed ? 0 : 1;
         }
+        if (OperatingSystem.IsWindows() && args.Length == 1 && args[0] == "--private-launch-selftest")
+        {
+            var passed = PrivateLaunchFixture.SelfTest();
+            Console.WriteLine(passed ? "private_launch_selftest_pass" : "private_launch_selftest_fail");
+            return passed ? 0 : 1;
+        }
+        if (OperatingSystem.IsWindows() && args.Length == 2 && args[0] == "--private-child-fixture")
+            return PrivateLaunchFixture.Child(args[1]);
 #endif
         if (!OperatingSystem.IsWindows() || args.Length != 1 || args[0] != "--service")
         {
