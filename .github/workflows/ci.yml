@@ -280,6 +280,9 @@ jobs:
       - name: Qualify fail-closed Windows coordinator service source
         shell: pwsh
         run: ./services/windows-coordinator-service/verify.ps1
+      - name: Qualify inactive graph-selected Windows Git source build
+        shell: pwsh
+        run: ./services/windows-coordinator-git/verify-portable.ps1
       - name: Run native Windows handle-authority proof
         shell: pwsh
         run: ./proofs/windows-workspace-boundary/verify.ps1
@@ -313,6 +316,7 @@ jobs:
             artifacts/windows-coordinator-host-probe/verification-receipt.json
             artifacts/windows-coordinator-client/verification-receipt.json
             artifacts/windows-coordinator-service-source/verification-receipt.json
+            artifacts/windows-coordinator-git-portable/receipt-*.json
           if-no-files-found: warn
 
   # Full manual-only determinism and license gate.
