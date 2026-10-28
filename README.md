@@ -157,7 +157,7 @@ supported assisted behavior, and deferred guarantees.
 - **Assisted agent work:** run `attempt preflight` before packet construction. A native Windows
   `windows_native_boundary_unavailable` / `broker_required` result has no supported
   installation/configuration fix in this release; optional helper installation alone
-  does not enable it. Use the [external-worker workflow](docs/workflows/external-workers.md)
+  does not enable it. Use the [external-worker workflow](https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md)
   for planning, external implementation/integration and repository-bound verification.
   If an explicit Windows-to-WSL projection is already authorized and configured,
   use `attempt projection status|prepare` to bind the exact committed base into

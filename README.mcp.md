@@ -90,7 +90,7 @@ For long-running gate idempotency, cooperative cancellation, reconnects, and unk
 recovery, see [durable gate operations](docs/gates.md#long-running-operations-and-reconnects).
 
 If Attempt execution is unavailable, follow the supported
-[external-worker planning/integration/verification workflow](docs/workflows/external-workers.md).
+[external-worker planning/integration/verification workflow](https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md).
 Native Windows `broker_required` is not an instruction to install an unqualified
 helper or automatically switch to WSL; this release has no supported native Attempt
 activation procedure.

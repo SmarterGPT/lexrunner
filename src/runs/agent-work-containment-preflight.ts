@@ -321,8 +321,10 @@ function capabilityResult(input: {
               "This release has no supported installation or configuration procedure for native Windows Attempt execution. " +
               "Optional helper installation alone does not enable the production boundary. " +
               "Keep the containment refusal; external workers can use the separate planning and verification workflow.",
-            documentation: "docs/architecture/windows-production-activation.md",
-            alternativeWorkflow: "docs/workflows/external-workers.md",
+            documentation:
+              "https://github.com/SmarterGPT/lexrunner/blob/main/docs/architecture/windows-production-activation.md",
+            alternativeWorkflow:
+              "https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md",
           },
         }
       : {}),

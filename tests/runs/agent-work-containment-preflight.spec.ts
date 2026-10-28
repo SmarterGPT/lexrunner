@@ -132,8 +132,10 @@ describe("AgentWorkContainmentCapabilityService", () => {
         status: "production_integration_pending",
         setupProcedure: "unavailable_in_this_release",
         message: expect.stringContaining("Optional helper installation alone does not enable"),
-        documentation: "docs/architecture/windows-production-activation.md",
-        alternativeWorkflow: "docs/workflows/external-workers.md",
+        documentation:
+          "https://github.com/SmarterGPT/lexrunner/blob/main/docs/architecture/windows-production-activation.md",
+        alternativeWorkflow:
+          "https://github.com/SmarterGPT/lexrunner/blob/main/docs/workflows/external-workers.md",
       },
     });
     expect(pathProbe).not.toHaveBeenCalled();
