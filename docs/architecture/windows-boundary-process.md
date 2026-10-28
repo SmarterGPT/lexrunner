@@ -1,5 +1,56 @@
 # Native bound process execution
 
+## Windows namespace qualification in progress
+
+The next process-binding prototype selected the OS global DOS-device directory for
+an owned suspended child. Its paired private-map fixture exposed a blocker: the
+long-lived helper's own map was changed to global during launch, and selecting a
+previously opened `\\??` directory handle afterward did not restore the caller's
+anonymous private map. The fake `cmd.exe` that resolved before launch stopped
+resolving afterward. This implementation was removed from source and retained
+only as a development artifact; it is not a qualified process launch path.
+
+The next candidate must launch through a short-lived owned process whose device
+map can be selected before it runs, without modifying the long-lived helper's map.
+It must verify the actual suspended image, establish a protected loader and cwd,
+and contain the launch process and descendants. Selecting a child map alone does
+not bind a cwd resolved during process creation or protect absolute argument
+paths from filesystem reparse changes. The retained no-write-sharing and directory
+oplock probes both allowed attribute-only junction attachment on NTFS and ReFS.
+An owned suspended-child control now shows that `QueryFullProcessImageNameW` with
+native-name output distinguishes the real system `cmd.exe` from a private-map
+redirection to a copied canary on both filesystems, before either image is
+resumed. It terminates and observes each child, then confirms the probe restored
+its own map. This supports a future image check; a path readback alone has not
+qualified image immutability, protected loading, cwd, or the launch worker.
+The same fixture selected the global map on a suspended copied canary after
+CreateProcess had accepted a private-map-only cwd. On both NTFS and ReFS, its
+relative file read then failed because that cwd no longer resolved under the
+child's selected map. A future launch worker therefore needs a cwd established
+in its final namespace before it starts the actual command; setting the child
+map after a path-based CreateProcess call is not sufficient.
+An owned two-process control shows the narrower viable ordering: create a
+short-lived copied canary suspended, select its global child map, resume it,
+then have that canary start a second known canary with its cwd under the final
+global map. The second canary read the intended file on both NTFS and ReFS.
+The test launch canary is assigned to an owned kill-on-close Job before resume.
+An injected outer failure after a grandchild writes its PID retains an actual
+process handle and observes that grandchild exit after job termination. This
+closes the fixture's orphan window; it does not authenticate or package a
+product worker, prove a protected loader, establish production nested Job
+ownership, or protect workspace paths against reparse mutation. It is a
+process-binding experiment, not a production execution claim.
+
+A separate owned native probe found that `FSCTL_SET_REPARSE_POINT` refuses a
+nonempty directory on NTFS and ReFS while preserving its contents. This is a
+candidate anchor, not a complete protection claim: rename/delete, crash cleanup
+and all supported filesystem versions remain to be tested. Git 2.50.1 rejected a
+nonempty target for `worktree add` in owned NTFS and ReFS fixtures, including
+`--force` and `--no-checkout` variants (all six attempts exited 128), so a
+persistent anchor also requires a reviewed creation transition that does not
+temporarily remove it. Production discovery remains unavailable throughout this
+qualification.
+
 The development session now accepts `process_request` / `run-process`. It runs
 an explicit absolute .exe through CreateProcessW without a shell. The cwd is a
 live directory token; arguments are literal strings or live directory tokens with

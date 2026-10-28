@@ -71,17 +71,25 @@ try {
         $HelperExecutable = Join-Path $artifacts 'helper\lexrunner-windows-boundary-helper.exe'
     }
     Invoke-Recorded 'publish-fault-probe' 'dotnet.exe' @('publish', 'tests/RemovalSessionProbe/RemovalSessionProbe.csproj', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', (Join-Path $artifacts 'fault-probe')) $proofRoot
+    Invoke-Recorded 'publish-process-canary' 'dotnet.exe' @('publish', 'tests/NativeProcessCanary/NativeProcessCanary.csproj', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', (Join-Path $artifacts 'process-canary')) $proofRoot
     Invoke-Recorded 'build-tree-probe' 'dotnet.exe' @('build', 'tests/RemovalLeaseProbe/RemovalLeaseProbe.csproj', '-c', 'Release', '--nologo') $proofRoot
     $treeProbe = Join-Path $proofRoot 'tests\RemovalLeaseProbe\bin\Release\net8.0\RemovalLeaseProbe.exe'
-    Invoke-Recorded 'tree-probe' $treeProbe @($fixtureRoot, $GitExecutable) $proofRoot
+    $processCanary = Join-Path $artifacts 'process-canary\lexrunner-native-process-canary.exe'
+    Invoke-Recorded 'tree-probe' $treeProbe @($fixtureRoot, $GitExecutable, $processCanary) $proofRoot
     $treeResult = Get-Content -LiteralPath (Join-Path $artifacts 'tree-probe.log') -Raw | ConvertFrom-Json
     $requiredObservation = @('git-observation-weakened-clean-swap', 'git-observation-guarded-dirty-preserved')
-    if ($treeResult.filesystem -ne $filesystem -or @($treeResult.passed).Count -lt 35 -or
+    $requiredProcess = @('capability-nonempty-directory-reparse-refusal', 'process-suspended-image-readback', 'process-child-map-cwd-mismatch', 'process-final-map-worker-cwd', 'process-worker-failure-drains-descendant')
+    if ($treeResult.filesystem -ne $filesystem -or @($treeResult.passed).Count -lt 40 -or
         @($requiredObservation | Where-Object { $_ -notin $treeResult.passed }).Count -ne 0) {
         throw 'Git observation guard controls did not complete on the selected filesystem'
     }
+    if (@($requiredProcess | Where-Object { $_ -notin $treeResult.passed }).Count -ne 0) {
+        throw 'Process binding qualification controls did not complete on the selected filesystem'
+    }
     $receipt.treeProbeCases = @($treeResult.passed).Count
     $receipt.gitObservationControls = $requiredObservation
+    $receipt.processBindingControls = $requiredProcess
+    $receipt.processCanarySha256 = (Get-FileHash -LiteralPath $processCanary -Algorithm SHA256).Hash.ToLowerInvariant()
     $env:LEXRUNNER_TEST_NATIVE_HELPER = $HelperExecutable
     $env:LEXRUNNER_TEST_REMOVAL_FAULT_HELPER = Join-Path $artifacts 'fault-probe\lexrunner-windows-removal-session-probe.exe'
     $env:LEXRUNNER_TEST_GIT_EXE = $GitExecutable
