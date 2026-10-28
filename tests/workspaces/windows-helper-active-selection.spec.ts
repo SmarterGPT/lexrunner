@@ -9,7 +9,8 @@ import {
 const generation = "a".repeat(64);
 const sourceRevision = "b".repeat(40);
 const otherRevision = "c".repeat(40);
-const productCode = "{C60E00FC-77ED-528D-8822-528CEF18D1C6}";
+// Independently calculated with the MSI builder's .NET Guid(byte[]) recipe.
+const productCode = "{B4631CCA-77F3-5A51-8812-ADBCBB8296D1}";
 
 function canonical(value: unknown): string {
   const sort = (item: unknown): unknown => {
@@ -198,6 +199,12 @@ describe("supplied Windows helper ActiveSelection consistency", () => {
         catalog: { ...input.catalog, State: "provisioned-unqualified" },
       })
     ).toMatchObject({ reason: "catalog_mismatch" });
+    expect(
+      assessWindowsHelperSelectionConsistency({
+        ...input,
+        catalog: { ...input.catalog, ProductCode: "{C60E00FC-77ED-528D-8822-528CEF18D1C6}" },
+      })
+    ).toMatchObject({ reason: "catalog_mismatch", authorizesLaunch: false });
     expect(
       assessWindowsHelperSelectionConsistency({ ...input, installationMarkerBytes: null })
     ).toMatchObject({ reason: "installation_marker_absent" });

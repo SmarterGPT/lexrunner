@@ -16,7 +16,8 @@ refused. Registry transport and protected acquisition remain separate work.
 `assessWindowsHelperSelectionConsistency` compares only supplied selection content,
 exact manifest bytes, a generation catalog object, and exact `installed.json`
 marker bytes. It checks the manifest digest, generation identity, source and
-protocol agreement, and matching `qualified`/`productionReady` claims. The marker
+protocol agreement, the catalog ProductCode derived by the MSI builder from the
+generation digest, and matching `qualified`/`productionReady` claims. The marker
 must be present; retained generation files and catalog alone cannot match after
 uninstall. Manifest and marker JSON may contain cosmetic whitespace, but duplicate
 keys and ambiguous encodings are refused. Every result has

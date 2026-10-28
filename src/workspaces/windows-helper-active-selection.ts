@@ -64,6 +64,24 @@ const GenerationCatalog = z.strictObject({
   ProductCode: z.string().regex(/^\{[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}\}$/u),
 });
 
+// Mirror installers/windows-helper/Program.cs GuidFor("product:" + generation).
+// The .NET Guid(byte[]) constructor renders its first 4+2+2 bytes in reverse
+// order, unlike a direct hex rendering of the digest bytes.
+function productCodeForGeneration(generation: string): string {
+  const bytes = createHash("sha256")
+    .update(`lexrunner-msi/1:product:${generation}`, "utf8")
+    .digest()
+    .subarray(0, 16);
+  bytes[7] = (bytes[7]! & 15) | 0x50;
+  bytes[8] = (bytes[8]! & 63) | 0x80;
+  const part = (...indices: number[]) =>
+    indices
+      .map((index) => bytes[index]!.toString(16).padStart(2, "0"))
+      .join("")
+      .toUpperCase();
+  return `{${part(3, 2, 1, 0)}-${part(5, 4)}-${part(7, 6)}-${part(8, 9)}-${part(10, 11, 12, 13, 14, 15)}}`;
+}
+
 const InstallationMarker = z.strictObject({
   schemaVersion: z.literal("windows-helper-installation/1"),
   generationId: sha256,
@@ -205,7 +223,11 @@ export function assessWindowsHelperSelectionConsistency(input: {
     return stop("generation_unqualified");
   const catalog = GenerationCatalog.safeParse(input.catalog);
   if (!catalog.success) return stop("catalog_invalid");
-  if (catalog.data.ManifestDigest !== digest || catalog.data.State !== manifest.state)
+  if (
+    catalog.data.ManifestDigest !== digest ||
+    catalog.data.State !== manifest.state ||
+    catalog.data.ProductCode !== productCodeForGeneration(selection.generationId)
+  )
     return stop("catalog_mismatch");
   if (input.installationMarkerBytes === null) return stop("installation_marker_absent");
   let marker: z.infer<typeof InstallationMarker>;
