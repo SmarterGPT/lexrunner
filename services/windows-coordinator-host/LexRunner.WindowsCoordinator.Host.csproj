@@ -10,4 +10,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+  <!-- Source fixture only. The normal image excludes the admission bridge. -->
+  <PropertyGroup Condition="'$(CoordinatorAdmissionBridgeTests)' == 'true'">
+    <DefineConstants>$(DefineConstants);COORDINATOR_ADMISSION_BRIDGE_TESTS</DefineConstants>
+  </PropertyGroup>
 </Project>

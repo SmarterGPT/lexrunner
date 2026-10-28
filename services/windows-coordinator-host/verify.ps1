@@ -9,19 +9,37 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '..\..'))
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'artifacts\windows-coordinator-host-probe'))
 $publishRoot = Join-Path $artifactRoot 'publish'
 $image = Join-Path $publishRoot 'lexrunner-windows-coordinator-host.exe'
+$bridgePublishRoot = Join-Path $artifactRoot 'bridge-publish'
+$bridgeImage = Join-Path $bridgePublishRoot 'lexrunner-windows-coordinator-host.exe'
+$nodeArtifactRoot = Join-Path $artifactRoot 'node'
+$workerImage = Join-Path $nodeArtifactRoot 'private-admission-worker.mjs'
 $receiptPath = Join-Path $artifactRoot 'verification-receipt.json'
 $oldOS = $env:OS
 $oldWindir = $env:WINDIR
 $oldImage = $env:LEXRUNNER_TEST_COORDINATOR_HOST
+$oldBridgeImage = $env:LEXRUNNER_TEST_COORDINATOR_BRIDGE_HOST
+$oldNodeImage = $env:LEXRUNNER_TEST_COORDINATOR_NODE
+$oldWorkerImage = $env:LEXRUNNER_TEST_COORDINATOR_WORKER
+$oldFixtureRoot = $env:LEXRUNNER_TEST_COORDINATOR_ROOT
+$oldFixtureVolume = $env:LEXRUNNER_TEST_COORDINATOR_VOLUME
 $sourceHead = $null
 $sourceDirty = $null
 $sourceSnapshot = $null
 $sourceUnchanged = $null
 $ciWorkflowSha256 = $null
 $publishResult = $null
+$bridgePublishResult = $null
+$workerTypecheckResult = $null
+$workerBuildResult = $null
 $testResult = $null
+$packageResult = $null
 $imageSha256 = $null
 $imageBytes = $null
+$bridgeImageSha256 = $null
+$bridgeImageBytes = $null
+$workerSha256 = $null
+$workerBytes = $null
+$fixtureVolume = $null
 $failure = $null
 $started = [Diagnostics.Stopwatch]::StartNew()
 
@@ -128,16 +146,27 @@ function Get-SourceSnapshot {
   $paths = @(
     'services/windows-coordinator-host/.gitignore',
     'services/windows-coordinator-host/LexRunner.WindowsCoordinator.Host.csproj',
+    'services/windows-coordinator-host/PrivateNodeChild.cs',
     'services/windows-coordinator-host/Program.cs',
     'services/windows-coordinator-host/README.md',
     'services/windows-coordinator-host/global.json',
+    'services/windows-coordinator-host/node/private-admission-worker.ts',
     'services/windows-coordinator-host/verify.ps1',
+    'package.json',
+    'scripts/validate-package-boundary.ts',
     'src/schemas/agent-work.ts',
     'src/util/canonicalJson.ts',
+    'src/windows-coordinator/admission-contract.ts',
     'src/windows-coordinator/client-protocol.ts',
     'src/windows-coordinator/deny-first-dispatcher.ts',
+    'src/windows-coordinator/private-admission-bridge.ts',
+    'src/windows-coordinator/private-peer-protocol.ts',
+    'src/windows-coordinator/sqlite-admission-store.ts',
     'tests/windows-coordinator/client-protocol.spec.ts',
-    'tests/windows-coordinator/native-peer-probe.spec.ts'
+    'tests/windows-coordinator/native-peer-probe.spec.ts',
+    'tests/windows-coordinator/native-private-admission.spec.ts',
+    'tests/windows-coordinator/private-admission-bridge.spec.ts',
+    'tsup.config.ts'
   )
   $files = @()
   $digestInput = [Text.StringBuilder]::new()
@@ -211,8 +240,12 @@ try {
   Assert-ExactArtifactDirectory (Join-Path $repoRoot 'artifacts')
   Assert-ExactArtifactDirectory $artifactRoot
   Assert-ExactArtifactDirectory $publishRoot
+  Assert-ExactArtifactDirectory $bridgePublishRoot
+  Assert-ExactArtifactDirectory $nodeArtifactRoot
   # An earlier successful image or receipt must never stand in for this run.
   Clear-ExactArtifactFile $image $publishRoot
+  Clear-ExactArtifactFile $bridgeImage $bridgePublishRoot
+  Clear-ExactArtifactFile $workerImage $nodeArtifactRoot
   Clear-ExactArtifactFile $receiptPath $artifactRoot
 
   $publishResult = Invoke-BoundedNative 'dotnet' @(
@@ -228,12 +261,62 @@ try {
   $imageSha256 = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
   $imageBytes = $item.Length
 
+  $bridgePublishResult = Invoke-BoundedNative 'dotnet' @(
+    'publish', '.\LexRunner.WindowsCoordinator.Host.csproj', '-c', 'Release',
+    '-r', 'win-x64', '--nologo', '-p:NuGetAudit=false',
+    '-p:CoordinatorAdmissionBridgeTests=true', '-o', $bridgePublishRoot
+  ) $projectRoot
+  if ($bridgePublishResult.exit_code -ne 0) { throw "NativeAOT bridge publish failed ($($bridgePublishResult.exit_code))." }
+  if (-not (Test-Path -LiteralPath $bridgeImage -PathType Leaf)) { throw 'NativeAOT bridge image was not produced.' }
+  $bridgeItem = Get-Item -LiteralPath $bridgeImage -Force
+  if (($bridgeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'NativeAOT bridge image is a reparse point.'
+  }
+  $bridgeImageSha256 = (Get-FileHash -LiteralPath $bridgeImage -Algorithm SHA256).Hash.ToLowerInvariant()
+  $bridgeImageBytes = $bridgeItem.Length
+
+  # The root tsconfig excludes this service fixture; check its source directly.
+  $workerTypecheckResult = Invoke-BoundedNative 'npx' @(
+    '--no-install', 'tsc', '--ignoreConfig', '--noEmit', '--target', 'ES2022',
+    '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--types', 'node',
+    '--skipLibCheck', 'services/windows-coordinator-host/node/private-admission-worker.ts'
+  ) $repoRoot
+  if ($workerTypecheckResult.exit_code -ne 0) { throw "Private Node worker typecheck failed ($($workerTypecheckResult.exit_code))." }
+
+  $workerBuildResult = Invoke-BoundedNative 'npx' @(
+    '--no-install', 'esbuild', 'services/windows-coordinator-host/node/private-admission-worker.ts',
+    '--bundle', '--platform=node', '--target=node24', '--format=esm', '--packages=external',
+    "--outfile=$workerImage"
+  ) $repoRoot
+  if ($workerBuildResult.exit_code -ne 0) { throw "Private Node worker bundle failed ($($workerBuildResult.exit_code))." }
+  if (-not (Test-Path -LiteralPath $workerImage -PathType Leaf)) { throw 'Private Node worker was not produced.' }
+  $workerItem = Get-Item -LiteralPath $workerImage -Force
+  if (($workerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'Private Node worker is a reparse point.'
+  }
+  $workerSha256 = (Get-FileHash -LiteralPath $workerImage -Algorithm SHA256).Hash.ToLowerInvariant()
+  $workerBytes = $workerItem.Length
+
   $env:LEXRUNNER_TEST_COORDINATOR_HOST = $image
+  $env:LEXRUNNER_TEST_COORDINATOR_BRIDGE_HOST = $bridgeImage
+  $env:LEXRUNNER_TEST_COORDINATOR_NODE = (Get-Command node.exe -ErrorAction Stop).Source
+  $env:LEXRUNNER_TEST_COORDINATOR_WORKER = $workerImage
+  $env:LEXRUNNER_TEST_COORDINATOR_ROOT = $artifactRoot
+  $fixtureVolume = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($artifactRoot)).DriveFormat
+  if ($fixtureVolume -notin @('NTFS', 'ReFS')) {
+    throw 'Private fixture requires NTFS or ReFS.'
+  }
+  $env:LEXRUNNER_TEST_COORDINATOR_VOLUME = $fixtureVolume
   $testResult = Invoke-BoundedNative 'npx' @(
     '--no-install', 'vitest', 'run', 'tests/windows-coordinator/client-protocol.spec.ts',
-    'tests/windows-coordinator/native-peer-probe.spec.ts'
+    'tests/windows-coordinator/native-peer-probe.spec.ts',
+    'tests/windows-coordinator/native-private-admission.spec.ts',
+    'tests/windows-coordinator/private-admission-bridge.spec.ts'
   ) $repoRoot
   if ($testResult.exit_code -ne 0) { throw "Focused console-probe tests failed ($($testResult.exit_code))." }
+
+  $packageResult = Invoke-BoundedNative 'npm' @('run', 'validate:package') $repoRoot
+  if ($packageResult.exit_code -ne 0) { throw "Package boundary validation failed ($($packageResult.exit_code))." }
   $sourceUnchanged = ((Get-SourceSnapshot).candidate_sha256 -eq $sourceSnapshot.candidate_sha256)
   if (-not $sourceUnchanged) { throw 'Probe source changed during verification.' }
 }
@@ -245,6 +328,8 @@ finally {
     Remove-CheckedBuildDirectory 'bin'
     Remove-CheckedBuildDirectory 'obj'
     if ($failure -and -not $imageSha256) { Clear-ExactArtifactFile $image $publishRoot }
+    if ($failure -and -not $bridgeImageSha256) { Clear-ExactArtifactFile $bridgeImage $bridgePublishRoot }
+    if ($failure -and -not $workerSha256) { Clear-ExactArtifactFile $workerImage $nodeArtifactRoot }
   }
   catch {
     $failure = if ($failure) { "$failure; cleanup: $($_.Exception.Message)" } else { "cleanup: $($_.Exception.Message)" }
@@ -252,6 +337,11 @@ finally {
   if ($null -eq $oldOS) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $oldOS }
   if ($null -eq $oldWindir) { Remove-Item Env:WINDIR -ErrorAction SilentlyContinue } else { $env:WINDIR = $oldWindir }
   if ($null -eq $oldImage) { Remove-Item Env:LEXRUNNER_TEST_COORDINATOR_HOST -ErrorAction SilentlyContinue } else { $env:LEXRUNNER_TEST_COORDINATOR_HOST = $oldImage }
+  if ($null -eq $oldBridgeImage) { Remove-Item Env:LEXRUNNER_TEST_COORDINATOR_BRIDGE_HOST -ErrorAction SilentlyContinue } else { $env:LEXRUNNER_TEST_COORDINATOR_BRIDGE_HOST = $oldBridgeImage }
+  if ($null -eq $oldNodeImage) { Remove-Item Env:LEXRUNNER_TEST_COORDINATOR_NODE -ErrorAction SilentlyContinue } else { $env:LEXRUNNER_TEST_COORDINATOR_NODE = $oldNodeImage }
+  if ($null -eq $oldWorkerImage) { Remove-Item Env:LEXRUNNER_TEST_COORDINATOR_WORKER -ErrorAction SilentlyContinue } else { $env:LEXRUNNER_TEST_COORDINATOR_WORKER = $oldWorkerImage }
+  if ($null -eq $oldFixtureRoot) { Remove-Item Env:LEXRUNNER_TEST_COORDINATOR_ROOT -ErrorAction SilentlyContinue } else { $env:LEXRUNNER_TEST_COORDINATOR_ROOT = $oldFixtureRoot }
+  if ($null -eq $oldFixtureVolume) { Remove-Item Env:LEXRUNNER_TEST_COORDINATOR_VOLUME -ErrorAction SilentlyContinue } else { $env:LEXRUNNER_TEST_COORDINATOR_VOLUME = $oldFixtureVolume }
 }
 
 $started.Stop()
@@ -271,13 +361,30 @@ $receipt = [ordered]@{
     build_input = $false
   }
   project = $projectRoot
+  fixture_volume = $fixtureVolume
   publish = $publishResult
+  bridge_publish = $bridgePublishResult
+  worker_typecheck = $workerTypecheckResult
+  worker_build = $workerBuildResult
   tests = $testResult
+  package_boundary = $packageResult
   image = [ordered]@{
     path = $image
     sha256 = $imageSha256
     bytes = $imageBytes
     retained = (Test-Path -LiteralPath $image -PathType Leaf)
+  }
+  bridge_image = [ordered]@{
+    path = $bridgeImage
+    sha256 = $bridgeImageSha256
+    bytes = $bridgeImageBytes
+    retained = (Test-Path -LiteralPath $bridgeImage -PathType Leaf)
+  }
+  private_worker = [ordered]@{
+    path = $workerImage
+    sha256 = $workerSha256
+    bytes = $workerBytes
+    retained = (Test-Path -LiteralPath $workerImage -PathType Leaf)
   }
   cleanup_bin_absent = -not (Test-Path -LiteralPath (Join-Path $projectRoot 'bin'))
   cleanup_obj_absent = -not (Test-Path -LiteralPath (Join-Path $projectRoot 'obj'))

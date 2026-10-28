@@ -1,4 +1,4 @@
-# Windows coordinator console peer probe
+# Windows coordinator console fixtures
 
 This is a **source-only, console-mode test fixture**. It is not an SCM service,
 installed coordinator, admission issuer, protected selection, or execution path.
@@ -16,10 +16,20 @@ client SID, then calls `RevertToSelf`. It returns only a framed
 One deadline covers connection, reads, and reply. Missing, malformed, oversized,
 disconnected, and squatted endpoints never proceed to any effect.
 
-Only the canonical ASCII `attempt.status` envelope is recognized and correlated
-with a request ID. `attempt.prepare` returns `invalid_request` in this fixture:
-the protected Node coordinator will own packet validation and admission. The
-expected SID is caller-supplied for this console probe, so a matching SID does
+A separate admission fixture is compiled only with
+`-p:CoordinatorAdmissionBridgeTests=true`. Its `--admission-probe` mode forwards
+the exact bounded `attempt.prepare` frame and the SID observed by native pipe
+impersonation over private inherited standard input. The Node fixture validates
+the canonical frame and records a durable candidate, intent, and event with the
+existing SQLite admission store. It sends only a canonical `no_effect` denial
+to the caller. Replay uses the recorded candidate; every store rejection or
+uncertain child completion closes without asserting `no_effect`. Neither image has an
+execution or worktree effect.
+
+The ordinary image recognizes only the canonical ASCII `attempt.status`
+envelope and correlates it with a request ID. `attempt.prepare` returns
+`invalid_request` in that image. The expected SID is caller-supplied for both
+console probes, so a matching SID does
 **not** prove enrollment, operator intent, selected service identity, or trust in
 the request. The fixture deliberately grants its own user SID pipe access to
 exercise a wrong-expected-SID refusal; a production service must use a separately
@@ -31,6 +41,19 @@ already-present instance when this probe starts; it does not authenticate a
 server that appears later. This DACL must not be reused for a persistent
 protected endpoint. A production client needs minimal specific open rights and
 separate server authentication; this probe does not qualify those controls.
+
+The admission fixture uses a constructed child environment, exact Node and
+worker image hash checks, a fixed argument shape, bounded private frames and
+stderr, a single deadline, and child-tree cleanup. These checks do not establish
+protected image or loader custody. The `esbuild --packages=external` fixture
+worker loads `zod` and
+`better-sqlite3-multiple-ciphers` packages from the repository dependency tree,
+including a native SQLite module. The fixture database, WAL, SHM, context file,
+Node image, and worker are not protected service assets. The host and Node child
+run under the same user, without atomic job assignment or a protected process
+identity. The synthetic reservation context is supplied by the test, not an
+authenticated service. This route must remain compile gated and unavailable in
+the installed helper until those boundaries receive separate qualification.
 
 Build locally on Windows with the pinned .NET 8 SDK:
 
@@ -45,7 +68,8 @@ under `artifacts/`.
 
 For the focused build and live pipe gate, run `pwsh -NoLogo -NoProfile -File
 .\verify.ps1` from this directory. It prints a bounded JSON result with the
-retained executable's SHA-256, exact source/test file hashes and a candidate
-digest, test status and duration, and removes only the
+retained normal and admission-fixture executables' SHA-256 values, bundled
+worker hash, exact source/test file hashes and a candidate digest, test status
+and duration, and removes only the
 project's checked `bin/` and `obj/` directories. The image under `artifacts/`
 is retained for review, without installation or selection.
