@@ -18,6 +18,7 @@ on:
       - "services/windows-coordinator-service/**"
       - "services/windows-coordinator-admission/**"
       - "services/windows-coordinator-git/**"
+      - "services/windows-coordinator-checkout/**"
       - "services/windows-coordinator-installed-readback/**"
       - "services/windows-coordinator-job/**"
       - "services/windows-coordinator-root-provisioner/**"
@@ -281,12 +282,18 @@ jobs:
       - name: Qualify fail-closed Windows coordinator service source
         shell: pwsh
         run: ./services/windows-coordinator-service/verify.ps1
+      - name: Qualify inactive Windows coordinator protected-root source
+        shell: pwsh
+        run: ./services/windows-coordinator-root-provisioner/verify-portable.ps1
       - name: Qualify inactive Windows coordinator selection publisher source
         shell: pwsh
         run: ./services/windows-coordinator-selection-publisher/verify.ps1
       - name: Qualify inactive graph-selected Windows Git source build
         shell: pwsh
         run: ./services/windows-coordinator-git/verify-portable.ps1
+      - name: Qualify inactive Windows coordinator checkout source build
+        shell: pwsh
+        run: ./services/windows-coordinator-checkout/verify-portable.ps1
       - name: Run native Windows handle-authority proof
         shell: pwsh
         run: ./proofs/windows-workspace-boundary/verify.ps1
@@ -320,8 +327,10 @@ jobs:
             artifacts/windows-coordinator-host-probe/verification-receipt.json
             artifacts/windows-coordinator-client/verification-receipt.json
             artifacts/windows-coordinator-service-source/verification-receipt.json
+            artifacts/windows-coordinator-root-provisioner/run-*/verification-receipt.json
             artifacts/windows-selection-publisher-*/verification-receipt.json
             artifacts/windows-coordinator-git-portable/receipt-*.json
+            artifacts/windows-coordinator-checkout-portable/receipt-*.json
           if-no-files-found: warn
 
   # Full manual-only determinism and license gate.
