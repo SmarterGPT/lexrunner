@@ -10,10 +10,17 @@ anonymous private map. The fake `cmd.exe` that resolved before launch stopped
 resolving afterward. This implementation was removed from source and retained
 only as a development artifact; it is not a qualified process launch path.
 
-The next candidate must launch through a short-lived owned process whose device
-map can be selected before it runs, without modifying the long-lived helper's map.
-It must verify the actual suspended image, establish a protected loader and cwd,
-and contain the launch process and descendants. Selecting a child map alone does
+The development process request now launches through a short-lived owned copy of
+the helper whose device map is selected as global before resume, without changing
+the long-lived helper's map. The parent keeps a read-only image handle, checks
+the suspended worker's native image path against that handle, and assigns the
+worker to a kill-on-close Job at creation. A private pipe carries one bounded
+command request and correlated result. The worker re-establishes its own cwd
+after map selection, then uses the existing atomic command Job and returns only
+after descendants drain. This remains a development path: image comparison follows
+a caller-visible path, the loader graph is not qualified, and no production
+selection or broker route uses it. A selected installation still needs protected
+image/loader/cwd identity and complete process ownership. Selecting a child map alone does
 not bind a cwd resolved during process creation or protect absolute argument
 paths from filesystem reparse changes. The retained no-write-sharing and directory
 oplock probes both allowed attribute-only junction attachment on NTFS and ReFS.

@@ -299,6 +299,28 @@ const literal = (value: string) => ({ kind: "literal", value });
 describe.skipIf(process.platform !== "win32" || !executable)(
   "native bound process execution",
   () => {
+    it("rejects a malformed one-shot worker frame before command launch", async () => {
+      const worker = spawn(executable!, ["--process-worker", "2.0.0"], {
+        cwd: path.dirname(executable!),
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const output: Buffer[] = [];
+      worker.stdout.on("data", (chunk: Buffer) => output.push(chunk));
+      worker.stderr.resume();
+      const closed = new Promise<number>((resolve, reject) => {
+        worker.once("error", reject);
+        worker.once("close", (code) => resolve(code ?? -1));
+      });
+      const timer = setTimeout(() => worker.kill(), 3000);
+      try {
+        worker.stdin.end(Buffer.from([0, 0, 0, 2, 123, 125])); // canonical empty object
+        expect(await closed).toBe(3);
+        expect(Buffer.concat(output)).toHaveLength(0);
+      } finally {
+        clearTimeout(timer);
+      }
+    });
     it.skipIf(!process.env.LEXRUNNER_TEST_GIT)(
       "runs real Git initialization and a read through held cwd",
       async () => {
