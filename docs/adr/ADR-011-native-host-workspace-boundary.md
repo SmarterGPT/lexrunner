@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-01
+**Windows profile amendment:** 2026-10-28 (selected architecture; implementation and activation pending)
 **Authors:** lexrunner team
 
 ---
@@ -55,9 +56,10 @@ launches Git, and retains the required handles for the child lifetime.
 | Node native addon | Rejected. It puts the expanded native trusted computing base inside the orchestration process, couples releases to Node/V8 ABI and toolchain variants, and turns native memory faults into coordinator failure.                              |
 
 Release builds will produce architecture-specific, self-contained artifacts. Each production
-artifact is Authenticode-signed and listed by digest and protocol version in the package release
-manifest. The resolver verifies presence, digest, signature, architecture, protocol, and helper
-self-probe before returning `ready`. Development-unverified helpers can be inspected but cannot
+artifact is Authenticode-signed and listed by digest and protocol version in the separate
+optional application release manifest. The resolver verifies presence, digest, signature,
+architecture, protocol, and helper self-probe before returning `ready`.
+Development-unverified helpers can be inspected but cannot
 advertise a ready production capability. Distribution must not depend on an install-time download
 or on WSL.
 
@@ -73,6 +75,50 @@ therefore request `FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES`, use
 `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`, and omit `FILE_SHARE_DELETE`.
 Negative controls demonstrated caller-path redirection when that operational access/share
 combination, held ancestors, or no-follow validation was removed.
+
+### Selected optional Windows protected-coordinator profile (2026-10-28)
+
+Guff selected an optional, demand-start Windows service with a dedicated non-administrator
+identity for governed native Windows execution. This amends the earlier MSI/direct-launch,
+no-service implementation profile for worktree creation. The already installed qualification
+MSI remains inactive and does not become a selected or eligible service by this decision.
+
+The npm CLI and MCP are untrusted local request clients. A protected local endpoint reaches the
+service-hosted Node coordinator and service-owned durable admission state. That coordinator
+starts one bounded NativeAOT helper child per admitted session over private inherited pipes;
+the helper remains non-addressable. The service must have narrow, versioned request verbs, not
+an arbitrary shell, Git command, executable, path, or file-deletion endpoint. Its installed
+image, Node/entry graph, helper, Git image, loader graph, environment, SCM configuration, and
+active selection require independent protection and actual-process binding before authority.
+
+The service derives each exact Attempt admission from protected enrollment, current policy,
+repository identity, immutable packet/base, supported volume/allocation, allowed operation,
+and fenced durable state. It atomically records admission and operation intent before any Git,
+helper, or worker effect. Client-provided paths, policy, identity claims, digests, or local
+database records are not authority. The endpoint ACL and observed client token can identify
+the enrolled user SID, but do not distinguish the user's CLI, an agent, or another process
+under that SID. In this bounded single-user profile, any such process may request operations
+within the protected enrollment; individual operator intent needs a separate grant issuer.
+Replay with changed inputs, stale fences, missing enrollment, and uncertain prior effects
+must refuse new effects.
+
+For worktree creation, the service needs a protected initially empty stage and protected final
+allocation parent on the worktree's volume before the first Git child. It must own the exact
+stage identity through Git registration, native publication, repair, access handoff, and
+recovery. Every Git process, including pre-refusal inspection, must use a fixed reviewed image,
+token, cwd, arguments, constructed environment, and configuration that cannot run
+repository-selected hooks, fsmonitor, filters, or other commands with additional service
+authority. Same-user rename/reparse and crash controls must qualify ReFS and NTFS separately.
+The existing direct-launch profile cannot claim native creation readiness from a held empty
+target or post-command identity readback.
+
+The optional application is installed, updated, and selected separately from npm. `npm install`
+never bundles, downloads, installs, starts, repairs, updates, or selects the service/helper.
+This architecture decision does not approve a concrete service installation, protected
+enrollment, ACL change, active selection, or execution. Production remains unavailable until
+the selected service, admission, protected launch, broker lifecycle, recovery, and public
+Attempt/CLI/MCP paths pass host qualification. See the
+[Windows production activation path](../architecture/windows-production-activation.md).
 
 ### Exact claim
 
