@@ -21,6 +21,10 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+#if COORDINATOR_ADMISSION_BRIDGE_TESTS
+        if (OperatingSystem.IsWindows() && args.Length > 0 && args[0] == "--admission-probe")
+            return await RunAdmissionProbe(args);
+#endif
         if (!OperatingSystem.IsWindows() || args.Length != 7 ||
             args[0] != "--probe" || args[1] != "--nonce" ||
             args[3] != "--expected-sid" || args[5] != "--timeout-ms" ||
@@ -92,6 +96,98 @@ internal static class Program
     }
 
     private static bool IsLowerHex(char c) => c is >= '0' and <= '9' or >= 'a' and <= 'f';
+
+#if COORDINATOR_ADMISSION_BRIDGE_TESTS
+    [SupportedOSPlatform("windows")]
+    private static async Task<int> RunAdmissionProbe(string[] args)
+    {
+        if (args.Length != 17 || args[1] != "--nonce" || args[3] != "--expected-sid" ||
+            args[5] != "--timeout-ms" || args[7] != "--node-image" ||
+            args[9] != "--worker" || args[11] != "--context" ||
+            args[13] != "--node-sha256" || args[15] != "--worker-sha256" ||
+            args[2].Length != 32 || !args[2].All(IsLowerHex) ||
+            !int.TryParse(args[6], out var timeoutMs) || timeoutMs is < 1 or > 30000 ||
+            args[14].Length != 64 || !args[14].All(IsLowerHex) ||
+            args[16].Length != 64 || !args[16].All(IsLowerHex))
+        {
+            Console.Error.WriteLine("console_probe_only");
+            return 2;
+        }
+
+        try
+        {
+            // The expected SID and image pins are supplied fixture data. Only
+            // impersonation observes the actual peer; this is not enrollment.
+            var expectedSid = new SecurityIdentifier(args[4]).Value;
+            var hostSid = WindowsIdentity.GetCurrent().User?.Value ?? throw new InvalidOperationException();
+            var pipeName = $@"\\.\pipe\LexRunner.Coordinator.Probe.{args[2]}";
+            using var deadline = new CancellationTokenSource(timeoutMs);
+            using var pipe = CreateProbePipe(pipeName, hostSid, expectedSid);
+            Console.Out.WriteLine("ready");
+            Console.Out.Flush();
+
+            await pipe.WaitForConnectionAsync(deadline.Token);
+            var header = new byte[4];
+            await pipe.ReadExactlyAsync(header, deadline.Token);
+            var observedSid = ReadPeerSidAndRevert(pipe.SafePipeHandle);
+            if (observedSid != expectedSid)
+            {
+                await WriteDenial(pipe, null, "admission_unavailable", deadline.Token);
+                return 0;
+            }
+            var length = BinaryPrimitives.ReadUInt32LittleEndian(header);
+            if (length is 0 or > MaxFrameBytes)
+            {
+                await WriteDenial(pipe, null, "invalid_frame", deadline.Token);
+                return 0;
+            }
+            var frame = new byte[checked((int)length + 4)];
+            header.CopyTo(frame, 0);
+            await pipe.ReadExactlyAsync(frame.AsMemory(4), deadline.Token);
+
+            try
+            {
+                var denial = await PrivateNodeChild.RunAsync(
+                    args[8], args[10], args[12], args[14], args[16],
+                    observedSid, frame, deadline.Token);
+                await pipe.WriteAsync(denial, deadline.Token);
+                await pipe.FlushAsync(deadline.Token);
+                return 0;
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or
+                                          UnauthorizedAccessException or Win32Exception or
+                                          ArgumentException or InvalidOperationException)
+            {
+                // A lost child reply may conceal a historical unknown effect.
+                // Close without asserting no_effect for an uncertain result.
+                Console.Error.WriteLine("private_admission_unavailable");
+                return 3;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Console.Error.WriteLine("probe_deadline");
+            return 4;
+        }
+        catch (EndOfStreamException)
+        {
+            Console.Error.WriteLine("probe_disconnect");
+            return 5;
+        }
+        catch (IOException)
+        {
+            Console.Error.WriteLine("probe_disconnect");
+            return 5;
+        }
+        catch (Exception error) when (error is Win32Exception or UnauthorizedAccessException or
+                                      ArgumentException or InvalidOperationException or SecurityException or
+                                      InvalidDataException)
+        {
+            Console.Error.WriteLine("probe_boundary_unavailable");
+            return 3;
+        }
+    }
+#endif
 
     private static NamedPipeServerStream CreateProbePipe(string name, string hostSid, string expectedSid)
     {
