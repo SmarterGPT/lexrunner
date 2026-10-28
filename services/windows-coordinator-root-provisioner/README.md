@@ -51,3 +51,33 @@ under the installed profile. The local source fixture runs as one user on
 ReFS D:; the portable gate can run on a separate Windows x64 checkout. Neither
 qualifies service token, loader custody, crash behavior, cross-account denial,
 or production provisioning.
+
+## Inactive protected-root source
+
+This source slice adds `ProtectedRootPlan.cs`. The normal executable still has
+no provisioning verb.
+Its internal `Provision()` explicitly refuses while the separately approved
+provisioning identity, installed graph and authorization handoff remain undefined.
+An unreachable core demonstrates the intended fixed-path transaction: verify a
+restricted `LexRunnerCoordinator` SCM object under the exact virtual service
+account and SID, hold C:/D:/ProgramData parent handles, require NTFS or ReFS,
+create or read back the store and two `stage`/`final` parents through parent
+handles, and require SYSTEM ownership with a protected DACL. An occupied path
+is only observed after held identity, no-reparse and exact ACL readback; it is
+never replaced or cleaned. Created rows do not imply selection or execution.
+
+The service itself remains the selected dedicated nonadministrator virtual
+account. This draft does not choose a LocalSystem or administrator runtime for
+the service. A future **separately approved** provisioning action must define
+its own exact authority, bind the signed installed graph and service image,
+journal partial creation, and call the core only after review. The source test
+checks policy bytes, SID and filesystem rejection and that both the normal
+image and public provisioning entry point refuse.
+
+Installed qualification must run under two distinct tokens. The service token
+must positively open the protected store and both same-volume anchors; the
+ordinary enrolled user's token must fail create, rename, delete, owner/DACL
+change and reparse placement on the root and both `stage`/`final` parents on
+NTFS C: and ReFS D:. It must also test occupied-name, parent swap, volume
+alias, service restart and partial transaction recovery. No such cross-account
+test or real machine-root mutation is performed by this draft.

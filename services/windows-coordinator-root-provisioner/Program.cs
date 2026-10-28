@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Principal;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -16,6 +17,62 @@ internal static class Program
     {
         if (!OperatingSystem.IsWindows()) return 2;
 #if COORDINATOR_ROOT_FIXTURE_TESTS
+        if (args.Length == 1 && args[0] == "--host-volume-selftest")
+        {
+            try
+            {
+                using var cVolume = Native.OpenDirectory(ProtectedRootPlan.CVolumeParent);
+                using var dVolume = Native.OpenDirectory(ProtectedRootPlan.DVolumeParent);
+                var cFileSystem = Native.GetFileSystem(cVolume);
+                var dFileSystem = Native.GetFileSystem(dVolume);
+                ProtectedRootPlan.RequireSupportedFileSystem(cFileSystem);
+                ProtectedRootPlan.RequireSupportedFileSystem(dFileSystem);
+                var cIdentity = Native.GetIdentity(cVolume, ProtectedRootPlan.CVolumeParent);
+                var dIdentity = Native.GetIdentity(dVolume, ProtectedRootPlan.DVolumeParent);
+                if (cIdentity.volumeSerial == dIdentity.volumeSerial) return 4;
+                Console.WriteLine($"protected_volume_source_pass:{cFileSystem}:{dFileSystem}");
+                return 0;
+            }
+            catch { return 4; }
+        }
+        if (args.Length == 1 && args[0] == "--profile-selftest")
+        {
+            try
+            {
+                var policy = ProtectedRootPlan.PolicyForInstalledService(
+                    ProtectedRootPlan.ServiceSid);
+                if (policy.OwnerSid != "S-1-5-18" ||
+                    policy.Sddl !=
+                        $"O:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{ProtectedRootPlan.ServiceSid})")
+                    return 4;
+                try
+                {
+                    _ = ProtectedRootPlan.PolicyForInstalledService("S-1-5-18");
+                    return 4;
+                }
+                catch (InvalidOperationException error) when (
+                    error.Message == "installed_service_sid_mismatch") { }
+                foreach (var name in new[] { "NTFS", "ReFS" })
+                    ProtectedRootPlan.RequireSupportedFileSystem(name);
+                try
+                {
+                    ProtectedRootPlan.RequireSupportedFileSystem("FAT32");
+                    return 4;
+                }
+                catch (InvalidOperationException error) when (
+                    error.Message == "unsupported_provisioning_filesystem") { }
+                try
+                {
+                    _ = ProtectedRootPlan.Provision();
+                    return 4;
+                }
+                catch (InvalidOperationException error) when (
+                    error.Message == "approved_provisioning_authority_unavailable") { }
+                Console.WriteLine("protected_root_profile_source_pass");
+                return 0;
+            }
+            catch { return 4; }
+        }
         if (args.Length == 2 && args[0] == "--fixture" && Nonce.IsMatch(args[1]))
         {
             try { return RunFixture(args[1]); }
@@ -170,8 +227,16 @@ internal static class Native
     }
 
     internal static SafeFileHandle CreateDirectory(SafeFileHandle parent, string name, RootPolicy policy)
+        => OpenChildDirectoryCore(parent, name, policy, 2);
+
+    internal static SafeFileHandle OpenChildDirectory(SafeFileHandle parent, string name)
+        => OpenChildDirectoryCore(parent, name, null, 1);
+
+    private static SafeFileHandle OpenChildDirectoryCore(SafeFileHandle parent, string name,
+        RootPolicy? policy, uint disposition)
     {
-        if (name is not ("fixture" or "store" or "c-anchor" or "d-anchor" or "stage" or "final"))
+        if (name is not ("fixture" or "store" or "c-anchor" or "d-anchor" or
+            "stage" or "final" or ProtectedRootPlan.RootName))
             throw new ArgumentException("fixed_child_name_required", nameof(name));
         var unicodeBuffer = Marshal.StringToHGlobalUni(name);
         var unicode = new UnicodeString
@@ -185,7 +250,8 @@ internal static class Native
         IntPtr descriptor = IntPtr.Zero;
         try
         {
-            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(policy.Sddl, 1,
+            if (policy is not null &&
+                !ConvertStringSecurityDescriptorToSecurityDescriptorW(policy.Sddl, 1,
                     out descriptor, out _))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "security_descriptor_invalid");
             var attributes = new ObjectAttributes
@@ -199,7 +265,7 @@ internal static class Native
             var status = NtCreateFile(out var handle,
                 FileReadAttributes | FileAddSubdirectory | ReadControl | Synchronize,
                 ref attributes, out _, IntPtr.Zero, FileAttributeDirectory,
-                FileShareRead, 2, FileDirectoryFile | FileOpenReparsePoint |
+                FileShareRead, disposition, FileDirectoryFile | FileOpenReparsePoint |
                 FileSynchronousIoNonalert, IntPtr.Zero, 0);
             if (status < 0)
             {
@@ -224,6 +290,18 @@ internal static class Native
             throw new InvalidOperationException("created_acl_readback_mismatch");
         return new RootObservation(expectedPath, identity.volumeSerial, identity.fileId,
             identity.attributes, security, true);
+    }
+
+    internal static (string volumeSerial, string fileId, string attributes) GetIdentity(
+        SafeFileHandle handle, string expectedPath) => ObserveIdentity(handle, expectedPath);
+
+    internal static string GetFileSystem(SafeFileHandle handle)
+    {
+        var fileSystem = new StringBuilder(32);
+        if (!GetVolumeInformationByHandleW(handle, IntPtr.Zero, 0, out _, out _,
+                out _, fileSystem, (uint)fileSystem.Capacity))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "filesystem_unavailable");
+        return fileSystem.ToString();
     }
 
     private static (string volumeSerial, string fileId, string attributes) ObserveIdentity(
@@ -323,4 +401,11 @@ internal static class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle,
         int informationClass, out FileIdInfo info, uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetVolumeInformationByHandleW(SafeFileHandle handle,
+        IntPtr volumeName, uint volumeNameSize, out uint serialNumber,
+        out uint maximumComponentLength, out uint fileSystemFlags,
+        StringBuilder fileSystemName, uint fileSystemNameSize);
 }
