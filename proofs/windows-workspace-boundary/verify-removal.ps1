@@ -105,7 +105,7 @@ try {
         throw 'Actual removal qualification must execute every required case without skips'
     }
     $sharedBrokerCases = @($tests.testResults | Where-Object { $_.name.EndsWith('node-git-worktree-shared.spec.ts') } | ForEach-Object { $_.assertionResults })
-    if ($sharedBrokerCases.Count -lt 13 -or @($sharedBrokerCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
+    if ($sharedBrokerCases.Count -lt 16 -or @($sharedBrokerCases | Where-Object { $_.status -ne 'passed' }).Count -ne 0) {
         throw 'Shared native broker contract must execute every required case without skips'
     }
     $sharedBoundaryCases = @($tests.testResults | Where-Object { $_.name.EndsWith('workspace-boundary-shared.spec.ts') } | ForEach-Object { $_.assertionResults })

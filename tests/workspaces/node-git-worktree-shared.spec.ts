@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { execa } from "execa";
@@ -263,6 +263,59 @@ describe("shared native broker behavior", () => {
       await broker.create({ ...target, worktreePath: path.join(root, "outside-allocation") })
     ).toMatchObject({ ok: false, reason: "invalid_path" });
     expect(existsSync(target.worktreePath)).toBe(false);
+  });
+
+  it("preserves an occupied target path before any worktree mutation", async () => {
+    await mkdir(target.worktreePath);
+    const keep = path.join(target.worktreePath, "keep.txt");
+    await writeFile(keep, "coworker content\n");
+
+    const result = await broker.create(target);
+
+    expect(result).toMatchObject({ ok: false, reason: "path_conflict" });
+    expect(await readFile(keep, "utf8")).toBe("coworker content\n");
+    expect(await git(repository, "branch", "--list", target.branch)).toBe("");
+  });
+
+  it("rejects an allocation root replaced after broker bootstrap", async () => {
+    const anchored = path.join(root, "anchored-allocation");
+    await rename(allocation, anchored);
+    await mkdir(allocation);
+    const keep = path.join(allocation, "keep.txt");
+    await writeFile(keep, "substitute content\n");
+
+    const result = await broker.create(target);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "containment_violation",
+      message: expect.stringContaining("worktree root was replaced"),
+    });
+    expect(result).not.toHaveProperty("command");
+    expect(await readFile(keep, "utf8")).toBe("substitute content\n");
+    expect(existsSync(target.worktreePath)).toBe(false);
+    expect(existsSync(path.join(anchored, "worker"))).toBe(false);
+    expect(await git(repository, "branch", "--list", target.branch)).toBe("");
+  });
+
+  it("rejects a repository root replaced after broker bootstrap", async () => {
+    const anchored = path.join(root, "anchored-repository");
+    await rename(repository, anchored);
+    await mkdir(repository);
+    const keep = path.join(repository, "keep.txt");
+    await writeFile(keep, "substitute content\n");
+
+    const result = await broker.observe(target);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "containment_violation",
+      message: expect.stringContaining("repository root was replaced"),
+    });
+    expect(result).not.toHaveProperty("command");
+    expect(await readFile(keep, "utf8")).toBe("substitute content\n");
+    expect(existsSync(target.worktreePath)).toBe(false);
+    expect(await git(anchored, "branch", "--list", target.branch)).toBe("");
   });
 
   it("does not transfer owned observation or removal to another Attempt", async () => {
