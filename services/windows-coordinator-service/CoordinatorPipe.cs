@@ -74,6 +74,7 @@ internal static class CoordinatorPipe
         {
             try { await pipe.WaitForConnectionAsync(stop); }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
+            catch (IOException) when (stop.IsCancellationRequested) { return; }
 
             try
             {
@@ -82,22 +83,34 @@ internal static class CoordinatorPipe
                 var header = new byte[4];
                 await pipe.ReadExactlyAsync(header, deadline.Token);
 
-                // The last pipe read fixes the peer token for this synchronous
-                // impersonation. Never await or perform an effect while the
-                // thread carries the client token.
-                _ = ReadPeerSidAndRevert(pipe.SafePipeHandle);
-
                 var length = BinaryPrimitives.ReadUInt32LittleEndian(header);
                 if (length is > 0 and <= CoordinatorProtocol.MaxRequestBytes)
                 {
                     var payload = new byte[(int)length];
                     await pipe.ReadExactlyAsync(payload, deadline.Token);
-                    _ = CoordinatorProtocol.ParseStatusOnly(payload);
+
+                    // The last pipe read fixes the peer token for this
+                    // synchronous observation. Never await or perform an
+                    // effect while carrying the client token.
+                    _ = ReadPeerSidAndRevert(pipe.SafePipeHandle);
+
+                    var parsed = CoordinatorProtocol.ParseStatusOnly(payload);
+                    if (parsed.Request is { } request)
+                    {
+                        // No protected store is open. The v2 status reply
+                        // conservatively reports an unknown historical effect;
+                        // it does not authorize execution or assert no_effect.
+                        var reply = CoordinatorProtocol.IndeterminateStatusFrame(request);
+                        await pipe.WriteAsync(reply.AsMemory(), deadline.Token);
+                        // Keep this instance connected while the client reads
+                        // the response. A completed pipe write is not proof of
+                        // delivery; the next bounded read waits for peer close
+                        // (or the deadline) before Disconnect can discard bytes.
+                        _ = await pipe.ReadAsync(new byte[1], deadline.Token);
+                    }
                 }
-                // The v1 reply schema can assert only no_effect. A storeless
-                // service cannot truthfully answer status for an old Attempt
-                // whose effect may be unknown, so every request closes without
-                // an Attempt reply. No Git, worker, Node or store is reachable.
+                // Invalid or incomplete requests close without a status claim.
+                // No Git, worker, Node or store is reachable from this image.
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
             catch (OperationCanceledException) { /* bounded client timeout */ }
@@ -105,7 +118,9 @@ internal static class CoordinatorPipe
             catch (IOException) { /* disconnected client */ }
             finally
             {
-                if (pipe.IsConnected) pipe.Disconnect();
+                // A broken client can make IsConnected false while this server
+                // instance still needs DisconnectNamedPipe before reuse.
+                pipe.Disconnect();
             }
         }
     }
