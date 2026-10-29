@@ -1,0 +1,146 @@
+name: Windows Git ETW fixed logger query only
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-git-etw-fixed-logger-query
+  cancel-in-progress: false
+
+jobs:
+  fixed-logger-query:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: proofs/windows-workspace-boundary/global.json
+      - name: Build query-only source fixture
+        shell: pwsh
+        run: dotnet build services/windows-coordinator-git/kernel-query/KernelLoggerQuery.csproj -c Release --nologo
+      - name: Query only the fixed NT Kernel Logger name
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $dll = Join-Path $env:GITHUB_WORKSPACE 'services/windows-coordinator-git/kernel-query/bin/Release/net8.0-windows/KernelLoggerQuery.dll'
+          $stage = Join-Path $env:RUNNER_TEMP "lexrunner-etw-kernel-query-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $selfPath = Join-Path $stage 'selftest.raw'
+          $selfError = Join-Path $stage 'selftest.err'
+          $selfClock = [Diagnostics.Stopwatch]::StartNew()
+          & dotnet $dll --selftest 1> $selfPath 2> $selfError
+          $selfExit = $LASTEXITCODE
+          $selfClock.Stop()
+          if ($selfExit -ne 0 -or (Get-Item $selfPath).Length -gt 1024 -or (Get-Item $selfError).Length -ne 0) {
+            throw 'bounded_selftest_refused'
+          }
+          $self = Get-Content -LiteralPath $selfPath -Raw | ConvertFrom-Json
+          if ($self.result -ne 'source_fixture_pass' -or $self.reasonCode -ne 'layout_verified' -or
+              $self.nativeQueryInvoked -ne $false -or $self.traceStarted -ne $false -or
+              $self.traceStopped -ne $false -or $self.authorizesExecution -ne $false) {
+            throw 'selftest_readback_invalid'
+          }
+
+          $rawPath = Join-Path $stage 'query.raw'
+          $rawError = Join-Path $stage 'query.err'
+          $queryClock = [Diagnostics.Stopwatch]::StartNew()
+          & dotnet $dll --query 1> $rawPath 2> $rawError
+          $queryExit = $LASTEXITCODE
+          $queryClock.Stop()
+          if ((Get-Item $rawPath).Length -gt 1024 -or (Get-Item $rawError).Length -ne 0) {
+            throw 'bounded_query_output_refused'
+          }
+          $query = Get-Content -LiteralPath $rawPath -Raw | ConvertFrom-Json
+          $allowedReasons = @('native_query_exception', 'explicit_windows_x64_query_required',
+            'native_layout_unavailable', 'native_query_unavailable', 'kernel_logger_not_running',
+            'native_query_failed', 'native_query_readback_invalid', 'kernel_logger_already_running')
+          if ($query.schemaVersion -ne 'lexrunner-windows-kernel-logger-query/1' -or
+              $query.reasonCode -notin $allowedReasons -or
+              $query.result -notin @('absent', 'occupied', 'refused') -or
+              $query.queryOnly -ne $true -or $query.traceStarted -ne $false -or
+              $query.traceStopped -ne $false -or $query.authorizesLoaderClosure -ne $false -or
+              $query.authorizesExecution -ne $false -or
+              ($query.result -eq 'absent' -and ($queryExit -ne 0 -or $query.errorCode -ne 4201)) -or
+              ($query.result -ne 'absent' -and $queryExit -ne 3)) {
+            throw 'query_readback_invalid'
+          }
+
+          $receipt = [ordered]@{
+            schemaVersion = 'lexrunner-windows-kernel-logger-hosted-query/1'
+            sourceHeadFromWorkflow = $env:GITHUB_SHA
+            sourceVerification = 'workflow_input_only'
+            cwd = (Get-Location).Path
+            hostImageOS = $env:ImageOS
+            hostImageVersion = $env:ImageVersion
+            osVersion = [Environment]::OSVersion.VersionString
+            architecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+            selftest = [ordered]@{
+              argv = @('dotnet', $dll, '--selftest')
+              durationMs = $selfClock.ElapsedMilliseconds
+              exitCode = $selfExit
+              stdoutBytes = (Get-Item -LiteralPath $selfPath).Length
+              stdoutSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $selfPath).Hash
+            }
+            query = [ordered]@{
+              argv = @('dotnet', $dll, '--query')
+              durationMs = $queryClock.ElapsedMilliseconds
+              exitCode = $queryExit
+              stdoutBytes = (Get-Item -LiteralPath $rawPath).Length
+              stdoutSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $rawPath).Hash
+            }
+            result = $query.result
+            reasonCode = $query.reasonCode
+            errorCode = $query.errorCode
+            counters = $query.counters
+            queryOnly = $true
+            traceStarted = $false
+            traceStopped = $false
+            authorizesLoaderClosure = $false
+            authorizesExecution = $false
+          }
+          $json = $receipt | ConvertTo-Json -Compress -Depth 5
+          if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 2048) { throw 'receipt_output_limit' }
+          [IO.File]::WriteAllText((Join-Path $stage 'receipt.json'), $json, [Text.UTF8Encoding]::new($false))
+          exit $queryExit
+      - name: Check bounded query receipt
+        id: artifact_bounds
+        if: always()
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP "lexrunner-etw-kernel-query-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/receipt.json"
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -gt 2048) {
+            throw 'bounded_query_receipt_missing_or_oversize'
+          }
+          $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          if ($receipt.schemaVersion -ne 'lexrunner-windows-kernel-logger-hosted-query/1' -or
+              $receipt.sourceHeadFromWorkflow -ne $env:GITHUB_SHA -or
+              $receipt.sourceVerification -ne 'workflow_input_only' -or
+              $receipt.hostImageOS -ne $env:ImageOS -or
+              $receipt.hostImageVersion -ne $env:ImageVersion -or
+              $receipt.selftest.exitCode -ne 0 -or
+              $receipt.query.exitCode -notin @(0, 3) -or
+              $receipt.selftest.durationMs -lt 0 -or $receipt.query.durationMs -lt 0 -or
+              $receipt.selftest.stdoutBytes -gt 1024 -or $receipt.query.stdoutBytes -gt 1024 -or
+              $receipt.queryOnly -ne $true -or $receipt.traceStarted -ne $false -or
+              $receipt.traceStopped -ne $false -or $receipt.authorizesLoaderClosure -ne $false -or
+              $receipt.authorizesExecution -ne $false) {
+            throw 'bounded_query_receipt_invalid'
+          }
+      - name: Retain bounded query-only receipt
+        if: always() && steps.artifact_bounds.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-git-etw-fixed-query-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\lexrunner-etw-kernel-query-${{ github.run_id }}-${{ github.run_attempt }}\receipt.json
+          if-no-files-found: error
+          retention-days: 1
