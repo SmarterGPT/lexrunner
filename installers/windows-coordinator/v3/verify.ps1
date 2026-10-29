@@ -39,7 +39,7 @@ function Invoke-Recorded([string]$name, [string]$command, [scriptblock]$body, [i
     name = $name; command = $command; cwd = $repoRoot; commit = $head;
     durationMs = $watch.ElapsedMilliseconds; exitCode = $exit; boundedOutput = $bounded
   })
-  if ($exit -ne $expectedExit) { throw "$name returned $exit; expected $expectedExit" }
+  if ($exit -ne $expectedExit) { throw "$name returned $exit; expected $expectedExit; output=$bounded" }
   return ($output -join "`n")
 }
 

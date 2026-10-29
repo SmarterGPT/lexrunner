@@ -337,6 +337,9 @@ jobs:
           $id = [guid]::NewGuid().ToString('N')
           $artifact = Join-Path $PWD "artifacts/windows-coordinator-v2-msi-offline/source-$id"
           ./installers/windows-coordinator/v2/verify.ps1 -ArtifactDirectory $artifact
+      - name: Qualify non-installable Windows coordinator v3 two-service MSI source offline
+        shell: pwsh
+        run: ./installers/windows-coordinator/v3/verify-msi-offline.ps1
       - name: Verify Windows Git ETW diagnostic bounds without starting ETW
         shell: pwsh
         run: ./scripts/Test-Windows-GitEtwNoisyTool.ps1
@@ -381,6 +384,7 @@ jobs:
             artifacts/windows-coordinator-git-portable/receipt-*.json
             artifacts/windows-coordinator-checkout-portable/receipt-*.json
             artifacts/windows-coordinator-v2-msi-offline/source-*/verification-receipt.json
+            artifacts/windows-coordinator-v3-msi-offline/source-*/verification-receipt.json
             artifacts/windows-git-etw-tool-preflight/NEGATIVE_CONTROL_RECEIPT.json
           if-no-files-found: warn
 
