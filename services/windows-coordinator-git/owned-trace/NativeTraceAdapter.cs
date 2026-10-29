@@ -1,8 +1,7 @@
 using System.Runtime.InteropServices;
 
-// Not wired to Program. No command can instantiate this adapter in this draft.
-// This source exists for independent ABI and ownership review before a hosted
-// capture route is proposed. It must never run on a user workstation.
+// Instantiated only by the guarded manual disposable-runner calibration route.
+// Ordinary capture and all product execution authority remain disabled.
 internal sealed class NativeTraceAdapter : ITraceAdapter
 {
     private const uint EventTraceControlQuery = 0;
@@ -43,6 +42,37 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
         Marshal.OffsetOf<EventTraceProperties>(nameof(EventTraceProperties.RealTimeBuffersLost)).ToInt32() == 100 &&
         Marshal.OffsetOf<EventTraceProperties>(nameof(EventTraceProperties.LogFileNameOffset)).ToInt32() == 112 &&
         Marshal.OffsetOf<EventTraceProperties>(nameof(EventTraceProperties.LoggerNameOffset)).ToInt32() == 116;
+
+    internal static bool SyntheticObservationReadback()
+    {
+        var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
+            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"),
+            @"C:\private\fresh\git-loader.etl", 0x02000001, 0x06000307);
+        var buffer = Allocate(expected.Guid);
+        try
+        {
+            var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
+            props.LogFileMode = expected.Mode;
+            props.EnableFlags = expected.Flags;
+            props.EventsLost = 1;
+            props.LogBuffersLost = 2;
+            props.RealTimeBuffersLost = 3;
+            Marshal.StructureToPtr(props, buffer, false);
+            WriteString(buffer, props.LoggerNameOffset, expected.Name);
+            WriteString(buffer, props.LogFileNameOffset, expected.EtlPath);
+            var matched = TryReadObservation(buffer, out var observed) &&
+                observed is not null && observed.Name == expected.Name &&
+                observed.Guid == expected.Guid &&
+                observed.EtlPath == expected.EtlPath &&
+                observed.Mode == expected.Mode && observed.Flags == expected.Flags &&
+                observed.EventsLost == 1 && observed.LogBuffersLost == 2 &&
+                observed.RealTimeBuffersLost == 3;
+            props.LoggerNameOffset = checked((uint)Capacity);
+            Marshal.StructureToPtr(props, buffer, false);
+            return matched && !TryReadObservation(buffer, out _);
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
 
     public StartResult Start(TraceIdentity expected)
     {
@@ -103,20 +133,13 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
                 return failed;
             }
 
-            var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
-            var capacity = Marshal.ReadInt32(buffer);
-            if (capacity < Marshal.SizeOf<EventTraceProperties>() ||
-                capacity > Capacity ||
-                !TryReadString(buffer, props.LoggerNameOffset, capacity, out var name) ||
-                !TryReadString(buffer, props.LogFileNameOffset, capacity, out var path))
+            if (!TryReadObservation(buffer, out var observation))
             {
                 var invalid = new QueryResult(13, null); // ERROR_INVALID_DATA
                 _gate.CompleteQuery(returnedHandle, invalid);
                 return invalid;
             }
-            var result = new QueryResult(0, new TraceObservation(name!, props.Wnode.Guid, path!,
-                props.LogFileMode, props.EnableFlags, props.EventsLost,
-                props.LogBuffersLost, props.RealTimeBuffersLost));
+            var result = new QueryResult(0, observation);
             return _gate.CompleteQuery(returnedHandle, result) ?
                 result : new QueryResult(13, null);
         }
@@ -132,7 +155,20 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
         {
             // Only the StartTraceW-returned handle, never a name. Even
             // ERROR_MORE_DATA may mean the session has already stopped.
-            try { return new StopResult(ControlTraceW(returnedHandle, null, buffer, EventTraceControlStop)); }
+            try
+            {
+                var code = ControlTraceW(returnedHandle, null, buffer, EventTraceControlStop);
+                if (code != 0) return new StopResult(code);
+                if (!TryReadObservation(buffer, out var observation) ||
+                    observation is null ||
+                    observation.Name != _expected.Name ||
+                    observation.Guid != _expected.Guid ||
+                    observation.EtlPath != _expected.EtlPath ||
+                    observation.Mode != _expected.Mode ||
+                    observation.Flags != _expected.Flags)
+                    return new StopResult(13); // STOP may have succeeded; no retry.
+                return new StopResult(0, observation);
+            }
             catch (DllNotFoundException) { return new StopResult(127); }
             catch (EntryPointNotFoundException) { return new StopResult(127); }
         }
@@ -166,6 +202,22 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
     {
         for (var i = 0; i < text.Length; i++)
             Marshal.WriteInt16(buffer, checked((int)offset + i * sizeof(char)), unchecked((short)text[i]));
+    }
+
+    private static bool TryReadObservation(IntPtr buffer, out TraceObservation? observation)
+    {
+        observation = null;
+        var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
+        var capacity = Marshal.ReadInt32(buffer);
+        if (capacity < Marshal.SizeOf<EventTraceProperties>() ||
+            capacity > Capacity ||
+            !TryReadString(buffer, props.LoggerNameOffset, capacity, out var name) ||
+            !TryReadString(buffer, props.LogFileNameOffset, capacity, out var path))
+            return false;
+        observation = new TraceObservation(name!, props.Wnode.Guid, path!,
+            props.LogFileMode, props.EnableFlags, props.EventsLost,
+            props.LogBuffersLost, props.RealTimeBuffersLost);
+        return true;
     }
 
     private static bool TryReadString(IntPtr buffer, uint offset, int capacity, out string? text)

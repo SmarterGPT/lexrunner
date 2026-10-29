@@ -101,7 +101,7 @@ $selfResult = Get-Content -LiteralPath (Join-Path $stage 'selftest.stdout') -Raw
 if ($selfResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
     $selfResult.result -cne 'source_fixture_pass' -or
     $selfResult.nativeLayoutVerified -ne $true -or
-    @($selfResult.cases).Count -ne 28 -or
+    @($selfResult.cases).Count -ne 42 -or
     @($selfResult.cases | Where-Object { $_.Passed -ne $true }).Count -ne 0 -or
     $selfResult.traceStarted -ne $false -or $selfResult.traceStopped -ne $false -or
     $selfResult.authorizesLoaderClosure -ne $false -or
@@ -123,6 +123,20 @@ if ($refusalResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
     throw 'owned_etw_capture_refusal_readback_invalid'
 }
 
+$calibrationRefusal = Invoke-Bounded 'calibration-refusal' @($dll, '--capture-calibrate') 1024 10000
+if ($calibrationRefusal.exitCode -ne 3 -or $calibrationRefusal.stderrBytes -ne 0) {
+    throw 'owned_etw_calibration_bare_route_exposed'
+}
+$calibrationResult = Get-Content -LiteralPath (Join-Path $stage 'calibration-refusal.stdout') -Raw | ConvertFrom-Json
+if ($calibrationResult.schemaVersion -cne 'lexrunner-owned-etw-manual-status/1' -or
+    $calibrationResult.result -cne 'refused' -or
+    $calibrationResult.reasonCode -cne 'manual_disposable_preflight_required' -or
+    $calibrationResult.rawEtlDeleted -ne $false -or
+    $calibrationResult.authorizesLoaderClosure -ne $false -or
+    $calibrationResult.authorizesExecution -ne $false) {
+    throw 'owned_etw_calibration_refusal_readback_invalid'
+}
+
 $head = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$' -or
     ($env:GITHUB_SHA -and $head -cne $env:GITHUB_SHA)) {
@@ -130,7 +144,9 @@ if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$' -or
 }
 $sourceHashes = [ordered]@{}
 foreach ($name in @('OwnedTraceDraft.csproj', 'Program.cs', 'NativeTraceAdapter.cs',
-        'README.md', 'verify.ps1', 'Test-ReceiptBounds.ps1')) {
+        'CaptureCalibration.cs', 'OfflineEtlParser.cs',
+        'README.md', 'MANUAL_CALIBRATION.md', 'verify.ps1',
+        'Test-ReceiptBounds.ps1', 'Test-ManualSummary.ps1')) {
     $sourceHashes[$name] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $name) `
         -Algorithm SHA256).Hash.ToLowerInvariant()
 }
@@ -144,7 +160,7 @@ $receipt = [ordered]@{
     sourceCwd = $PSScriptRoot
     durationMs = $clock.ElapsedMilliseconds
     imageSha256 = $imageHash
-    caseCount = 28
+    caseCount = 42
     commands = @($commands.ToArray())
     sourceSha256 = $sourceHashes
     nativeTraceStarted = $false

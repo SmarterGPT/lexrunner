@@ -8,6 +8,64 @@ internal static class Program
     private static int Main(string[] args)
     {
 #if GIT_IMPORT_FIXTURE
+        if (args.Length == 3 && args[0] == "--fixture-etw-version")
+        {
+            try
+            {
+                var runnerTemp = Environment.GetEnvironmentVariable("RUNNER_TEMP");
+                var scratch = Path.GetFullPath(args[1]);
+                var expectedGitSha = args[2];
+                if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
+                    Environment.GetEnvironmentVariable("GITHUB_EVENT_NAME") != "workflow_dispatch" ||
+                    string.IsNullOrWhiteSpace(runnerTemp) ||
+                    !scratch.StartsWith(Path.GetFullPath(runnerTemp) + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !Directory.Exists(scratch) ||
+                    expectedGitSha.Length != 64 ||
+                    !expectedGitSha.All(value => value is >= '0' and <= '9' or >= 'a' and <= 'f'))
+                    throw new InvalidOperationException("etw_probe_preflight_refused");
+                var home = Path.Combine(scratch, "home");
+                var template = Path.Combine(scratch, "template");
+                Directory.CreateDirectory(home);
+                Directory.CreateDirectory(template);
+                var slot = new ImportSlot(scratch, scratch, scratch, template,
+                    template, home, scratch, new string('0', 40), expectedGitSha);
+                var env = GitBundleImport.ConstructEnvironment(slot);
+                var record = BoundedGitChild.RunAsync("etw-version", scratch,
+                    ["--version"], env, CancellationToken.None, null, expectedGitSha)
+                    .GetAwaiter().GetResult();
+                var root = record.ObservedJobProcesses.SingleOrDefault(value =>
+                    value.ProcessId == record.RootProcessId);
+                var observed = record.ExitCode == 0 && !record.TimedOut &&
+                    !record.Canceled && !record.OutputExceeded &&
+                    record.StreamsCompleted && record.JobAssignedAtCreation &&
+                    record.ChildResumed && record.TerminalJobDrained &&
+                    record.DescendantCleanupProven && record.JobTotalProcesses == 1 &&
+                    record.HeldImageSha256 == expectedGitSha &&
+                    record.Stdout.StartsWith("git version ", StringComparison.Ordinal) &&
+                    root is { CreationFileTimeUtc: > 0 };
+                var result = new EtwVersionProbeReport(
+                    "lexrunner-etw-version-probe/1", observed ? "observed" : "refused",
+                    observed ? "fixed_git_version_observed" : "fixed_git_version_refused",
+                    record.RootProcessId, root?.CreationFileTimeUtc,
+                    record.JobTotalProcesses, record.JobAssignedAtCreation,
+                    record.TerminalJobDrained, record.ExitCode, record.DurationMs,
+                    record.HeldImageSha256, record.StdoutBytes, record.StdoutSha256,
+                    false, false);
+                Console.WriteLine(JsonSerializer.Serialize(result,
+                    FixtureJsonContext.Default.EtwVersionProbeReport));
+                return observed ? 0 : 3;
+            }
+            catch
+            {
+                var result = new EtwVersionProbeReport(
+                    "lexrunner-etw-version-probe/1", "refused", "probe_exception",
+                    null, null, 0, false, false, null, 0, "", 0, "", false, false);
+                Console.WriteLine(JsonSerializer.Serialize(result,
+                    FixtureJsonContext.Default.EtwVersionProbeReport));
+                return 3;
+            }
+        }
         if ((args.Length == 1 || args.Length == 3) &&
             args[0] == "--fixture-graph-parser-selftest")
         {
@@ -123,10 +181,17 @@ internal sealed record GraphSelectedImportReport(bool ProfileAccepted, string? G
     string? ManifestSha256, int MemberCount, bool AuthorizesLaunch,
     ImportOutcome? Import, string? Error);
 
+internal sealed record EtwVersionProbeReport(string SchemaVersion, string Result,
+    string ReasonCode, uint? RootProcessId, long? RootCreationFileTimeUtc,
+    uint JobTotalProcesses, bool JobAssignedAtCreation, bool TerminalJobDrained,
+    int? ExitCode, long DurationMs, string GitImageSha256, int StdoutBytes,
+    string StdoutSha256, bool AuthorizesLoaderClosure, bool AuthorizesExecution);
+
 [JsonSerializable(typeof(GraphSelectedImportReport))]
 [JsonSerializable(typeof(ImportOutcome))]
 [JsonSerializable(typeof(StageOutcome))]
 [JsonSerializable(typeof(PublishOutcome))]
 [JsonSerializable(typeof(CommandRecord))]
+[JsonSerializable(typeof(EtwVersionProbeReport))]
 internal partial class FixtureJsonContext : JsonSerializerContext;
 #endif

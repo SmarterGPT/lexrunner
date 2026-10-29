@@ -5,5 +5,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="NativeTraceAdapter.cs" />
+    <Compile Include="CaptureCalibration.cs" />
+    <Compile Include="OfflineEtlParser.cs" />
+  </ItemGroup>
 </Project>

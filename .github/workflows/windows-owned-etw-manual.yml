@@ -1,0 +1,147 @@
+name: Manual Windows owned ETW schema calibration
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_head:
+        description: Exact reviewed main commit (40 lowercase hex)
+        required: true
+        type: string
+      expected_git_sha256:
+        description: Reviewed fixed Git image digest from a read-only runner inventory
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-owned-etw-manual-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  calibration:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: proofs/windows-workspace-boundary/global.json
+      - name: Bind exact head and fixed Git image
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_GIT_SHA256: ${{ inputs.expected_git_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or
+              $env:EXPECTED_GIT_SHA256 -cnotmatch '^[0-9a-f]{64}$' -or
+              $env:GITHUB_SHA -cne $env:EXPECTED_HEAD -or
+              $env:GITHUB_REPOSITORY -cne 'SmarterGPT/lexrunner' -or
+              $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
+              $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
+              $env:RUNNER_ARCH -cne 'X64') {
+            throw 'manual_etw_head_or_event_refused'
+          }
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:EXPECTED_HEAD) {
+            throw 'manual_etw_checkout_head_refused'
+          }
+          $gitImage = 'C:\Program Files\Git\mingw64\bin\git.exe'
+          if (-not [IO.File]::Exists($gitImage) -or
+              (Get-FileHash -LiteralPath $gitImage -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                  $env:EXPECTED_GIT_SHA256) {
+            throw 'manual_etw_fixed_git_digest_refused'
+          }
+      - name: Verify source and bare capture refusals without ETW
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "artifacts/windows-owned-etw-source/manual-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./services/windows-coordinator-git/owned-trace/verify.ps1 -ArtifactDirectory $stage
+          ./services/windows-coordinator-git/owned-trace/Test-ReceiptBounds.ps1 -ArtifactDirectory $stage
+      - name: Build diagnostic and fixed Git fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $PWD 'artifacts/windows-owned-etw-manual/build'
+          $gitFixture = Join-Path $build 'git-fixture'
+          dotnet build ./services/windows-coordinator-git/owned-trace/OwnedTraceDraft.csproj `
+            -c Release -o $build --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'manual_etw_diagnostic_build_failed' }
+          dotnet build ./services/windows-coordinator-git/LexRunner.WindowsCoordinator.Git.csproj `
+            -c Release -r win-x64 -p:GitImportFixture=true -p:PublishAot=false `
+            -p:SelfContained=false -o $gitFixture --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'manual_etw_git_fixture_build_failed' }
+          if (-not [IO.File]::Exists((Join-Path $build 'OwnedTraceDraft.exe')) -or
+              -not [IO.File]::Exists((Join-Path $gitFixture 'LexRunner.WindowsCoordinator.Git.exe'))) {
+            throw 'manual_etw_built_image_missing'
+          }
+      - name: Capture only on this manual disposable runner
+        id: capture
+        continue-on-error: true
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_GIT_SHA256: ${{ inputs.expected_git_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $image = Join-Path $PWD 'artifacts/windows-owned-etw-manual/build/OwnedTraceDraft.exe'
+          $outputRoot = Join-Path $PWD 'artifacts/windows-owned-etw-manual/build'
+          $stdout = Join-Path $outputRoot 'capture-status.stdout'
+          $stderr = Join-Path $outputRoot 'capture-status.stderr'
+          $args = @('--capture-calibrate','--manual-disposable-runner',
+            '--expected-head',$env:EXPECTED_HEAD,
+            '--expected-git-sha256',$env:EXPECTED_GIT_SHA256)
+          $child = Start-Process -FilePath $image -ArgumentList $args `
+            -WorkingDirectory $outputRoot -PassThru -WindowStyle Hidden `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            while (-not $child.HasExited) {
+              if ($clock.ElapsedMilliseconds -ge 90000 -or
+                  ([IO.File]::Exists($stdout) -and ([IO.FileInfo]::new($stdout)).Length -gt 2048) -or
+                  ([IO.File]::Exists($stderr) -and ([IO.FileInfo]::new($stderr)).Length -gt 1024)) {
+                throw 'manual_etw_external_deadline_or_output_limit'
+              }
+              Start-Sleep -Milliseconds 50
+            }
+            $child.WaitForExit()
+            if (([IO.FileInfo]::new($stdout)).Length -gt 2048 -or
+                ([IO.FileInfo]::new($stderr)).Length -ne 0) {
+              throw 'manual_etw_capture_output_refused'
+            }
+            $captureExit = $child.ExitCode
+            "terminal=normal" >> $env:GITHUB_OUTPUT
+          }
+          finally {
+            if (-not $child.HasExited) {
+              try { $child.Kill($true) } catch { }
+              try { $child.WaitForExit(5000) | Out-Null } catch { }
+            }
+            $child.Dispose()
+          }
+          exit $captureExit
+      - name: Check bounded summary and verified ETL deletion
+        id: summary_bounds
+        if: always() && steps.capture.outputs.terminal == 'normal'
+        shell: pwsh
+        run: |
+          $summary = Join-Path $PWD "artifacts/windows-owned-etw-manual/$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/summary.json"
+          ./services/windows-coordinator-git/owned-trace/Test-ManualSummary.ps1 -SummaryPath $summary
+      - name: Upload only the bounded path-sanitized summary for one day
+        if: always() && steps.capture.outputs.terminal == 'normal' && steps.summary_bounds.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-owned-etw-manual-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/windows-owned-etw-manual/${{ github.run_id }}-${{ github.run_attempt }}/summary.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Preserve capture refusal as a failed workflow
+        if: always() && (steps.capture.outcome != 'success' || steps.summary_bounds.outcome != 'success')
+        shell: pwsh
+        run: throw 'manual_etw_calibration_refused'
