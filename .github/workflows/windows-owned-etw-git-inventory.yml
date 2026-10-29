@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 5
     steps:
-      - name: Read only the fixed Git image digest
+      - name: Inventory only fixed Git PE candidate paths
         id: inventory
         shell: pwsh
         run: |
@@ -29,31 +29,95 @@ jobs:
               $env:RUNNER_OS -cne 'Windows' -or
               $env:RUNNER_ARCH -cne 'X64' -or
               $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
+              $env:ImageOS -cnotmatch '^[A-Za-z0-9._-]{1,64}$' -or
+              $env:ImageVersion -cnotmatch '^[A-Za-z0-9._-]{1,64}$' -or
               $env:GITHUB_RUN_ID -notmatch '^[0-9]{1,20}$' -or
               $env:GITHUB_RUN_ATTEMPT -notmatch '^[0-9]{1,5}$') {
             throw 'git_inventory_runner_refused'
           }
-          $gitImage = 'C:\Program Files\Git\mingw64\bin\git.exe'
-          $file = [IO.FileInfo]::new($gitImage)
-          if (-not $file.Exists -or $file.Length -le 0 -or
-              ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw 'git_inventory_fixed_image_missing'
+          $candidates = @(
+            'C:\Program Files\Git\bin\git.exe'
+            'C:\Program Files\Git\cmd\git.exe'
+            'C:\Program Files\Git\mingw64\bin\git.exe'
+            'C:\Program Files\Git\mingw64\libexec\git-core\git.exe'
+          )
+          function Read-Candidate([string]$fixedPath) {
+            $parents = [Collections.Generic.List[string]]::new()
+            for ($cursor = [IO.Directory]::GetParent($fixedPath);
+                 $null -ne $cursor; $cursor = $cursor.Parent) {
+              $parents.Add($cursor.FullName)
+            }
+            $parents.Reverse()
+            foreach ($parentPath in $parents) {
+              try { $entry = Get-Item -LiteralPath $parentPath -Force -ErrorAction Stop }
+              catch [Management.Automation.ItemNotFoundException] {
+                return [ordered]@{ path = $fixedPath; status = 'absent' }
+              }
+              if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return [ordered]@{ path = $fixedPath; status = 'reparse' }
+              }
+              if (-not $entry.PSIsContainer) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+            }
+            try { $entry = Get-Item -LiteralPath $fixedPath -Force -ErrorAction Stop }
+            catch [Management.Automation.ItemNotFoundException] {
+              return [ordered]@{ path = $fixedPath; status = 'absent' }
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              return [ordered]@{ path = $fixedPath; status = 'reparse' }
+            }
+            if ($entry -isnot [IO.FileInfo]) {
+              return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+            }
+            $stream = [IO.FileStream]::new($fixedPath, [IO.FileMode]::Open,
+              [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            try {
+              $length = $stream.Length
+              if ($length -lt 64 -or $length -ge 134217728) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+              $header = [byte[]]::new(64)
+              if ($stream.Read($header, 0, 64) -ne 64 -or
+                  $header[0] -ne 77 -or $header[1] -ne 90) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+              $peOffset = [BitConverter]::ToInt32($header, 60)
+              if ($peOffset -lt 64 -or $peOffset -gt 4096 -or
+                  $peOffset + 4 -gt $length) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+              $stream.Position = $peOffset
+              $signature = [byte[]]::new(4)
+              if ($stream.Read($signature, 0, 4) -ne 4 -or
+                  $signature[0] -ne 80 -or $signature[1] -ne 69 -or
+                  $signature[2] -ne 0 -or $signature[3] -ne 0) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+              $stream.Position = 0
+              return [ordered]@{
+                path = $fixedPath
+                status = 'pe_present'
+                sha256 = [Convert]::ToHexString(
+                  [Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
+                bytes = $length
+              }
+            }
+            finally { $stream.Dispose() }
           }
-          $sha = (Get-FileHash -LiteralPath $gitImage -Algorithm SHA256).Hash.ToLowerInvariant()
+          $rows = @($candidates | ForEach-Object { Read-Candidate $_ })
           $stage = Join-Path $env:RUNNER_TEMP "lexrunner-owned-etw-git-inventory-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           [IO.Directory]::CreateDirectory($stage) | Out-Null
           $receipt = [ordered]@{
-            schemaVersion = 'lexrunner-owned-etw-git-inventory/1'
-            result = 'fixed_git_image_observed'
+            schemaVersion = 'lexrunner-owned-etw-git-inventory/2'
+            result = 'fixed_candidate_inventory_observed'
             sourceHead = $env:GITHUB_SHA
             runId = $env:GITHUB_RUN_ID
             runAttempt = $env:GITHUB_RUN_ATTEMPT
             runnerLabel = 'windows-2022'
             runnerImage = $env:ImageOS
             runnerImageVersion = $env:ImageVersion
-            fixedGitPath = $gitImage
-            gitImageSha256 = $sha
-            gitImageBytes = $file.Length
+            candidates = $rows
             traceStarted = $false
             authorizesLoaderClosure = $false
             authorizesExecution = $false
@@ -67,36 +131,138 @@ jobs:
             [IO.FileAccess]::Write, [IO.FileShare]::None)
           try { $stream.Write($bytes, 0, $bytes.Length) }
           finally { $stream.Dispose() }
-          Write-Output "fixed_git_sha256=$sha"
+          Write-Output "fixed_candidate_count=$($rows.Count) pe_present_count=$(@($rows | Where-Object status -eq 'pe_present').Count)"
       - name: Validate bounded inventory receipt
         id: bounds
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $candidates = @(
+            'C:\Program Files\Git\bin\git.exe'
+            'C:\Program Files\Git\cmd\git.exe'
+            'C:\Program Files\Git\mingw64\bin\git.exe'
+            'C:\Program Files\Git\mingw64\libexec\git-core\git.exe'
+          )
+          function Read-Candidate([string]$fixedPath) {
+            $parents = [Collections.Generic.List[string]]::new()
+            for ($cursor = [IO.Directory]::GetParent($fixedPath);
+                 $null -ne $cursor; $cursor = $cursor.Parent) {
+              $parents.Add($cursor.FullName)
+            }
+            $parents.Reverse()
+            foreach ($parentPath in $parents) {
+              try { $entry = Get-Item -LiteralPath $parentPath -Force -ErrorAction Stop }
+              catch [Management.Automation.ItemNotFoundException] {
+                return [ordered]@{ path = $fixedPath; status = 'absent' }
+              }
+              if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return [ordered]@{ path = $fixedPath; status = 'reparse' }
+              }
+              if (-not $entry.PSIsContainer) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+            }
+            try { $entry = Get-Item -LiteralPath $fixedPath -Force -ErrorAction Stop }
+            catch [Management.Automation.ItemNotFoundException] {
+              return [ordered]@{ path = $fixedPath; status = 'absent' }
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              return [ordered]@{ path = $fixedPath; status = 'reparse' }
+            }
+            if ($entry -isnot [IO.FileInfo]) {
+              return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+            }
+            $stream = [IO.FileStream]::new($fixedPath, [IO.FileMode]::Open,
+              [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            try {
+              $length = $stream.Length
+              if ($length -lt 64 -or $length -ge 134217728) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+              $header = [byte[]]::new(64)
+              if ($stream.Read($header, 0, 64) -ne 64 -or
+                  $header[0] -ne 77 -or $header[1] -ne 90) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+              $peOffset = [BitConverter]::ToInt32($header, 60)
+              if ($peOffset -lt 64 -or $peOffset -gt 4096 -or
+                  $peOffset + 4 -gt $length) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+              $stream.Position = $peOffset
+              $signature = [byte[]]::new(4)
+              if ($stream.Read($signature, 0, 4) -ne 4 -or
+                  $signature[0] -ne 80 -or $signature[1] -ne 69 -or
+                  $signature[2] -ne 0 -or $signature[3] -ne 0) {
+                return [ordered]@{ path = $fixedPath; status = 'unsafe_present' }
+              }
+              $stream.Position = 0
+              return [ordered]@{
+                path = $fixedPath
+                status = 'pe_present'
+                sha256 = [Convert]::ToHexString(
+                  [Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
+                bytes = $length
+              }
+            }
+            finally { $stream.Dispose() }
+          }
           $path = Join-Path $env:RUNNER_TEMP "lexrunner-owned-etw-git-inventory-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/receipt.json"
           if (-not [IO.File]::Exists($path) -or
-              ([IO.FileInfo]::new($path)).Length -gt 2048) {
+              ([IO.FileInfo]::new($path)).Length -le 0 -or
+              ([IO.FileInfo]::new($path)).Length -gt 2048 -or
+              (([IO.FileInfo]::new($path)).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw 'git_inventory_receipt_missing_or_oversize'
           }
           $text = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path))
-          if ($text.Contains("`r") -or -not $text.EndsWith("`n") -or
+          if ($text.StartsWith([char]0xFEFF) -or $text.Contains("`r") -or
+              -not $text.EndsWith("`n") -or
               $text.EndsWith("`n`n")) { throw 'git_inventory_receipt_encoding' }
           $receipt = $text | ConvertFrom-Json
-          if ($receipt.schemaVersion -cne 'lexrunner-owned-etw-git-inventory/1' -or
-              $receipt.result -cne 'fixed_git_image_observed' -or
+          if ($receipt.schemaVersion -cne 'lexrunner-owned-etw-git-inventory/2' -or
+              $receipt.result -cne 'fixed_candidate_inventory_observed' -or
               $receipt.sourceHead -cne $env:GITHUB_SHA -or
               $receipt.runId -cne $env:GITHUB_RUN_ID -or
               $receipt.runAttempt -cne $env:GITHUB_RUN_ATTEMPT -or
               $receipt.runnerLabel -cne 'windows-2022' -or
-              $receipt.fixedGitPath -cne 'C:\Program Files\Git\mingw64\bin\git.exe' -or
-              $receipt.gitImageSha256 -cnotmatch '^[0-9a-f]{64}$' -or
-              $receipt.gitImageBytes -le 0 -or
+              $receipt.runnerImage -cnotmatch '^[A-Za-z0-9._-]{1,64}$' -or
+              $receipt.runnerImageVersion -cnotmatch '^[A-Za-z0-9._-]{1,64}$' -or
+              $receipt.candidates.Count -ne $candidates.Count -or
               $receipt.traceStarted -ne $false -or
               $receipt.authorizesLoaderClosure -ne $false -or
-              $receipt.authorizesExecution -ne $false -or
-              (Get-FileHash -LiteralPath $receipt.fixedGitPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
-                $receipt.gitImageSha256) {
+              $receipt.authorizesExecution -ne $false) {
             throw 'git_inventory_receipt_readback_invalid'
+          }
+          $topFields = @($receipt.PSObject.Properties.Name | Sort-Object)
+          $expectedTopFields = @('authorizesExecution','authorizesLoaderClosure',
+            'candidates','result','runAttempt','runId','runnerImage',
+            'runnerImageVersion','runnerLabel','schemaVersion','sourceHead',
+            'traceStarted')
+          if (($topFields -join ',') -cne ($expectedTopFields -join ',')) {
+            throw 'git_inventory_receipt_fields_invalid'
+          }
+          for ($i = 0; $i -lt $candidates.Count; $i++) {
+            $row = $receipt.candidates[$i]
+            $actual = Read-Candidate $candidates[$i]
+            if ($row.path -cne $candidates[$i] -or
+                $row.status -cne $actual.status -or
+                $row.status -cnotin @('absent','reparse','unsafe_present','pe_present')) {
+              throw 'git_inventory_candidate_readback_mismatch'
+            }
+            $fields = @($row.PSObject.Properties.Name | Sort-Object)
+            $expectedFields = if ($row.status -ceq 'pe_present') {
+              @('bytes','path','sha256','status')
+            } else { @('path','status') }
+            if (($fields -join ',') -cne ($expectedFields -join ',')) {
+              throw 'git_inventory_candidate_fields_invalid'
+            }
+            if ($row.status -ceq 'pe_present' -and
+                ($row.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                 $row.sha256 -cne $actual.sha256 -or
+                 $row.bytes -ne $actual.bytes -or $row.bytes -le 0 -or
+                 $row.bytes -ge 134217728)) {
+              throw 'git_inventory_candidate_digest_mismatch'
+            }
           }
       - name: Upload only the read-only digest receipt for one day
         if: steps.inventory.outcome == 'success' && steps.bounds.outcome == 'success'
