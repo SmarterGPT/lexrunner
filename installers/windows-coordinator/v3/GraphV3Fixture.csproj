@@ -6,5 +6,10 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>LexRunner.WindowsCoordinator.GraphV3Fixture</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="GraphV3.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
 </Project>
