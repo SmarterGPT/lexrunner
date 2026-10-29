@@ -307,6 +307,27 @@ jobs:
       - name: Qualify inactive graph-selected Windows Git source build
         shell: pwsh
         run: ./services/windows-coordinator-git/verify-portable.ps1
+      - name: Qualify owned Windows Git ETW source without capture
+        id: owned_etw_source
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "artifacts/windows-owned-etw-source/qualification-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./services/windows-coordinator-git/owned-trace/verify.ps1 -ArtifactDirectory $stage
+      - name: Check bounded owned ETW source receipt
+        id: owned_etw_bounds
+        if: always()
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "artifacts/windows-owned-etw-source/qualification-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./services/windows-coordinator-git/owned-trace/Test-ReceiptBounds.ps1 -ArtifactDirectory $stage
+      - name: Retain bounded owned ETW source receipt
+        if: always() && steps.owned_etw_source.outcome == 'success' && steps.owned_etw_bounds.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-owned-etw-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/windows-owned-etw-source/qualification-${{ github.run_id }}-${{ github.run_attempt }}/verification-receipt.json
+          if-no-files-found: error
+          retention-days: 1
       - name: Qualify inactive Windows coordinator checkout source build
         shell: pwsh
         run: ./services/windows-coordinator-checkout/verify-portable.ps1
