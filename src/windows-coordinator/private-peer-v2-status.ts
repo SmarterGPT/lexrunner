@@ -102,7 +102,14 @@ export function parsePrivatePeerV2StatusRequest(input: Uint8Array): PrivatePeerV
     !validOpaque(fields.attempt_id) ||
     fields.schema_version !== "1.0.0" ||
     fields.verb !== "attempt.status" ||
-    text !== canonicalStatusRequest(fields.request_id, fields.run_id, fields.attempt_id)
+    !clientFrame
+      .subarray(4)
+      .equals(
+        Buffer.from(
+          canonicalStatusRequest(fields.request_id, fields.run_id, fields.attempt_id),
+          "utf8"
+        )
+      )
   )
     invalidRequest();
 

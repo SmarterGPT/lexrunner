@@ -138,6 +138,11 @@ describe("source-only LXNPEER2 status grammar", () => {
     ];
     for (const json of cases) expectRequestRefusal(privateRequest({ payload: Buffer.from(json) }));
     expectRequestRefusal(privateRequest({ payload: Buffer.from([0xff]) }));
+    expectRequestRefusal(
+      privateRequest({
+        payload: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(canonicalRequest)]),
+      })
+    );
   });
 
   it("refuses no-effect, execution, nonce and correlation spoofing in replies", () => {
