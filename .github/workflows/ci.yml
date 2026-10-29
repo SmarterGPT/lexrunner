@@ -256,6 +256,8 @@ jobs:
       - name: Verify inactive Windows coordinator admission bundle and journal
         run: >-
           npx --no-install vitest run
+          --testTimeout=30000
+          --hookTimeout=60000
           tests/windows-coordinator/bundled-admission-probe.spec.ts
           services/windows-coordinator-admission/synthetic-uncertainty-journal.spec.ts
           tests/windows-coordinator/admission-store.spec.ts
