@@ -15,18 +15,28 @@ registry links, checks the SYSTEM owner and protected exact DACL, requires
 typed canonical v3 `ActiveSelection` and `HighWaterRevision` values, checks the
 selected catalog including both fixed service names and image digests, and compares
 two structural snapshots. After that candidate, it derives the fixed Program Files
-generation path, opens and retains the manifest and both fixed service images
-without write/delete sharing, checks graph and image bytes against the v3 roles,
+generation path from the native system volume. It opens and holds each directory
+from the volume root through `service` using a parent handle and fixed child
+name, then opens the manifest and both fixed service images relative to held
+parents without write/delete sharing. Each opened object must be non-reparse,
+have a nonzero full file ID on the same volume, and report its exact final
+path. It rechecks the ancestry before returning and compares graph and image
+bytes against the v3 roles,
 observes both fixed SCM configurations, then rereads selection and SCM. The
 result is only a
 bounded diagnostic reason: even a structural match still reports
 `helper_missing` and cannot construct a production endpoint or send a request.
 The old v1 and v2 observations remain isolated as source/reference fixtures.
 The initial MSI authors no v3 selection or catalog. This v3 observation does
-not authenticate the publisher, retain high-water across upgrades, close the
+not authenticate the publisher, retain an independent high-water across upgrades, close the
 full loader/support graph, bind running process images/tokens to the held files,
-or prove cross-account access. Path ancestry is checked by pathname before
-opening leaf files and is not a held no-swap namespace. The SCM observations
+or prove cross-account access. Local NTFS and ReFS fixtures observed
+`STATUS_SHARING_VIOLATION` on read-only `DELETE`-access probes against held
+generation and image files; the promotion fixture dispatched no rename or
+deletion. The installed Program Files profile still
+needs qualification, and a later launch or loader step must retain custody
+and independently verify ACLs and approved provenance.
+The SCM observations
 are sequential, read-only configuration comparisons; they do not prove the
 service objects' DACLs, actual PIDs or loaded modules. Even an observed match
 returns `helper_missing` and cannot create `SelectedEndpoint` or a generation
@@ -68,7 +78,17 @@ access, protected selection, image custody, activation, and effectful execution
 remain separate qualification work. The additional v3 pure route checks exact
 graph/selection/image-role and two-service SCM comparisons with 19 synthetic
 positive/negative cases. Its direct route creates no pipe or installed state;
-the existing client fixture still exercises its own disposable pipe.
+the existing client fixture still exercises its own disposable pipe. A separate
+fixture-only held-path route creates a nonce-marked directory below the fixture
+image and process temp roots. It verifies handle-relative opens and that a
+second same-user handle cannot acquire DELETE access to the generation or an
+image while custody is held, then refuses an existing
+system junction before looking for a missing descendant. It retains each
+nonce-marked tiny fixture directory and reports its path: path-based cleanup
+after releasing the handles would reenter a same-user mutable namespace. The
+ordinary image excludes this route. Local runs on this host covered ReFS on
+`D:` and NTFS on `C:`; hosted tests must report their observed filesystems
+rather than imply both.
 
 On native Windows with the .NET 8 SDK and npm dependencies, run:
 
