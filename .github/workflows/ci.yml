@@ -273,7 +273,7 @@ jobs:
       - name: Qualify native Windows coordinator console peer probe
         shell: pwsh
         run: ./services/windows-coordinator-host/verify.ps1
-      - name: Qualify native Windows coordinator client source
+      - name: Qualify native Windows coordinator client and v3 installed readback source
         shell: pwsh
         run: ./services/windows-coordinator-client/verify.ps1
       - name: Verify inactive coordinator installed-readback source contract

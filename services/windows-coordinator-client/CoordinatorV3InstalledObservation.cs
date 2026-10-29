@@ -1,0 +1,318 @@
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.Security.Cryptography;
+using LexRunner.WindowsCoordinator.SelectionCustody;
+using Microsoft.Win32.SafeHandles;
+
+namespace LexRunner.WindowsCoordinator.Client;
+
+internal sealed record V3HeldDigest(long Bytes, string Sha256);
+internal sealed record V3ServiceConfig(string Name, uint ServiceType, uint StartType,
+    uint ErrorControl, string BinaryPath, string StartName, string LoadOrderGroup,
+    string Dependencies, uint ServiceSidType);
+
+// Read-only source observation. Every candidate, file hash and SCM string is
+// comparison data, not installed authority or a SelectedEndpoint factory.
+[SupportedOSPlatform("windows")]
+internal static class CoordinatorV3InstalledObservation
+{
+    private const string CoordinatorName = "LexRunnerCoordinator";
+    private const string WorkerName = "LexRunnerWorkerSlot1";
+    private const string CoordinatorRelative = "service/LexRunner.WindowsCoordinator.Service.exe";
+    private const string WorkerRelative = "service/LexRunner.WindowsCoordinator.WorkerSlot.exe";
+    private const uint GenericRead = 0x80000000;
+    private const uint FileShareRead = 1;
+    private const uint OpenExisting = 3;
+    private const uint FileFlagOpenReparsePoint = 0x00200000;
+    private const uint FileAttributeNormal = 0x80;
+    private const uint FileAttributeDirectory = 0x10;
+    private const uint FileAttributeReparsePoint = 0x400;
+    private const int FileAttributeTagInfo = 9;
+    private const long MaxServiceImageBytes = 256L * 1024 * 1024;
+
+    internal static CoordinatorObservation Observe()
+    {
+        if (!Environment.Is64BitProcess)
+            return Stop("unsupported_host");
+        var first = NativeRegistryReaderV3.ObserveSelected();
+        if (first.Candidate is not { } selected)
+            return CoordinatorV3RegistryObservation.FromCustody(first.Custody);
+        try
+        {
+            var generation = FixedGenerationDirectory(selected.GenerationId);
+            using var manifest = OpenHeldRegular(Path.Combine(generation, "generation-graph.json"));
+            byte[] manifestBytes;
+            try { manifestBytes = ReadManifest(manifest); }
+            catch { return Stop("graph_unavailable"); }
+            GraphV3 graph;
+            try { graph = GraphV3.Parse(manifestBytes, selected.ManifestDigest); }
+            catch { return Stop("graph_invalid"); }
+            if (!GraphMatches(selected, graph)) return Stop("graph_mismatch");
+
+            // The two image handles and manifest remain open through hash,
+            // fixed SCM observation and selection recheck. FileShare.Read
+            // denies concurrent write/delete opens, but it cannot authenticate
+            // the installer or freeze an ancestor namespace.
+            using var coordinator = OpenHeldRegular(Path.Combine(generation, "service",
+                "LexRunner.WindowsCoordinator.Service.exe"));
+            using var worker = OpenHeldRegular(Path.Combine(generation, "service",
+                "LexRunner.WindowsCoordinator.WorkerSlot.exe"));
+            V3HeldDigest coordinatorHash;
+            V3HeldDigest workerHash;
+            try
+            {
+                coordinatorHash = HashHeldImage(coordinator);
+                workerHash = HashHeldImage(worker);
+            }
+            catch { return Stop("image_unavailable"); }
+            if (!ImagesMatch(graph, coordinatorHash, workerHash))
+                return Stop("image_mismatch");
+
+            var configs = V3FixedScmReader.ReadBoth();
+            if (configs is null) return Stop("scm_unavailable");
+            if (!ScmMatches(configs.Value.Coordinator, configs.Value.Worker,
+                    Path.Combine(generation, "service", "LexRunner.WindowsCoordinator.Service.exe"),
+                    Path.Combine(generation, "service", "LexRunner.WindowsCoordinator.WorkerSlot.exe")))
+                return Stop("scm_config_mismatch");
+            var second = NativeRegistryReaderV3.ObserveSelected();
+            if (second.Custody.State != "observed" || second.Candidate != selected)
+                return Stop("selection_changed");
+            var configsAfter = V3FixedScmReader.ReadBoth();
+            if (configsAfter is null || configsAfter.Value != configs.Value)
+                return Stop("scm_config_changed");
+            return new CoordinatorObservation("observed_source_only",
+                "installed_structural_match_only");
+        }
+        catch (ReadbackException error) { return Stop(error.Reason); }
+        catch { return Stop("installed_readback_unavailable"); }
+    }
+
+    private static CoordinatorObservation Stop(string reason) =>
+        new("unavailable", reason);
+
+    internal static bool GraphMatches(StructuralSelectionCandidateV3 selected, GraphV3 graph) =>
+        selected.GenerationId == graph.GenerationId &&
+        selected.GraphDigest == graph.GenerationId &&
+        selected.ManifestDigest == graph.ManifestSha256 &&
+        selected.ServiceImageDigest == graph.ServiceImage.Sha256 &&
+        selected.WorkerServiceImageDigest == graph.WorkerServiceImage.Sha256 &&
+        graph.ServiceImage.Path == CoordinatorRelative &&
+        graph.WorkerServiceImage.Path == WorkerRelative;
+
+    internal static bool ImagesMatch(GraphV3 graph, V3HeldDigest coordinator,
+        V3HeldDigest worker) =>
+        coordinator.Bytes == graph.ServiceImage.Bytes &&
+        coordinator.Sha256 == graph.ServiceImage.Sha256 &&
+        worker.Bytes == graph.WorkerServiceImage.Bytes &&
+        worker.Sha256 == graph.WorkerServiceImage.Sha256;
+
+    internal static bool ScmMatches(V3ServiceConfig coordinator, V3ServiceConfig worker,
+        string coordinatorImage, string workerImage) =>
+        Same(coordinator.Name, CoordinatorName) && Same(worker.Name, WorkerName) &&
+        FixedService(coordinator, coordinatorImage, "NT SERVICE\\LexRunnerCoordinator") &&
+        FixedService(worker, workerImage, "NT AUTHORITY\\LocalService");
+
+    private static bool FixedService(V3ServiceConfig config, string image, string account) =>
+        config.ServiceType == 0x10 && config.StartType == 3 &&
+        config.ErrorControl == 1 && config.ServiceSidType == 3 &&
+        FixedCommand(config.BinaryPath, image) &&
+        Same(config.StartName, account) && config.LoadOrderGroup.Length == 0 &&
+        config.Dependencies.Length == 0;
+
+    private static bool FixedCommand(string command, string image)
+    {
+        const string suffix = " --service";
+        return command.EndsWith(suffix, StringComparison.Ordinal) &&
+            Same(command[..^suffix.Length], "\"" + image + "\"");
+    }
+
+    private static bool Same(string a, string b) =>
+        string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static string FixedGenerationDirectory(string id)
+    {
+        if (!GraphV3.ValidHex(id)) throw new ReadbackException("graph_unavailable");
+        var system = Environment.SystemDirectory;
+        var volume = Path.GetPathRoot(system);
+        if (volume is not { Length: 3 } || volume[1] != ':' || volume[2] != '\\' ||
+            !char.IsAsciiLetter(volume[0]) ||
+            !Same(Path.GetFileName(system), "System32") ||
+            !Same(Path.GetFullPath(system), system))
+            throw new ReadbackException("unsupported_host");
+        var paths = new[] {
+            volume,
+            Path.Combine(volume, "Program Files"),
+            Path.Combine(volume, "Program Files", "SmarterGPT.LexRunner.WindowsCoordinator"),
+            Path.Combine(volume, "Program Files", "SmarterGPT.LexRunner.WindowsCoordinator",
+                "generations"),
+            Path.Combine(volume, "Program Files", "SmarterGPT.LexRunner.WindowsCoordinator",
+                "generations", id),
+            Path.Combine(volume, "Program Files", "SmarterGPT.LexRunner.WindowsCoordinator",
+                "generations", id, "service"),
+        };
+        foreach (var path in paths)
+        {
+            var attributes = File.GetAttributes(path);
+            if ((attributes & FileAttributes.Directory) == 0 ||
+                (attributes & FileAttributes.ReparsePoint) != 0)
+                throw new ReadbackException("generation_path_unavailable");
+        }
+        return paths[^2];
+    }
+
+    private static FileStream OpenHeldRegular(string path)
+    {
+        var handle = Native.CreateFileW(path, GenericRead, FileShareRead,
+            IntPtr.Zero, OpenExisting, FileFlagOpenReparsePoint | FileAttributeNormal,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            handle.Dispose();
+            throw new ReadbackException("installed_file_unavailable");
+        }
+        try
+        {
+            if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
+                    out var info, (uint)Marshal.SizeOf<FileAttributeTag>()) ||
+                (info.Attributes & (FileAttributeDirectory | FileAttributeReparsePoint)) != 0)
+                throw new ReadbackException("installed_file_unavailable");
+            return new FileStream(handle, FileAccess.Read);
+        }
+        catch { handle.Dispose(); throw; }
+    }
+
+    private static byte[] ReadManifest(FileStream stream)
+    {
+        if (stream.Length is < 1 or > 262_144) throw new InvalidDataException();
+        var length = (int)stream.Length;
+        var bytes = new byte[length];
+        stream.ReadExactly(bytes);
+        if (stream.Length != length) throw new InvalidDataException();
+        return bytes;
+    }
+
+    private static V3HeldDigest HashHeldImage(FileStream stream)
+    {
+        var length = stream.Length;
+        if (length is < 1 or > MaxServiceImageBytes)
+            throw new InvalidDataException();
+        var hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        if (stream.Length != length) throw new InvalidDataException();
+        return new V3HeldDigest(length, hash);
+    }
+
+    private sealed class ReadbackException(string reason) : Exception(reason)
+    {
+        internal string Reason { get; } = reason;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileAttributeTag { internal uint Attributes; internal uint ReparseTag; }
+
+    [DllImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle file,
+        int informationClass, out FileAttributeTag information, uint size);
+}
+
+// Fixed read-only service configuration query. These handles close before the
+// result is returned; the observation cannot bind a running PID or image.
+[SupportedOSPlatform("windows")]
+internal static class V3FixedScmReader
+{
+    private const uint ScManagerConnect = 1;
+    private const uint ServiceQueryConfig = 1;
+    private const uint ServiceConfigServiceSidInfo = 5;
+    private const int ErrorInsufficientBuffer = 122;
+    private const uint MaxConfigBytes = 8192;
+
+    internal static (V3ServiceConfig Coordinator, V3ServiceConfig Worker)? ReadBoth()
+    {
+        using var manager = Native.OpenSCManagerW(null, null, ScManagerConnect);
+        if (manager.IsInvalid) return null;
+        var coordinator = Read(manager, "LexRunnerCoordinator");
+        var worker = Read(manager, "LexRunnerWorkerSlot1");
+        return coordinator is not null && worker is not null ? (coordinator, worker) : null;
+    }
+
+    private static V3ServiceConfig? Read(SafeServiceHandle manager, string name)
+    {
+        using var service = Native.OpenServiceW(manager, name, ServiceQueryConfig);
+        if (service.IsInvalid) return null;
+        if (QueryServiceConfigW(service, IntPtr.Zero, 0, out var needed) ||
+            Marshal.GetLastWin32Error() != ErrorInsufficientBuffer ||
+            needed < (uint)Marshal.SizeOf<NativeQueryServiceConfig>() || needed > MaxConfigBytes)
+            return null;
+        var buffer = Marshal.AllocHGlobal((int)needed);
+        try
+        {
+            if (!QueryServiceConfigW(service, buffer, needed, out _)) return null;
+            var config = Marshal.PtrToStructure<NativeQueryServiceConfig>(buffer);
+            var command = ReadBoundedString(buffer, needed, config.BinaryPath);
+            var account = ReadBoundedString(buffer, needed, config.StartName);
+            var group = ReadBoundedString(buffer, needed, config.LoadOrderGroup);
+            var dependencies = ReadDependencies(buffer, needed, config.Dependencies);
+            if (command is null || account is null || group is null ||
+                dependencies is null) return null;
+            var sidBuffer = Marshal.AllocHGlobal(sizeof(uint));
+            try
+            {
+                if (!QueryServiceConfig2W(service, ServiceConfigServiceSidInfo,
+                        sidBuffer, sizeof(uint), out var sidNeeded) ||
+                    sidNeeded != sizeof(uint)) return null;
+                var sidType = (uint)Marshal.ReadInt32(sidBuffer);
+                return new V3ServiceConfig(name, config.ServiceType, config.StartType,
+                    config.ErrorControl, command, account, group, dependencies, sidType);
+            }
+            finally { Marshal.FreeHGlobal(sidBuffer); }
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private static string? ReadBoundedString(IntPtr buffer, uint size, IntPtr pointer)
+    {
+        if (pointer == IntPtr.Zero) return "";
+        var offset = pointer.ToInt64() - buffer.ToInt64();
+        if (offset < 0 || offset >= size || (offset & 1) != 0) return null;
+        var available = (int)size - (int)offset;
+        var chars = new List<char>();
+        for (var index = 0; index + 1 < available; index += 2)
+        {
+            var value = (char)(ushort)Marshal.ReadInt16(pointer, index);
+            if (value == '\0') return new string([.. chars]);
+            if (chars.Count == 4096) return null;
+            chars.Add(value);
+        }
+        return null;
+    }
+
+    private static string? ReadDependencies(IntPtr buffer, uint size, IntPtr pointer)
+    {
+        var first = ReadBoundedString(buffer, size, pointer);
+        if (first is null || first.Length != 0 || pointer == IntPtr.Zero) return first;
+        var offset = pointer.ToInt64() - buffer.ToInt64();
+        return offset >= 0 && offset + 4 <= size && Marshal.ReadInt16(pointer, 2) == 0
+            ? "" : null;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeQueryServiceConfig
+    {
+        internal uint ServiceType, StartType, ErrorControl;
+        internal IntPtr BinaryPath, LoadOrderGroup;
+        internal uint TagId;
+        internal IntPtr Dependencies, StartName, DisplayName;
+    }
+
+    [DllImport("advapi32.dll", EntryPoint = "QueryServiceConfigW", CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryServiceConfigW(SafeServiceHandle service,
+        IntPtr buffer, uint size, out uint needed);
+
+    [DllImport("advapi32.dll", EntryPoint = "QueryServiceConfig2W", CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryServiceConfig2W(SafeServiceHandle service,
+        uint infoLevel, IntPtr buffer, uint size, out uint needed);
+}
