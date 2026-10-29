@@ -15,6 +15,8 @@ internal static class Program
                 return FixtureTests.RunAll();
             if (args is ["--v3-installed-fixture-selftest"])
                 return V3InstalledFixtureTests.RunPure();
+            if (args is ["--v3-held-installed-fixture-selftest"])
+                return V3HeldInstalledFixtureTests.Run();
             if (args.Length == 3 && args[0] == "--fixture-server")
                 return FixtureServer.Run(args[1], args[2]);
 #endif
@@ -79,6 +81,7 @@ internal sealed class TestCase
     [JsonPropertyName("second_instance_error")] public int? SecondInstanceError { get; init; }
     [JsonPropertyName("server_exit")] public int? ServerExit { get; init; }
     [JsonPropertyName("error")] public string? Error { get; init; }
+    [JsonPropertyName("fixture_path")] public string? FixturePath { get; init; }
 }
 
 internal sealed class TestReport

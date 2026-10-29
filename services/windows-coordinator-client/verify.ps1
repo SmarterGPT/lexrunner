@@ -17,6 +17,7 @@ $oldWindir = $env:WINDIR
 $steps = [Collections.Generic.List[object]]::new()
 $failure = $null
 $testCount = 0
+$heldCount = 0
 $clock = [Diagnostics.Stopwatch]::StartNew()
 
 function Invoke-CheckedStep([string] $name, [string] $file, [string[]] $arguments,
@@ -109,6 +110,7 @@ try {
           'graph_mismatch', 'image_unavailable', 'image_mismatch',
           'scm_unavailable', 'scm_config_mismatch', 'scm_config_changed',
           'installed_file_unavailable', 'generation_path_unavailable',
+          'generation_path_changed',
           'installed_readback_unavailable', 'installed_structural_match_only') -or
       ((@($status.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'reason,state')) {
     throw 'Ordinary status did not retain helper_missing.'
@@ -122,6 +124,11 @@ try {
     @('--v3-installed-fixture-selftest') $projectRoot 3
   if (($v3ExcludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
     throw 'V3 installed fixture mode was available in the ordinary image.'
+  }
+  $heldExcludedText = Invoke-CheckedStep 'v3_held_fixture_excluded' $normalImage `
+    @('--v3-held-installed-fixture-selftest') $projectRoot 3
+  if (($heldExcludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
+    throw 'V3 held installed fixture mode was available in the ordinary image.'
   }
   $sendText = Invoke-CheckedStep 'ordinary_send_refused' $normalImage @('--execute') `
     $projectRoot 3
@@ -139,6 +146,28 @@ try {
       $pure.results.Count -ne 19 -or $pure.failures.Count -ne 0 -or
       @($pure.results | Where-Object { -not $_.passed }).Count -ne 0) {
     throw 'V3 installed pure fixture tests did not all pass.'
+  }
+  $heldText = Invoke-CheckedStep 'v3_held_installed_selftest' $fixtureImage `
+    @('--v3-held-installed-fixture-selftest') $projectRoot 0
+  $held = $heldText.Trim() | ConvertFrom-Json
+  $heldCount = $held.results.Count
+  if ($held.state -ne 'pass' -or
+      $held.profile -ne 'v3_held_installed_source_only' -or
+      $held.results.Count -lt 2 -or $held.results.Count -gt 3 -or
+      $held.failures.Count -ne 0 -or
+      @($held.results | Where-Object { -not $_.passed }).Count -ne 0 -or
+      $held.results[0].name -ne 'fixture_image_root' -or
+      $held.results[1].name -ne 'process_temp_root' -or
+      $held.results[0].state -notin @('NTFS', 'ReFS') -or
+      $held.results[1].state -notin @('NTFS', 'ReFS') -or
+      -not [string]::Equals(
+        [IO.Path]::GetDirectoryName($held.results[0].fixture_path),
+        $fixtureRoot, [StringComparison]::OrdinalIgnoreCase) -or
+      -not [string]::Equals(
+        [IO.Path]::GetDirectoryName($held.results[1].fixture_path),
+        [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\'),
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'V3 held installed native fixture tests did not all pass.'
   }
   $testText = Invoke-CheckedStep 'native_selftest' $fixtureImage @('--selftest') `
     $projectRoot 0
@@ -173,6 +202,7 @@ finally {
       'CoordinatorV2RegistryObservation.cs', 'CoordinatorV2RegistryFixtureTests.cs',
       'CoordinatorV3RegistryObservation.cs', 'CoordinatorV3RegistryFixtureTests.cs',
       'CoordinatorV3InstalledObservation.cs', 'V3InstalledFixtureTests.cs',
+      'V3HeldInstalledFiles.cs', 'V3HeldInstalledFixtureTests.cs',
       'README.md', 'verify.ps1')) {
     $path = Join-Path $projectRoot $name
     if (Test-Path -LiteralPath $path) {
@@ -210,6 +240,7 @@ finally {
     } else { $null }
     profile = 'synthetic_same_user_non_authorizing'
     native_test_count = $testCount
+    held_test_count = $heldCount
     total_duration_ms = $clock.ElapsedMilliseconds
     steps = $steps
     failure = $failure
@@ -221,6 +252,7 @@ finally {
     state = $receipt.state
     receipt = $receiptPath
     native_test_count = $testCount
+    held_test_count = $heldCount
     total_duration_ms = $clock.ElapsedMilliseconds
     failure = $failure
   } | ConvertTo-Json -Compress)

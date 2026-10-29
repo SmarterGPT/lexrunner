@@ -20,14 +20,6 @@ internal static class CoordinatorV3InstalledObservation
     private const string WorkerName = "LexRunnerWorkerSlot1";
     private const string CoordinatorRelative = "service/LexRunner.WindowsCoordinator.Service.exe";
     private const string WorkerRelative = "service/LexRunner.WindowsCoordinator.WorkerSlot.exe";
-    private const uint GenericRead = 0x80000000;
-    private const uint FileShareRead = 1;
-    private const uint OpenExisting = 3;
-    private const uint FileFlagOpenReparsePoint = 0x00200000;
-    private const uint FileAttributeNormal = 0x80;
-    private const uint FileAttributeDirectory = 0x10;
-    private const uint FileAttributeReparsePoint = 0x400;
-    private const int FileAttributeTagInfo = 9;
     private const long MaxServiceImageBytes = 256L * 1024 * 1024;
 
     internal static CoordinatorObservation Observe()
@@ -39,8 +31,9 @@ internal static class CoordinatorV3InstalledObservation
             return CoordinatorV3RegistryObservation.FromCustody(first.Custody);
         try
         {
-            var generation = FixedGenerationDirectory(selected.GenerationId);
-            using var manifest = OpenHeldRegular(Path.Combine(generation, "generation-graph.json"));
+            using var held = V3HeldInstalledFiles.OpenInstalled(selected.GenerationId);
+            var generation = held.GenerationPath;
+            using var manifest = held.OpenManifest();
             byte[] manifestBytes;
             try { manifestBytes = ReadManifest(manifest); }
             catch { return Stop("graph_unavailable"); }
@@ -49,14 +42,11 @@ internal static class CoordinatorV3InstalledObservation
             catch { return Stop("graph_invalid"); }
             if (!GraphMatches(selected, graph)) return Stop("graph_mismatch");
 
-            // The two image handles and manifest remain open through hash,
-            // fixed SCM observation and selection recheck. FileShare.Read
-            // denies concurrent write/delete opens, but it cannot authenticate
-            // the installer or freeze an ancestor namespace.
-            using var coordinator = OpenHeldRegular(Path.Combine(generation, "service",
-                "LexRunner.WindowsCoordinator.Service.exe"));
-            using var worker = OpenHeldRegular(Path.Combine(generation, "service",
-                "LexRunner.WindowsCoordinator.WorkerSlot.exe"));
+            // The held ancestry and leaf handles remain open through hashing,
+            // fixed SCM observation, and the second selection read. This is
+            // namespace continuity, not signer or running-process binding.
+            using var coordinator = held.OpenCoordinator();
+            using var worker = held.OpenWorker();
             V3HeldDigest coordinatorHash;
             V3HeldDigest workerHash;
             try
@@ -80,10 +70,11 @@ internal static class CoordinatorV3InstalledObservation
             var configsAfter = V3FixedScmReader.ReadBoth();
             if (configsAfter is null || configsAfter.Value != configs.Value)
                 return Stop("scm_config_changed");
+            held.VerifyUnchanged();
             return new CoordinatorObservation("observed_source_only",
                 "installed_structural_match_only");
         }
-        catch (ReadbackException error) { return Stop(error.Reason); }
+        catch (V3HeldPathException error) { return Stop(error.Reason); }
         catch { return Stop("installed_readback_unavailable"); }
     }
 
@@ -129,58 +120,6 @@ internal static class CoordinatorV3InstalledObservation
     private static bool Same(string a, string b) =>
         string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
-    private static string FixedGenerationDirectory(string id)
-    {
-        if (!GraphV3.ValidHex(id)) throw new ReadbackException("graph_unavailable");
-        var system = Environment.SystemDirectory;
-        var volume = Path.GetPathRoot(system);
-        if (volume is not { Length: 3 } || volume[1] != ':' || volume[2] != '\\' ||
-            !char.IsAsciiLetter(volume[0]) ||
-            !Same(Path.GetFileName(system), "System32") ||
-            !Same(Path.GetFullPath(system), system))
-            throw new ReadbackException("unsupported_host");
-        var paths = new[] {
-            volume,
-            Path.Combine(volume, "Program Files"),
-            Path.Combine(volume, "Program Files", "SmarterGPT.LexRunner.WindowsCoordinator"),
-            Path.Combine(volume, "Program Files", "SmarterGPT.LexRunner.WindowsCoordinator",
-                "generations"),
-            Path.Combine(volume, "Program Files", "SmarterGPT.LexRunner.WindowsCoordinator",
-                "generations", id),
-            Path.Combine(volume, "Program Files", "SmarterGPT.LexRunner.WindowsCoordinator",
-                "generations", id, "service"),
-        };
-        foreach (var path in paths)
-        {
-            var attributes = File.GetAttributes(path);
-            if ((attributes & FileAttributes.Directory) == 0 ||
-                (attributes & FileAttributes.ReparsePoint) != 0)
-                throw new ReadbackException("generation_path_unavailable");
-        }
-        return paths[^2];
-    }
-
-    private static FileStream OpenHeldRegular(string path)
-    {
-        var handle = Native.CreateFileW(path, GenericRead, FileShareRead,
-            IntPtr.Zero, OpenExisting, FileFlagOpenReparsePoint | FileAttributeNormal,
-            IntPtr.Zero);
-        if (handle.IsInvalid)
-        {
-            handle.Dispose();
-            throw new ReadbackException("installed_file_unavailable");
-        }
-        try
-        {
-            if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
-                    out var info, (uint)Marshal.SizeOf<FileAttributeTag>()) ||
-                (info.Attributes & (FileAttributeDirectory | FileAttributeReparsePoint)) != 0)
-                throw new ReadbackException("installed_file_unavailable");
-            return new FileStream(handle, FileAccess.Read);
-        }
-        catch { handle.Dispose(); throw; }
-    }
-
     private static byte[] ReadManifest(FileStream stream)
     {
         if (stream.Length is < 1 or > 262_144) throw new InvalidDataException();
@@ -201,18 +140,6 @@ internal static class CoordinatorV3InstalledObservation
         return new V3HeldDigest(length, hash);
     }
 
-    private sealed class ReadbackException(string reason) : Exception(reason)
-    {
-        internal string Reason { get; } = reason;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FileAttributeTag { internal uint Attributes; internal uint ReparseTag; }
-
-    [DllImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetFileInformationByHandleEx(SafeFileHandle file,
-        int informationClass, out FileAttributeTag information, uint size);
 }
 
 // Fixed read-only service configuration query. These handles close before the
