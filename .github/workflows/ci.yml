@@ -301,7 +301,7 @@ jobs:
       - name: Qualify inactive Windows coordinator selection publisher source
         shell: pwsh
         run: ./services/windows-coordinator-selection-publisher/verify.ps1
-      - name: Qualify inactive Windows coordinator selection custody source
+      - name: Qualify inactive Windows coordinator v2 and v3 selection custody source
         shell: pwsh
         run: ./services/windows-coordinator-selection-custody/verify.ps1
       - name: Qualify inactive graph-selected Windows Git source build

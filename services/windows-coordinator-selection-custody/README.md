@@ -50,6 +50,13 @@ for comparison against independently authenticated installed release bytes.
 No current service imports it; the candidate cannot construct
 ProtectedGenerationLease, and production still reports helper_missing.
 
+The version-isolated v3 reader adds a second structural candidate with the
+fixed `LexRunnerWorkerSlot1` name and worker service-image digest. The ordinary
+native client status path calls that fixed v3 reader and still returns
+`helper_missing`. The v2 parser and standalone `--observe` route remain intact.
+Neither v3 snapshot opens the generation graph or service image files, inspects
+the second SCM object, or returns a launch lease.
+
 This source deliberately accepts only one selected generation. It does not
 model retired generations, update/repair, or uninstall retention. A matching
 high-water number is not evidence that it survived a previous installation or

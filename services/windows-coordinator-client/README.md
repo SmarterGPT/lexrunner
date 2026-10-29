@@ -8,19 +8,20 @@ bounded diagnostic, but it still reports `helper_missing` even if that service
 exists. No caller argument can supply a pipe name, PID, image path, or pin in
 the ordinary image.
 
-The ordinary `--status` path now makes a read-only v2 observation of the fixed
+The ordinary `--status` path makes a read-only v3 structural observation of the fixed
 64-bit `HKLM\Software\SmarterGPT.LexRunner.WindowsCoordinator` key through the
 shared native selection-custody reader. It holds opened registry keys, refuses
 registry links, checks the SYSTEM owner and protected exact DACL, requires
-typed canonical v2 `ActiveSelection` and `HighWaterRevision` values, checks the
-selected catalog, and compares two structural snapshots. The result is only a
+typed canonical v3 `ActiveSelection` and `HighWaterRevision` values, checks the
+selected catalog including both fixed service names and image digests, and compares
+two structural snapshots. The result is only a
 bounded diagnostic reason: even a structural match still reports
 `helper_missing` and cannot construct a production endpoint or send a request.
-The old v1 one-image selection comparison remains isolated in source fixtures;
-it is not the ordinary client's selected v2 profile. The initial MSI authors
-no selection or catalog. This v2 observation does not authenticate the
-publisher, retain high-water across upgrades, bind the installed graph or
-running process image, qualify loader closure, or prove cross-account access.
+The old v1 and v2 observations remain isolated as source/reference fixtures.
+The initial MSI authors no v3 selection or catalog. This v3 registry observation
+does not open or hash the installed graph or either image, inspect the worker
+SCM object, authenticate the publisher, retain high-water across upgrades,
+bind the running processes, qualify loader closure, or prove cross-account access.
 
 The source binding sequence for a future protected selection is:
 

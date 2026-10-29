@@ -21,9 +21,9 @@ internal static class Program
             // In particular, a caller cannot supply a pipe, PID, path or pin.
             if (args is ["--status"])
             {
-                // The v2 HKLM reader is an observation only. A structural
+                // The v3 HKLM reader is an observation only. A structural
                 // registry match cannot construct an endpoint or send a frame.
-                var selection = CoordinatorV2RegistryObservation.Observe();
+                var selection = CoordinatorV3RegistryObservation.Observe();
                 var service = new ScmServiceSnapshots();
                 var status = service.Read();
                 return Emit(new Output { State = "helper_missing",
