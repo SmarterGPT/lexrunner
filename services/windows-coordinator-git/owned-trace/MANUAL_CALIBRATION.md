@@ -12,13 +12,20 @@ hosted `windows-2022` runner. Its bounded receipt distinguishes absent,
 reparse, unsafe present and PE present files; SHA-256 and byte count appear
 only for safe PE candidates. A second step reads each fixed path again and
 checks the receipt before one-day upload. The workflow uses no caller path or
-`PATH` lookup and never starts Git. Hosted inventory run `40813845303`
+`PATH` lookup and never starts Git. Initial hosted inventory run `40813845303`
 refused the original `mingw64\bin\git.exe` path as missing, empty or reparse
-and produced no artifact. The calibration still fixes that
-path and must not be dispatched until a subsequent reviewed source change
-selects a present image from the hosted receipt. The later runner must still
-rehash its chosen fixed image and refuse a mismatch. This inventory is a
-path observation, not protected image binding or a stable selection record.
+and produced no artifact. Corrected inventory run `40816727040` on source
+`9466951ecbb2fbda580c4b0c695e3f9bada4aa86` and Windows 2022 image
+`win22`/`20261026.347.1` produced an 866-byte receipt (SHA-256
+`DB6B8E0957A660DA14B52930135AF7B19EC2520207390A417CE742B02E57A41D`).
+It observed `C:\Program Files\Git\bin\git.exe` and `cmd\git.exe` as
+PE-present, each 44,872 bytes with SHA-256
+`3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3`;
+both `mingw64` candidate paths were absent. The calibration now fixes only
+the `bin\git.exe` path. Its dispatch still requires the receipt's exact digest,
+and both the workflow and native diagnostic rehash that path on the later
+runner, refusing any mismatch. This inventory is a point-in-time path
+observation, not protected image binding or a stable selection record.
 Neither workflow has a trace route during inventory. The calibration job has
 read-only repository permission, no persisted
 checkout credential, no npm/MSI/helper install and a 15-minute timeout.
@@ -42,6 +49,13 @@ different handle/name stop or automatic cleanup. The fixed Git fixture uses
 `STARTUPINFOEXW` with `PROC_THREAD_ATTRIBUTE_JOB_LIST` at `CreateProcessW`,
 `CREATE_SUSPENDED`, no breakaway permission, a held process handle,
 `IsProcessInJob` and `GetProcessTimes` creation FILETIME before resuming.
+Its compile-gated manual profile selects the observed `bin\git.exe` image
+for the actual child launch. The child environment contains only the
+OS-queried System32 and Windows directories on `PATH`, and omits
+`GIT_EXEC_PATH`; it does not guess a Git support directory or use the runner's
+ambient `PATH`. The normal Git import image and environment stay unchanged.
+Any child process makes the one-command probe refuse. Support-file loads
+remain census data and cannot turn this inventory into loader closure.
 The expected Git SHA-256 is checked against a held file handle. The
 fixture reports only bounded root PID/creation time, Job count/drain,
 exit/output counts and hashes; any child makes this one-command probe refuse.

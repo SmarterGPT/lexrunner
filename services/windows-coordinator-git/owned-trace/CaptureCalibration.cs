@@ -279,7 +279,7 @@ internal static class CaptureCalibration
             return Directory.Exists(runnerTemp) && Directory.Exists(workspace) &&
                 NoReparseAncestors(runnerTemp) && NoReparseAncestors(workspace) &&
                 gitSha is not null &&
-                ShaFile(@"C:\Program Files\Git\mingw64\bin\git.exe") == gitSha &&
+                ShaFile(@"C:\Program Files\Git\bin\git.exe") == gitSha &&
                 File.Exists(Path.Combine(AppContext.BaseDirectory, "git-fixture",
                     "LexRunner.WindowsCoordinator.Git.exe"));
         }
