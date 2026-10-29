@@ -1,4 +1,8 @@
 using System.Diagnostics;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 internal static class TreeRemovalProbe
 {
@@ -10,6 +14,15 @@ internal static class TreeRemovalProbe
     {
       var path = Path.Combine(root, "tree-" + name); Directory.CreateDirectory(path);
       test(path); results.Add("tree-" + name);
+    }
+    void Reject(string path, string reason)
+    {
+      try
+      {
+        using var tree = NativeRemovalTree.Acquire(root, Path.GetFileName(path), Snapshot(path));
+        throw new Exception("Expected removal metadata refusal");
+      }
+      catch (InvalidDataException error) when (error.Message.Contains(reason, StringComparison.Ordinal)) { }
     }
     Test("nested", path => {
       Directory.CreateDirectory(Path.Combine(path, "one", "two"));
@@ -36,6 +49,60 @@ internal static class TreeRemovalProbe
       File.SetAttributes(file, FileAttributes.ReadOnly);
       using var tree = NativeRemovalTree.Acquire(root, Path.GetFileName(path), Snapshot(path));
       Check(tree.Commit(30000).Outcome == "selected_tree_removed" && !Directory.Exists(path));
+    });
+    Test("named-file-stream-refused", path => {
+      var file = Path.Combine(path, "keep");
+      File.WriteAllText(file, "ordinary");
+      File.WriteAllText(file + ":named", "hidden");
+      Reject(path, "stream");
+      Check(File.ReadAllText(file) == "ordinary" && File.ReadAllText(file + ":named") == "hidden");
+    });
+    Test("named-directory-stream-refused", path => {
+      File.WriteAllText(path + ":named", "hidden");
+      File.SetAttributes(path, FileAttributes.Directory); // Archive bit cannot stand in for stream enumeration.
+      Reject(path, "directory stream");
+      Check(Directory.Exists(path) && File.ReadAllText(path + ":named") == "hidden");
+    });
+    Test("hardlink-refused", path => {
+      var file = Path.Combine(path, "keep");
+      var alias = Path.Combine(root, "hardlink-outside");
+      File.WriteAllText(file, "ordinary");
+      if (!CreateHardLinkW(alias, file, IntPtr.Zero))
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "Hardlink negative control setup");
+      Reject(path, "link");
+      Check(File.ReadAllText(file) == "ordinary" && File.ReadAllText(alias) == "ordinary");
+    });
+    Test("extended-attribute-refused", path => {
+      var file = Path.Combine(path, "keep");
+      File.WriteAllText(file, "ordinary");
+      using (var writable = CreateFileW(file, 0x90, 7, IntPtr.Zero, 3, 0, IntPtr.Zero))
+      {
+        if (writable.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "EA setup open");
+        var name = Encoding.ASCII.GetBytes("LEXTEST");
+        var value = Encoding.ASCII.GetBytes("v");
+        var input = new byte[8 + name.Length + 1 + value.Length];
+        input[5] = checked((byte)name.Length);
+        BitConverter.GetBytes(checked((ushort)value.Length)).CopyTo(input, 6);
+        name.CopyTo(input, 8);
+        value.CopyTo(input, 8 + name.Length + 1);
+        if (NtSetEaFile(writable, out _, input, (uint)input.Length) != 0)
+          throw new InvalidDataException("EA negative control setup failed");
+      }
+      Reject(path, "extended attributes");
+      Check(File.ReadAllText(file) == "ordinary");
+    });
+    Test("sparse-file-refused", path => {
+      var file = Path.Combine(path, "keep");
+      File.WriteAllText(file, "ordinary");
+      using (var writable = File.OpenHandle(file, FileMode.Open, FileAccess.ReadWrite,
+          FileShare.ReadWrite | FileShare.Delete))
+      {
+        if (!DeviceIoControl(writable, 0x900c4, IntPtr.Zero, 0, IntPtr.Zero, 0,
+            out _, IntPtr.Zero))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "Sparse negative control setup");
+      }
+      Reject(path, "attributes");
+      Check(File.ReadAllText(file) == "ordinary");
     });
     Test("prepare-budget", path => {
       File.WriteAllText(Path.Combine(path, "keep"), "keep");
@@ -100,4 +167,19 @@ internal static class TreeRemovalProbe
       Check(!Git("worktree", "list", "--porcelain").Contains(path.Replace('\\', '/'), StringComparison.Ordinal));
     });
   }
+  [StructLayout(LayoutKind.Sequential)] private struct IoStatusBlock
+  { internal IntPtr Status, Information; }
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+  private static extern SafeFileHandle CreateFileW(string path, uint access, uint share,
+      IntPtr security, uint creation, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CreateHardLinkW(
+      string newFile, string existingFile, IntPtr security);
+  [DllImport("ntdll.dll", ExactSpelling = true)]
+  private static extern int NtSetEaFile(SafeFileHandle handle, out IoStatusBlock io,
+      [In] byte[] ea, uint length);
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeviceIoControl(
+      SafeFileHandle handle, uint control, IntPtr input, uint inputLength,
+      IntPtr output, uint outputLength, out uint returned, IntPtr overlapped);
 }

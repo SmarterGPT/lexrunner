@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -10,6 +11,8 @@ using System.Text.Json;
 // A supplied identity associates the selection; it is not a grant of authority.
 internal sealed class NativeRemovalTree : IDisposable
 {
+  private const int ErrorHandleEof = 38;
+  private static readonly byte[] DefaultStreamName = Encoding.Unicode.GetBytes("::$DATA");
   internal sealed record Result(string Outcome, int Deleted, int? NativeError, bool ReleaseConfirmed);
   private sealed class Entry(string relative, bool directory, DirectoryLease.Identity identity,
       DirectoryLease.DirectoryHandle handle, long length, string? contentHash, Entry? parent)
@@ -86,6 +89,10 @@ internal sealed class NativeRemovalTree : IDisposable
           {
             if (!GetFileSizeEx(handle, out length) || length < 0 || length > maximumBytes - bytes)
               throw new InvalidDataException("Removal byte budget exceeded");
+          }
+          RequirePlainMetadata(handle, next.Directory, length, next.Relative);
+          if (!next.Directory)
+          {
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             using var captured = new MemoryStream();
             var capture = next.Parent == tree.entries.FirstOrDefault() &&
@@ -217,6 +224,7 @@ internal sealed class NativeRemovalTree : IDisposable
       {
         if (DirectoryLease.Capture(owned, entry.Directory) != entry.Identity)
           throw new InvalidDataException("Removal reopen changed identity");
+        RequirePlainMetadata(owned, entry.Directory, entry.Length, entry.Relative);
         var prior = entry.Handle;
         entry.Handle = owned;
         owned = null!;
@@ -259,6 +267,7 @@ internal sealed class NativeRemovalTree : IDisposable
         var entry = entries[i];
         if (DirectoryLease.Capture(entry.Handle, entry.Directory) != entry.Identity)
           throw new InvalidDataException("Removal identity changed before disposition");
+        RequirePlainMetadata(entry.Handle, entry.Directory, entry.Length, entry.Relative);
         // DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE. Unsupported driver
         // behavior is a refusal/partial outcome, never a pathname-delete fallback.
         var flags = new Disposition { Flags = 0x13 };
@@ -309,6 +318,62 @@ internal sealed class NativeRemovalTree : IDisposable
     var valid = !handle.IsInvalid; handle.Dispose();
     if (valid && handle.ReleaseSucceeded != true) throw new IOException("Removal handle release uncertain");
   }
+  // Refuse metadata that the default-stream inventory does not represent.
+  // This is a point-in-time loss guard, not a race-free clean-worktree proof:
+  // named-stream sharing is independent of the default-stream handle.
+  private static void RequirePlainMetadata(DirectoryLease.DirectoryHandle handle, bool directory,
+      long length, string relative)
+  {
+    var standard = new byte[24];
+    if (!GetFileInformationByHandleEx(handle, 1, standard, (uint)standard.Length))
+      throw new Win32Exception(Marshal.GetLastWin32Error(), "Removal standard metadata unavailable");
+    var links = BinaryPrimitives.ReadUInt32LittleEndian(standard.AsSpan(16));
+    if (links != 1 || standard[20] != 0 || (standard[21] != 0) != directory ||
+        (!directory && BinaryPrimitives.ReadInt64LittleEndian(standard.AsSpan(8)) != length))
+      throw new InvalidDataException("Removal link, delete-pending or type metadata unsupported");
+
+    var tag = new byte[8];
+    if (!GetFileInformationByHandleEx(handle, 9, tag, (uint)tag.Length))
+      throw new Win32Exception(Marshal.GetLastWin32Error(), "Removal attribute metadata unavailable");
+    var attributes = BinaryPrimitives.ReadUInt32LittleEndian(tag);
+    var reparseTag = BinaryPrimitives.ReadUInt32LittleEndian(tag.AsSpan(4));
+    var plainFile = attributes is 0x1 or 0x20 or 0x21 or 0x80;
+    var gitPointer = relative == ".git" && attributes == 0x22;
+    if (reparseTag != 0 || (directory
+          ? attributes != 0x10
+          : !plainFile && !gitPointer))
+      throw new InvalidDataException("Removal file attributes unsupported");
+
+    var eaStatus = NtQueryInformationFile(handle, out var eaIo, out var eaSize, 4, 7);
+    if (eaStatus != 0 || eaIo.Status != IntPtr.Zero || eaIo.Information.ToInt64() != 4)
+      throw new InvalidDataException("Removal extended-attribute query unavailable");
+    if (eaSize != 0) throw new InvalidDataException("Removal extended attributes unsupported");
+
+    var streams = new byte[4096];
+    if (!GetFileInformationByHandleEx(handle, 7, streams, (uint)streams.Length))
+    {
+      var error = Marshal.GetLastWin32Error();
+      if (directory && error == ErrorHandleEof) return;
+      throw new Win32Exception(error, "Removal stream inventory unavailable");
+    }
+    // This host profile returns ERROR_HANDLE_EOF for plain directories; any
+    // listed directory stream is outside the selected default-stream inventory.
+    if (directory) throw new InvalidDataException("Removal directory stream unsupported");
+    var next = BinaryPrimitives.ReadUInt32LittleEndian(streams);
+    var nameBytes = BinaryPrimitives.ReadUInt32LittleEndian(streams.AsSpan(4));
+    var streamLength = BinaryPrimitives.ReadInt64LittleEndian(streams.AsSpan(8));
+    if (next != 0 || nameBytes != DefaultStreamName.Length ||
+        !streams.AsSpan(24, DefaultStreamName.Length).SequenceEqual(DefaultStreamName) ||
+        streamLength != length)
+      throw new InvalidDataException("Removal named or ambiguous stream unsupported");
+  }
+  [StructLayout(LayoutKind.Sequential)] private struct IoStatusBlock { internal IntPtr Status, Information; }
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetFileInformationByHandleEx(
+      DirectoryLease.DirectoryHandle handle, int kind, [Out] byte[] data, uint length);
+  [DllImport("ntdll.dll", ExactSpelling = true)]
+  private static extern int NtQueryInformationFile(DirectoryLease.DirectoryHandle handle,
+      out IoStatusBlock io, out uint eaSize, uint length, int kind);
   [StructLayout(LayoutKind.Sequential)] private struct Disposition { internal uint Flags; }
   [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetFileInformationByHandle(
