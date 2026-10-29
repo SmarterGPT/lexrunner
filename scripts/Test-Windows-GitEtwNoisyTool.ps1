@@ -136,3 +136,4 @@ $testReceipt = [ordered]@{
 $testReceiptPath = Join-Path $draftRoot 'NEGATIVE_CONTROL_RECEIPT.json'
 [IO.File]::WriteAllText($testReceiptPath, ((ConvertTo-Json -InputObject $testReceipt -Depth 5) + [char]10), [Text.UTF8Encoding]::new($false))
 Write-Output ('noisy_tool_negative_passed receipt=' + $testReceiptPath)
+exit 0
