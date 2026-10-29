@@ -1,17 +1,24 @@
 # Manual owned ETW schema calibration
 
-Status: ignored source candidate based on LexRunner `5dd3d5e` main; no ETW
-session, Git probe or workflow has run while preparing it. This is a
+Status: source-only diagnostic; no ETW session or Git probe has run. This is a
 diagnostic, not a protected helper, loader closure or execution authority.
 
 The separate `windows-owned-etw-manual.yml` runs only through
 `workflow_dispatch` on `main` on a fresh GitHub-hosted `windows-2022` VM.
 It requires the exact reviewed commit and a previously read-back fixed Git
 image SHA-256. The separate manual `windows-owned-etw-git-inventory.yml`
-reads only `C:\Program Files\Git\mingw64\bin\git.exe` on a hosted
-`windows-2022` runner and uploads a bounded digest receipt for one day. Its
-readback digest supplies `expected_git_sha256` for a later calibration
-dispatch; the later runner rehashes the image and refuses if it changed.
+checks only four fixed `C:\Program Files\Git` PE candidate paths on a
+hosted `windows-2022` runner. Its bounded receipt distinguishes absent,
+reparse, unsafe present and PE present files; SHA-256 and byte count appear
+only for safe PE candidates. A second step reads each fixed path again and
+checks the receipt before one-day upload. The workflow uses no caller path or
+`PATH` lookup and never starts Git. Hosted inventory run `40813845303`
+refused the original `mingw64\bin\git.exe` path as missing, empty or reparse
+and produced no artifact. The calibration still fixes that
+path and must not be dispatched until a subsequent reviewed source change
+selects a present image from the hosted receipt. The later runner must still
+rehash its chosen fixed image and refuse a mismatch. This inventory is a
+path observation, not protected image binding or a stable selection record.
 Neither workflow has a trace route during inventory. The calibration job has
 read-only repository permission, no persisted
 checkout credential, no npm/MSI/helper install and a 15-minute timeout.
