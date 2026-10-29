@@ -53,6 +53,34 @@ build and format). They are declarations, not evidence that any command ran.
 GitHub-specific labels, suggestions, profile and repository-root routing options
 are rejected on the Bitbucket path rather than silently ignored.
 
+## MCP discovery and planning
+
+Both MCP adapters support the same explicit Bitbucket selection. Call `discover`
+with:
+
+```json
+{ "provider": "bitbucket", "owner": "my-workspace", "repo": "my-repo" }
+```
+
+Call `plan.create` (SDK tool name `plan_create`) with:
+
+```json
+{ "fromBitbucket": true, "owner": "my-workspace", "repo": "my-repo" }
+```
+
+The MCP planning response contains the frozen plan directly. It creates no plan
+file or repository-routing receipt and does not infer a Git checkout or profile.
+File-output, profile-routing, GitHub-only, conflicting-provider and execution
+arguments are rejected before any API request. Set `BITBUCKET_TOKEN` in the MCP
+server's environment when authentication is required, using the bearer-token
+requirements above.
+
+A planning response does not authorize execution or merging. Standalone command
+gates remain available through their existing explicit authorization path;
+Bitbucket merge/apply remains unsupported.
+
+## Pipelines and qualification
+
 `init` environment detection recognizes root `bitbucket-pipelines.yml`; its gate
 mapping suggests step names for review. It does not read pipeline results or verify
 those mappings. The provider's bounded commit-status reader observes statuses only.
@@ -61,9 +89,11 @@ pipeline or a rerun is not proof against a newer target commit. Refreshing a PR
 pipeline for a new target requires a separately authorized new pipeline run with
 that target; this adapter never triggers one or promotes statuses into gate evidence.
 
-The implementation is qualified with synthetic API responses and CLI tests. A live
-authenticated Bitbucket run has not been performed; credentials, rate limits and
-repository-specific API behavior remain live qualification requirements.
+The implementation is qualified with synthetic API responses, CLI tests and both
+actual MCP adapters. The published-adapter fixture denies unintended process,
+network and filesystem effects. A live authenticated Bitbucket run has not been performed;
+credentials, rate limits and repository-specific API behavior remain live
+qualification requirements.
 
 Official references: [pull requests](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/),
 [filtering and pagination](https://developer.atlassian.com/cloud/bitbucket/rest/intro/),

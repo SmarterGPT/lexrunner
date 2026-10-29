@@ -46,6 +46,7 @@ export const PlanCreateArgs = z.object({
   profileDir: z.string().min(1).max(4096).optional(),
   // GitHub auto-discovery options
   fromGithub: z.boolean().optional(),
+  fromBitbucket: z.boolean().optional(),
   query: z.string().optional(),
   labels: z.array(z.string()).optional(),
   includeDrafts: z.boolean().optional(),
@@ -152,10 +153,13 @@ export interface ProfileResolveResult {
  */
 
 export const DiscoverArgs = z.object({
+  provider: z.enum(["github", "bitbucket"]).optional(),
   owner: z.string().optional(),
   repo: z.string().optional(),
   state: z.enum(["open", "closed", "all"]).optional(),
   suggest: z.boolean().optional(),
+  query: z.string().optional(),
+  target: z.string().optional(),
 });
 export type DiscoverArgs = z.infer<typeof DiscoverArgs>;
 

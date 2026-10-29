@@ -13,8 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   profile access, gate execution or writes (#1109).
 - Read-only Bitbucket Cloud PR discovery and same-repository frozen planning,
   bounded commit-status observations, and Bitbucket Pipelines detection/mapping.
-  Apply/merge is explicitly unsupported for these plans; Bitbucket CLI operations
-  are not yet exposed through MCP (#1110).
+  Both MCP adapters expose explicit Bitbucket discovery and response-only frozen
+  planning. Apply/merge is explicitly unsupported for these plans (#1110).
 - Planning/gates-only README and evaluation guidance, with offline planning,
   Bitbucket planning, evaluation and quickstart guides included in the package (#1112).
 
@@ -23,8 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - Qualify exact Lex 4.4.4 and SQLite binding 13.0.3 together, retaining the exact-pin
   strategy from #938 and adding an offline CI consistency guard. Verify shipped
   native prebuilds in the ecosystem harness instead of copying a legacy build
-  output. LexSona's separate SQLite 12 dependency still requires its own upgrade;
-  this change does not migrate stores or update installed workspace runtimes (#1111).
+  output and add an ARM64 packed-package CI lane. LexSona's matching SQLite
+  upgrade is a separate companion change; this change does not migrate stores or
+  update installed workspace runtimes (#1111).
 
 ### Security
 
