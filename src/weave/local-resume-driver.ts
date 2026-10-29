@@ -22,6 +22,10 @@ import {
   type WeaveResumeDriver,
 } from "./resume-service.js";
 import type { ResumeOperation, WeaveCheckpoint } from "./checkpoint/types.js";
+import {
+  assertForgeExecutionSupported,
+  unsupportedForgeExecutionReason,
+} from "../forge/execution-scope.js";
 
 export async function createLocalResumeCheckpoint(input: {
   plan: Plan;
@@ -30,6 +34,7 @@ export async function createLocalResumeCheckpoint(input: {
   now?: string;
 }): Promise<WeaveCheckpoint> {
   Plan.parse(input.plan);
+  assertForgeExecutionSupported(input.plan);
   assertSingleRepositoryPlan(input.plan);
   const workingDir = input.workingDir ?? process.cwd();
   bindPlanGateWorkingDirectories(input.plan, workingDir);
@@ -101,6 +106,8 @@ export class LocalWeaveResumeDriver implements WeaveResumeDriver {
   preflight(
     checkpoint: Readonly<WeaveCheckpoint>
   ): { valid: true } | { valid: false; reason: string } {
+    const unsupportedForge = unsupportedForgeExecutionReason(checkpoint.plan);
+    if (unsupportedForge) return { valid: false, reason: unsupportedForge };
     try {
       assertSingleRepositoryPlan(checkpoint.plan);
     } catch {
@@ -219,6 +226,7 @@ export class LocalWeaveResumeDriver implements WeaveResumeDriver {
   }
 
   async execute(operation: Readonly<ResumeOperation>, checkpoint: Readonly<WeaveCheckpoint>) {
+    assertForgeExecutionSupported(checkpoint.plan);
     try {
       bindPlanGateWorkingDirectories(checkpoint.plan, this.workingDir);
     } catch {

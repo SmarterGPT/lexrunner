@@ -4,6 +4,7 @@ import { computeMergeOrder } from "../mergeOrder.js";
 import { Plan, type Plan as PlanContract } from "../schema.js";
 import { WeaveState } from "./types.js";
 import { z } from "zod";
+import { unsupportedForgeExecutionReason } from "../forge/execution-scope.js";
 import {
   acquireCheckpointExecutionLease,
   loadCheckpoint,
@@ -229,6 +230,11 @@ async function inspectCheckpoint(
   const validation = validateResumeJournal(checkpoint);
   if (!validation.valid) {
     return { ok: false, result: invalid(input.runId, validation.reason) };
+  }
+
+  const unsupportedForge = unsupportedForgeExecutionReason(checkpoint.plan);
+  if (unsupportedForge) {
+    return { ok: false, result: externalMismatch(input.runId, unsupportedForge) };
   }
 
   if (input.driver.preflight) {

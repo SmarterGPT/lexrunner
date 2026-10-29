@@ -9,7 +9,7 @@ LexRunner uses **strict version pinning** via `package-lock.json` to ensure Lex 
 ```json
 {
   "dependencies": {
-    "@smartergpt/lex": "4.0.3"
+    "@smartergpt/lex": "4.4.4"
   }
 }
 ```
@@ -21,6 +21,12 @@ LexRunner uses **strict version pinning** via `package-lock.json` to ensure Lex 
 - **Reproducible builds**: Same Lex version = same behavior across environments
 
 ## CI Validation Gates
+
+The lint lane runs `npm run check:lex-compatibility` before TypeScript. This
+offline guard compares the exact reviewed Lex/SQLite support claim with the
+manifest, lockfile, installed package identities, resolved native dependency and
+install-script decisions. It rejects a second locked Lex or SQLite installation;
+it does not query or automatically adopt the registry's moving `latest` tag.
 
 ### 1. Dependency Installation (`npm ci`)
 
@@ -34,7 +40,7 @@ LexRunner uses **strict version pinning** via `package-lock.json` to ensure Lex 
 **What it validates**:
 
 - Exact package versions from `package-lock.json`
-- Lex version matches the exact `4.0.3` manifest constraint and lock identity
+- Lex version matches the exact `4.4.4` manifest constraint and lock identity
 - All peer dependencies satisfied
 
 **Failure modes**:
@@ -89,7 +95,7 @@ LexRunner uses **strict version pinning** via `package-lock.json` to ensure Lex 
 npm list @smartergpt/lex
 
 # 2. Update to an explicitly selected published version
-npm install --save-exact @smartergpt/lex@4.0.3
+npm install --save-exact @smartergpt/lex@4.4.4
 
 # 3. Verify compatibility
 npm run typecheck
@@ -97,7 +103,7 @@ npm test
 
 # 4. Commit lock file changes
 git add package.json package-lock.json
-git commit -m "Pin Lex to exact 4.0.3"
+git commit -m "Pin Lex to exact 4.4.4"
 ```
 
 ### Breaking Change Detection
@@ -126,7 +132,7 @@ npm list @smartergpt/lex
 
 ```
 @smartergpt/lexrunner@2.0.0 /path/to/lexrunner
-└── @smartergpt/lex@4.0.3
+└── @smartergpt/lex@4.4.4
 ```
 
 ### Verify Frame Schema v2 Support
@@ -183,14 +189,14 @@ npm install
 **Fix**:
 
 ```bash
-npm install --save-exact @smartergpt/lex@4.0.3
+npm install --save-exact @smartergpt/lex@4.4.4
 ```
 
 ### Error: "Frame validation failed: missing required field 'runId'"
 
 **Cause**: Runtime schema mismatch (the exact validated Lex release is not installed).
 
-**Fix**: Same as above - install exact Lex 4.0.3.
+**Fix**: Same as above - install exact Lex 4.4.4.
 
 ---
 

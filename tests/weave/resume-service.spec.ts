@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,6 +19,10 @@ import {
 } from "../../src/weave/checkpoint/storage.js";
 import type { WeaveCheckpoint } from "../../src/weave/checkpoint/types.js";
 import { WeaveState } from "../../src/weave/types.js";
+import {
+  createLocalResumeCheckpoint,
+  LocalWeaveResumeDriver,
+} from "../../src/weave/local-resume-driver.js";
 
 const roots: string[] = [];
 
@@ -27,6 +31,47 @@ afterEach(async () => {
 });
 
 describe("persisted merge-weave resume service", () => {
+  it("refuses a retained Bitbucket checkpoint before driver calls, lease writes or local execution", async () => {
+    const checkpointDir = await sandbox();
+    const value = checkpoint();
+    value.plan.gitInputs = {
+      schemaVersion: "1.0.0",
+      repository: "https://bitbucket.org/team/project.git",
+      checkoutRemote: "origin",
+      acquisition: "fetch",
+      target: { ref: "refs/heads/main", commit: "a".repeat(40) },
+      sources: [{ item: "item-a", ref: "refs/heads/feature", commit: "b".repeat(40) }],
+    };
+    value.metadata!.resume!.repository.targetHeadSha = "a".repeat(40);
+    value.metadata!.resume!.repository.sourceHeads["item-a"] = "b".repeat(40);
+    value.planHash = sha256(Buffer.from(canonicalJSONStringify(value.plan)));
+    await saveCheckpoint(value, { checkpointDir, skipCleanup: true });
+    const beforeFiles = await readdir(checkpointDir);
+    const beforeBytes = await readFile(join(checkpointDir, "run-resume.json"));
+    const driver = { preflight: vi.fn(), validate: vi.fn(), observe: vi.fn(), execute: vi.fn() };
+    await expect(
+      resumePersistedWeave({ runId: value.runId, checkpointDir, driver })
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "external_state_mismatch",
+      reason: expect.stringContaining("planning only"),
+    });
+    for (const method of Object.values(driver)) expect(method).not.toHaveBeenCalled();
+    const local = new LocalWeaveResumeDriver(checkpointDir);
+    expect(local.preflight(value)).toMatchObject({
+      valid: false,
+      reason: expect.stringContaining("planning only"),
+    });
+    await expect(local.execute(value.metadata!.resume!.operations[0]!, value)).rejects.toThrow(
+      "planning only"
+    );
+    await expect(
+      createLocalResumeCheckpoint({ plan: value.plan, workingDir: checkpointDir })
+    ).rejects.toThrow("planning only");
+    expect(await readdir(checkpointDir)).toEqual(beforeFiles);
+    expect(await readFile(join(checkpointDir, "run-resume.json"))).toEqual(beforeBytes);
+  });
+
   it("does not create a missing checkpoint directory during preflight", async () => {
     const root = await sandbox();
     const checkpointDir = join(root, ".lexrunner", "checkpoints");

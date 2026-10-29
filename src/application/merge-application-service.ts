@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { FrozenGitInputError } from "../git/frozen-inputs.js";
 import { computeMergeOrder } from "../mergeOrder.js";
 import type { Plan } from "../schema.js";
+import { unsupportedForgeExecutionReason } from "../forge/execution-scope.js";
 import { assertSingleRepositoryPlan } from "./repository-binding.js";
 import {
   createLocalResumeCheckpoint,
@@ -21,6 +22,7 @@ export type MergeApplicationFailureCode =
   | "MERGE_STALE_INPUT"
   | "MERGE_CONFLICT"
   | "MERGE_MULTI_REPO_UNSUPPORTED"
+  | "MERGE_FORGE_UNSUPPORTED"
   | "MERGE_APPLICATION_FAILED";
 
 export class MergeApplicationServiceError extends Error {
@@ -78,6 +80,7 @@ export class MergeApplicationService {
     dryRun: boolean;
     mutationAuthorized: boolean;
   }): Promise<{ summary: BoundedMergeApplicationResult; execution?: MergeApplicationExecution }> {
+    if (!input.dryRun) assertSupportedExecution(input.plan);
     try {
       assertSingleRepositoryPlan(input.plan);
     } catch {
@@ -136,6 +139,7 @@ export class MergeApplicationService {
     workingDir: string;
     runId: string;
   }): Promise<{ summary: BoundedMergeApplicationResult; execution: MergeApplicationExecution }> {
+    assertSupportedExecution(input.plan);
     let execution: MergeApplicationExecution;
     try {
       execution = await this.runtime.resume(input.runId, input.workingDir);
@@ -213,6 +217,11 @@ function assertBounded(plan: Plan, levels: string[][]): void {
       `Merge plan exceeds the ${MAX_OPERATIONS}-item application limit`
     );
   }
+}
+
+function assertSupportedExecution(plan: Plan): void {
+  const reason = unsupportedForgeExecutionReason(plan);
+  if (reason) throw new MergeApplicationServiceError("MERGE_FORGE_UNSUPPORTED", reason);
 }
 
 function classifyFailure(execution: MergeApplicationExecution): MergeApplicationFailureCode | null {

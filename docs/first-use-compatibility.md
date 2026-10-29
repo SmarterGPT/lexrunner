@@ -34,19 +34,38 @@ Maintainers adopting reviewed source changes can use the repository's
 [local dogfood installer](local-dogfood-install.md), which retains the exact
 dependency lock and native-script policy across the global installation boundary.
 
-## Why does LexRunner depend on Lex 4.0.3?
+## Which Lex and SQLite versions does this source candidate support?
 
-LexRunner 2.5.0 declares exact `@smartergpt/lex@4.0.3`. The
-[1.5.2 alignment record](releases/1.5.2.md) explains the deliberate pin: preserve
-reproducible consumer dependency identity instead of selecting a changing Lex 4
-version during installation. It is historical rationale, not proof that every
-current cross-component combination has passed integration tests.
+Published LexRunner 2.5.0 pins Lex 4.0.3. This source candidate upgrades to exact
+`@smartergpt/lex@4.4.4` and exact `better-sqlite3-multiple-ciphers@13.0.3`,
+matching Lex 4.4.4's native dependency. A source change does not establish that a
+new LexRunner release has been published or that an installed runtime was updated.
 
-A newer standalone Lex does not require changing LexRunner's private dependency.
-Do not override the pin, deduplicate incompatible versions, or infer shared store
-identity merely because both installations use Lex. Cross-component runtime/store
-sharing requires its own verified setup. The first-use trial uses the package's
-unchanged dependency contract; it does not certify substituting Lex 4.2.0.
+The [1.5.2 alignment record](releases/1.5.2.md) and
+[#938](https://github.com/SmarterGPT/lexrunner/issues/938) explain the deliberate
+exact pin: preserve reproducible consumer dependency identity instead of selecting
+a changing Lex version during installation. The upgrade preserves that strategy;
+it does not widen to `^4.4.4` or follow the registry's moving `latest` tag.
+
+`npm run check:lex-compatibility` checks the source support claim against the
+manifest, lock, installed Lex and native dependency, exact native script approval,
+and Lex script denial. It rejects duplicate locked Lex/native installations and
+checks that Lex resolves the same native installation as LexRunner. CI runs this
+check through lint. Version changes require deliberate requalification, including
+packed ESM/CommonJS/CLI/MCP and SQLite lifecycle tests.
+
+This aligns LexRunner with Lex, not every separately installed ecosystem package.
+Published LexSona 2.0.4 still depends on `^12.6.2` of the SQLite binding and has a
+Lex peer range of `>=4.0.1 <5`. Installing it alongside this candidate can therefore
+still require a second native major. LexSona needs a separate reviewed upgrade;
+do not override its dependency or copy a 13.x native binary into a 12.x package.
+The ecosystem dogfood defaults update Lex/Lex-MCP to 4.4.4 and retain the existing
+AXF/LexSona pins; those defaults are test inputs, not a new compatibility certificate.
+
+LexRunner uses Lex's policy, aliases and error exports; its coordination SQLite
+store is owned by LexRunner. This upgrade does not migrate a standalone Lex store,
+share store identity or replace the workspace's scoped runtime configuration.
+Do not infer shared store identity merely because both installations use Lex.
 
 Context Forge is not required for this workflow and has no public npm release.
 Do not install a guessed package or treat its local linker explanations as proof

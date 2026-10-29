@@ -82,6 +82,14 @@ only the exact source-approved SQLite package under strict script policy.
 `@smartergpt/lex` remains explicitly denied. It then checks pending script decisions,
 native SQLite usability in a private fixture, and every installed packed file.
 
+The selected SQLite 13.0.3 package ships N-API prebuilds and has no installation
+script. Its exact native approval is retained as an explicit policy decision;
+the helper's rebuild command currently executes no native build script. Treat
+the private SQLite query as runtime evidence, not evidence of local compilation.
+The ecosystem dogfood verifies the source and consumer's matching shipped
+prebuild bytes for the active supported platform, version and registry identity;
+it does not copy a 13.x binary into another package or repair a missing prebuild.
+
 Lifecycle commands explicitly bind npm's `node-options` setting to the observed
 nonexecuting Node options, or an effective empty value that survives nested npm.
 An inherited environment variable or npmrc cannot inject a JavaScript preload

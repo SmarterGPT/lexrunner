@@ -2,6 +2,11 @@
 
 Complete documentation for LexRunner's dependency-aware integration and coordination workflows.
 
+The npm package includes the [offline planning guide](offline-planning.md),
+[agent evaluation](agent-evaluation.md), and [merge-weave quickstart](../MERGE_WEAVE_QUICKSTART.md).
+The remaining index links describe the full source documentation, available in the
+[repository](https://github.com/SmarterGPT/lexrunner/tree/main/docs).
+
 ## 🚀 Getting Started
 
 New to LexRunner? Start here:

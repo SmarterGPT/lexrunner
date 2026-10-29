@@ -37,6 +37,8 @@ import {
   MergeApplicationServiceError,
 } from "../application/merge-application-service.js";
 import { mcpToolError } from "../errors/index.js";
+import { runBitbucketDiscovery, runBitbucketPlan } from "../forge/commands.js";
+import { assertForgeExecutionSupported } from "../forge/execution-scope.js";
 
 export interface WeaveCommandDeps {
   jsonModeActive: () => boolean;
@@ -96,6 +98,9 @@ Subcommands:
   weave
     .command("discover")
     .description("Discover open pull requests from GitHub")
+    .option("--provider <forge>", "Read-only discovery provider (github|bitbucket)", "github")
+    .option("--query <query>", "Bitbucket q filter (state is added inside q)")
+    .option("--target <branch>", "Bitbucket destination branch filter")
     .option("--owner <owner>", "GitHub repository owner")
     .option("--repo <repo>", "GitHub repository name")
     .option("--state <state>", "PR state filter (open|closed|all)", "open")
@@ -104,6 +109,13 @@ Subcommands:
     .option("--output <file>", "Write output to file")
     .action(async (opts) => {
       try {
+        if (opts.provider === "bitbucket") {
+          await runBitbucketDiscovery(opts);
+          return;
+        }
+        if (opts.provider !== "github" || opts.query || opts.target) {
+          throw new Error("Unsupported discovery provider or provider-specific filter");
+        }
         let githubAPI = await createGitHubAPI();
 
         // Override with command line options if provided
@@ -186,6 +198,7 @@ Subcommands:
     .command("plan")
     .description("Generate merge plan from GitHub PRs or config files")
     .option("--from-github", "Auto-discover PRs from GitHub API")
+    .option("--from-bitbucket", "Freeze a read-only Bitbucket Cloud plan (apply unsupported)")
     .option("--owner <owner>", "GitHub repository owner")
     .option("--repo <repo>", "GitHub repository name")
     .option("--repo-root <dir>", "Repository worktree to bind discovery, gates, and artifacts")
@@ -199,6 +212,11 @@ Subcommands:
     .option("--json", "Output JSON format")
     .action(async (opts) => {
       try {
+        if (opts.fromBitbucket) {
+          if (opts.fromGithub) throw new Error("Select exactly one forge for plan creation");
+          await runBitbucketPlan(opts, deps.jsonModeActive());
+          return;
+        }
         if (!opts.fromGithub) {
           console.error("\n❌ Error: --from-github is required for weave plan\n");
           console.error("Example:");
@@ -432,6 +450,8 @@ export async function runWeaveApply(
       console.log(`  lex-pr weave apply --plan ${opts.plan} --execute\n`);
       return;
     }
+
+    assertForgeExecutionSupported(plan);
 
     if (!json) {
       console.log(`\n🚀 Executing Merge-Weave\n`);

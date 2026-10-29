@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- Offline `plan levels --plan <file> [--json]` validates authored PR, ticket or task
+  dependency graphs through the shared ordering service without Git, network,
+  profile access, gate execution or writes (#1109).
+- Read-only Bitbucket Cloud PR discovery and same-repository frozen planning,
+  bounded commit-status observations, and Bitbucket Pipelines detection/mapping.
+  Apply/merge is explicitly unsupported for these plans; Bitbucket CLI operations
+  are not yet exposed through MCP (#1110).
+- Planning/gates-only README and evaluation guidance, with offline planning,
+  Bitbucket planning, evaluation and quickstart guides included in the package (#1112).
+
+### Changed
+
+- Qualify exact Lex 4.4.4 and SQLite binding 13.0.3 together, retaining the exact-pin
+  strategy from #938 and adding an offline CI consistency guard. Verify shipped
+  native prebuilds in the ecosystem harness instead of copying a legacy build
+  output. LexSona's separate SQLite 12 dependency still requires its own upgrade;
+  this change does not migrate stores or update installed workspace runtimes (#1111).
+
+### Security
+
+- Update the transitive Hono Node server adapter to resolve the available advisory fix.
+
 ## [2.5.0] - 2026-10-24
 
 ### Added

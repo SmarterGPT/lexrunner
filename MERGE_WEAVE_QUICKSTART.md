@@ -7,11 +7,12 @@ is no fixed five-minute promise: repository access and dependency setup vary.
 ## 1. Install and discover
 
 Use an existing local Git checkout with a GitHub remote, Node.js 24+ and Git.
-This guide uses the published 2.4.0 release.
+This guide uses the published 2.5.0 release. For authored tasks without GitHub,
+start with the packaged [offline planning guide](docs/offline-planning.md).
 Run these commands from that repository's root:
 
 ```bash
-npm install --save-dev @smartergpt/lexrunner@2.4.0
+npm install --save-dev @smartergpt/lexrunner@2.5.0
 npx lexrunner --version
 npx lexrunner weave discover --json
 ```

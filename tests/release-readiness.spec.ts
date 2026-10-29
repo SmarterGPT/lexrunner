@@ -31,7 +31,7 @@ describe("LexRunner current release readiness", () => {
 
     expect(packageJson.version).toBe("2.5.0");
     expect(packageJson.engines.node).toBe(">=24");
-    expect(packageJson.dependencies["@smartergpt/lex"]).toBe("4.0.3");
+    expect(packageJson.dependencies["@smartergpt/lex"]).toBe("4.4.4");
     expect(packageJson.bin["lexrunner"]).toBe("dist/cli.js");
     expect(packageJson.bin["lex-pr"]).toBe("dist/cli.js");
     expect(packageJson.bin["lexrunner-mcp"]).toBe("mcp-server.mjs");
@@ -48,7 +48,7 @@ describe("LexRunner current release readiness", () => {
       exports: Record<string, unknown>;
     }>("node_modules/@smartergpt/lex/package.json");
 
-    expect(lexPackage.version).toBe("4.0.3");
+    expect(lexPackage.version).toBe("4.4.4");
     for (const path of [
       ".",
       "./aliases",

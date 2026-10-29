@@ -6,6 +6,7 @@ const FIRST_USE_COMMANDS = new Set([
   "attempt",
   "weave",
   "gate",
+  "plan",
   "schema",
   "workspace",
   "help",
@@ -48,6 +49,11 @@ Choose an unused plan filename. Inspect selected heads, dependencies and executa
 gate commands. Preview may write local diagnostics; it proves neither passed gates
 nor review or merge authority. Later gate execution runs commands; weave apply
 --execute changes Git state and requires separate review and explicit authority.
+
+Plan tasks without GitHub:
+  lexrunner plan levels --plan plan.json --json             Read authored task dependency levels
+This offline query needs no Git checkout, profile, network or token. It does not
+execute tasks or gates. See packaged docs/offline-planning.md for planning and gates.
 
 Plan and carry out authored work:
   lexrunner idea --help             Capture an idea; normal execution may create GitHub issues

@@ -9,7 +9,7 @@ import { observeNpmPolicyRuntime, assertNpmPolicyRuntimeUnchanged } from "./npm-
 
 const packageName = "@smartergpt/lexrunner";
 const nativeName = "better-sqlite3-multiple-ciphers";
-const nativeVersion = "12.11.1";
+const nativeVersion = "13.0.3";
 const canonicalNodeShebang = Buffer.from("#!/usr/bin/env node\n");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -71,7 +71,7 @@ export function validateLocalInstallInputs(projectRoot) {
     lock.packages?.[`node_modules/${nativeName}`]?.version !== nativeVersion
   ) {
     throw new Error(
-      "Local install requires the exact source-approved SQLite 12.11.1 lock and Lex script denial."
+      "Local install requires the exact source-approved SQLite 13.0.3 lock and Lex script denial."
     );
   }
   for (const [specifier, decision] of Object.entries(manifest.allowScripts)) {

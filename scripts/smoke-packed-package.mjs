@@ -227,6 +227,16 @@ try {
   const installedManifest = JSON.parse(
     fs.readFileSync(path.join(installedPackageRoot, "package.json"), "utf8")
   );
+  for (const document of [
+    "MERGE_WEAVE_QUICKSTART.md",
+    "docs/agent-evaluation.md",
+    "docs/offline-planning.md",
+    "docs/bitbucket-planning.md",
+  ]) {
+    if (!fs.readFileSync(path.join(installedPackageRoot, document), "utf8").trim()) {
+      throw new Error(`Packed evaluator documentation is empty: ${document}`);
+    }
+  }
   for (const name of ["lexrunner", "lex-pr", "lexrunner-mcp"]) assertBinShim(binRoot, name);
   const canonicalCli = resolvePackageBinTarget(
     installedPackageRoot,
@@ -252,6 +262,35 @@ try {
   }
   if (compatibilityVersion !== canonicalVersion) {
     throw new Error("Packed lex-pr compatibility alias did not execute the canonical CLI");
+  }
+
+  // Exercise the documented offline path from the installed package, outside Git.
+  const offlineRoot = path.join(temporaryRoot, "offline-planning");
+  fs.mkdirSync(offlineRoot);
+  fs.writeFileSync(
+    path.join(offlineRoot, "plan.json"),
+    JSON.stringify({
+      schemaVersion: "1.0.0",
+      items: [
+        { name: "load-data", deps: [], gates: [] },
+        { name: "report", deps: ["load-data"], gates: [] },
+      ],
+    })
+  );
+  const offline = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [canonicalCli, "plan", "levels", "--plan", "plan.json", "--json"],
+      {
+        cwd: offlineRoot,
+        encoding: "utf8",
+        timeout: 30_000,
+        env: { ...process.env, PATH: "", GITHUB_TOKEN: "", GH_TOKEN: "" },
+      }
+    )
+  );
+  if (JSON.stringify(offline.levels) !== JSON.stringify([["load-data"], ["report"]])) {
+    throw new Error("Packed offline planning returned unexpected dependency levels");
   }
 
   const cliHelp = execFileSync(process.execPath, [canonicalCli, "--help"], {

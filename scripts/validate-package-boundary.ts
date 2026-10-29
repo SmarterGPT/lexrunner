@@ -32,6 +32,10 @@ export const PACKAGE_FILES_ALLOWLIST = [
   "mcp-server.mjs",
   "README.md",
   "README.mcp.md",
+  "MERGE_WEAVE_QUICKSTART.md",
+  "docs/agent-evaluation.md",
+  "docs/offline-planning.md",
+  "docs/bitbucket-planning.md",
   "CHANGELOG.md",
   "NOTICE.md",
   "LICENSE.md",
@@ -40,6 +44,12 @@ export const PACKAGE_FILES_ALLOWLIST = [
 ] as const;
 
 const ALLOWED_EXACT_PATHS = new Set([
+  "docs/bitbucket-planning.md",
+  // npm includes a directory's README when files below that directory are selected.
+  "docs/README.md",
+  "MERGE_WEAVE_QUICKSTART.md",
+  "docs/agent-evaluation.md",
+  "docs/offline-planning.md",
   "BRAND.md",
   "CHANGELOG.md",
   "GOVERNANCE.md",
@@ -56,6 +66,10 @@ const FORBIDDEN_RUNTIME_PATHS = [
   /\.(?:db|sqlite|sqlite3|log)$/,
 ];
 const REQUIRED_RUNTIME_ASSETS = [
+  "docs/bitbucket-planning.md",
+  "MERGE_WEAVE_QUICKSTART.md",
+  "docs/agent-evaluation.md",
+  "docs/offline-planning.md",
   "mcp-server.mjs",
   "schemas/gates/build.schema.json",
   "schemas/gates/coverage.schema.json",

@@ -41,11 +41,11 @@ function fixture(version = "11.16.0") {
     name: "@smartergpt/lexrunner",
     version: "2.4.0",
     packageManager: "npm@11.16.0",
-    dependencies: { "better-sqlite3-multiple-ciphers": "^12.6.2", "@smartergpt/lex": "4.0.3" },
+    dependencies: { "better-sqlite3-multiple-ciphers": "13.0.3", "@smartergpt/lex": "4.4.4" },
     devDependencies: {},
     bin: { lexrunner: "dist/cli.js" },
     engines: { node: ">=24" },
-    allowScripts: { "better-sqlite3-multiple-ciphers@12.11.1": true, "@smartergpt/lex": false },
+    allowScripts: { "better-sqlite3-multiple-ciphers@13.0.3": true, "@smartergpt/lex": false },
   };
   const lock = {
     name: manifest.name,
@@ -60,7 +60,7 @@ function fixture(version = "11.16.0") {
         bin: manifest.bin,
         engines: manifest.engines,
       },
-      "node_modules/better-sqlite3-multiple-ciphers": { version: "12.11.1" },
+      "node_modules/better-sqlite3-multiple-ciphers": { version: "13.0.3" },
     },
   };
   fs.writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify(manifest));
@@ -147,7 +147,7 @@ describe("repository local-dogfood installation", () => {
     );
     expect(plan.plannedCommands[2].args).toEqual(
       expect.arrayContaining([
-        "better-sqlite3-multiple-ciphers@12.11.1",
+        "better-sqlite3-multiple-ciphers@13.0.3",
         "--strict-allow-scripts",
         "--ignore-scripts=false",
         "--dangerously-allow-all-scripts=false",
@@ -351,7 +351,7 @@ describe("repository local-dogfood installation", () => {
     const input = fixture();
     input.lock.packages["node_modules/better-sqlite3-multiple-ciphers"].version = "12.12.0";
     fs.writeFileSync(path.join(input.projectRoot, "package-lock.json"), JSON.stringify(input.lock));
-    expect(() => validateLocalInstallInputs(input.projectRoot)).toThrow("SQLite 12.11.1 lock");
+    expect(() => validateLocalInstallInputs(input.projectRoot)).toThrow("SQLite 13.0.3 lock");
   });
 
   it("refuses ambiguous target packages, source overlap, and junctions outside explicit prefix", () => {

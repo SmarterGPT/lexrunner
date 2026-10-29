@@ -3,12 +3,15 @@
  */
 
 import { Command } from "commander";
-import { Plan, loadPlan } from "../schema.js";
+import { Plan, loadPlan, SchemaValidationError, formatPlanValidationFailure } from "../schema.js";
 import { computeMergeOrder, CycleError, UnknownDependencyError } from "../mergeOrder.js";
 import { generatePlanSummary } from "../core/snapshot.js";
 import { createGitHubClient } from "../github/index.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import { throwExit } from "../cli/exitHandler.js";
+import { writeJsonOutput } from "../cli/output.js";
+import { MergeOrderQueryService } from "../application/integration-query-services.js";
+import { AXErrorException } from "../errors/index.js";
 import { FileAnalyzer } from "../planner/fileAnalysis.js";
 import { scoreDependencies } from "../planner/dependencyScoring.js";
 import { formatSuggestions, type SuggestionFormat } from "../cli/formatSuggestions.js";
@@ -18,6 +21,7 @@ import {
   PlanCreationOperationService,
   writePlanCreationArtifacts,
 } from "../application/plan-creation-operation-service.js";
+import { runBitbucketPlan } from "../forge/commands.js";
 
 interface PlanCommandDeps {
   jsonModeActive: () => boolean;
@@ -29,7 +33,7 @@ interface PlanCommandDeps {
  * Register the plan command
  */
 export function registerPlanCommand(program: Command, deps: PlanCommandDeps): void {
-  program
+  const planCommand = program
     .command("plan")
     .description(
       "Generate plan from configuration sources or GitHub PRs (canonical: lexrunner weave plan)"
@@ -40,6 +44,7 @@ export function registerPlanCommand(program: Command, deps: PlanCommandDeps): vo
     .option("--json", "Output canonical plan JSON to stdout only")
     .option("--dry-run", "Validate inputs and show what would be written")
     .option("--from-github", "Auto-discover PRs from GitHub API")
+    .option("--from-bitbucket", "Freeze a read-only Bitbucket Cloud plan (apply unsupported)")
     .option("--query <query>", "GitHub search query (e.g., 'is:open label:stack:*')")
     .option("--labels <labels>", "Filter PRs by comma-separated labels")
     .option("--include-drafts", "Include draft PRs in the plan")
@@ -105,9 +110,60 @@ Common Issues:
         deps.setJsonMode(previousJsonMode);
       }
     });
+
+  planCommand
+    .command("levels")
+    .description("Validate a hand-authored plan and report dependency levels offline")
+    .requiredOption("--plan <file>", "Path to a plan.json containing PRs, tickets or tasks")
+    .option("--json", "Output dependency levels as JSON")
+    .addHelpText(
+      "after",
+      "\nReads only the supplied plan. Requires no Git checkout, forge token or profile; executes no gates.\n"
+    )
+    .action((opts, command: Command) => {
+      const previousJsonMode = deps.jsonModeActive();
+      const json = Boolean(command.optsWithGlobals().json || previousJsonMode);
+      deps.setJsonMode(json);
+      try {
+        const plan = loadPlan(fs.readFileSync(opts.plan, "utf8"));
+        const result = new MergeOrderQueryService().run(plan);
+        if (json) {
+          writeJsonOutput(result);
+        } else {
+          console.log(`Dependency levels for ${result.totalItems} work items:`);
+          result.levels.forEach((level, index) => {
+            console.log(`Level ${index + 1}: [${level.join(", ")}]`);
+          });
+        }
+      } catch (error) {
+        if (json) {
+          writeJsonOutput(
+            error instanceof SchemaValidationError
+              ? formatPlanValidationFailure(error)
+              : error instanceof AXErrorException
+                ? error.axError
+                : {
+                    code: "PLAN_LEVELS_FAILED",
+                    message: "Unable to read the plan or compute dependency levels.",
+                    nextActions: [
+                      "Check the supplied plan file and its schema, names and dependencies",
+                    ],
+                  }
+          );
+        }
+        deps.exitWith(error);
+      } finally {
+        deps.setJsonMode(previousJsonMode);
+      }
+    });
 }
 
 async function executePlan(opts: any, deps: PlanCommandDeps): Promise<void> {
+  if (opts.fromBitbucket) {
+    if (opts.fromGithub) throw new Error("Select exactly one forge for plan creation");
+    await runBitbucketPlan(opts, deps.jsonModeActive());
+    return;
+  }
   // Parse tier overrides from CLI
   const tierOverrides = opts.tierOverride ? parseTierOverrides(opts.tierOverride) : undefined;
   const labels = opts.labels

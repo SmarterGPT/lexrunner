@@ -21,7 +21,7 @@ const sourceManifest = {
     fs.readFileSync(path.resolve(import.meta.dirname, "..", "package.json"), "utf8")
   ).scripts,
   allowScripts: {
-    "better-sqlite3-multiple-ciphers@12.11.1": true,
+    "better-sqlite3-multiple-ciphers@13.0.3": true,
     "esbuild@0.28.1": true,
     "@smartergpt/lex": false,
   },
@@ -35,7 +35,7 @@ describe("packed consumer install-script boundary", () => {
     expect(dependency).toBe(tarballSpecifier);
     expect(manifest.allowScripts[dependency]).toBe(true);
     expect(manifest.allowScripts["@smartergpt/lex"]).toBe(false);
-    expect(manifest.allowScripts["better-sqlite3-multiple-ciphers@12.11.1"]).toBe(true);
+    expect(manifest.allowScripts["better-sqlite3-multiple-ciphers@13.0.3"]).toBe(true);
     expect(Object.keys(sourceManifest.allowScripts)).toHaveLength(3);
   });
 
