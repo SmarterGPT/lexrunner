@@ -12,7 +12,7 @@ internal static class Program
         if (OperatingSystem.IsWindows() && Environment.Is64BitProcess &&
             args.Length == 1 && args[0] == "--fixture-selftest")
         {
-            var passed = FixtureTests.Run();
+            var passed = FixtureTests.Run() && FixtureTestsV3.Run();
             Console.WriteLine(passed ? "selection_custody_fixture_pass" :
                 "selection_custody_fixture_fail");
             return passed ? 0 : 1;

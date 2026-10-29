@@ -128,7 +128,7 @@ try {
   $testCount = $test.results.Count
   if ($test.state -ne 'pass' -or
       $test.profile -ne 'synthetic_same_user_non_authorizing' -or
-      $test.failures.Count -ne 0 -or $test.results.Count -ne 29 -or
+      $test.failures.Count -ne 0 -or $test.results.Count -ne 32 -or
       @($test.results | Where-Object { -not $_.passed }).Count -ne 0) {
     throw 'Native fixture tests did not all pass.'
   }
@@ -153,13 +153,15 @@ finally {
       'CoordinatorSelection.cs', 'CoordinatorSources.cs',
       'CoordinatorAcquisition.cs', 'CoordinatorSelectionFixtureTests.cs',
       'CoordinatorV2RegistryObservation.cs', 'CoordinatorV2RegistryFixtureTests.cs',
+      'CoordinatorV3RegistryObservation.cs', 'CoordinatorV3RegistryFixtureTests.cs',
       'README.md', 'verify.ps1')) {
     $path = Join-Path $projectRoot $name
     if (Test-Path -LiteralPath $path) {
       $sources[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
   }
-  foreach ($name in @('CustodyContract.cs', 'NativeRegistryReader.cs')) {
+  foreach ($name in @('CustodyContract.cs', 'NativeRegistryReader.cs',
+      'CustodyContractV3.cs', 'NativeRegistryReaderV3.cs')) {
     $path = Join-Path $repoRoot "services/windows-coordinator-selection-custody/$name"
     $sources["selection-custody/$name"] =
       (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
