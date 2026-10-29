@@ -1,0 +1,108 @@
+name: Manual Windows owned ETW fixed Git image inventory
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-owned-etw-git-inventory-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - name: Read only the fixed Git image digest
+        id: inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or
+              $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
+              $env:GITHUB_REPOSITORY -cne 'SmarterGPT/lexrunner' -or
+              $env:GITHUB_REF -cne 'refs/heads/main' -or
+              $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$' -or
+              $env:RUNNER_OS -cne 'Windows' -or
+              $env:RUNNER_ARCH -cne 'X64' -or
+              $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
+              $env:GITHUB_RUN_ID -notmatch '^[0-9]{1,20}$' -or
+              $env:GITHUB_RUN_ATTEMPT -notmatch '^[0-9]{1,5}$') {
+            throw 'git_inventory_runner_refused'
+          }
+          $gitImage = 'C:\Program Files\Git\mingw64\bin\git.exe'
+          $file = [IO.FileInfo]::new($gitImage)
+          if (-not $file.Exists -or $file.Length -le 0 -or
+              ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'git_inventory_fixed_image_missing'
+          }
+          $sha = (Get-FileHash -LiteralPath $gitImage -Algorithm SHA256).Hash.ToLowerInvariant()
+          $stage = Join-Path $env:RUNNER_TEMP "lexrunner-owned-etw-git-inventory-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          [IO.Directory]::CreateDirectory($stage) | Out-Null
+          $receipt = [ordered]@{
+            schemaVersion = 'lexrunner-owned-etw-git-inventory/1'
+            result = 'fixed_git_image_observed'
+            sourceHead = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            runnerLabel = 'windows-2022'
+            runnerImage = $env:ImageOS
+            runnerImageVersion = $env:ImageVersion
+            fixedGitPath = $gitImage
+            gitImageSha256 = $sha
+            gitImageBytes = $file.Length
+            traceStarted = $false
+            authorizesLoaderClosure = $false
+            authorizesExecution = $false
+          }
+          $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes(($receipt | ConvertTo-Json -Compress) + "`n")
+          if ($bytes.Length -le 0 -or $bytes.Length -gt 2048) {
+            throw 'git_inventory_receipt_bounds_refused'
+          }
+          $path = Join-Path $stage 'receipt.json'
+          $stream = [IO.FileStream]::new($path, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::None)
+          try { $stream.Write($bytes, 0, $bytes.Length) }
+          finally { $stream.Dispose() }
+          Write-Output "fixed_git_sha256=$sha"
+      - name: Validate bounded inventory receipt
+        id: bounds
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP "lexrunner-owned-etw-git-inventory-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/receipt.json"
+          if (-not [IO.File]::Exists($path) -or
+              ([IO.FileInfo]::new($path)).Length -gt 2048) {
+            throw 'git_inventory_receipt_missing_or_oversize'
+          }
+          $text = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path))
+          if ($text.Contains("`r") -or -not $text.EndsWith("`n") -or
+              $text.EndsWith("`n`n")) { throw 'git_inventory_receipt_encoding' }
+          $receipt = $text | ConvertFrom-Json
+          if ($receipt.schemaVersion -cne 'lexrunner-owned-etw-git-inventory/1' -or
+              $receipt.result -cne 'fixed_git_image_observed' -or
+              $receipt.sourceHead -cne $env:GITHUB_SHA -or
+              $receipt.runId -cne $env:GITHUB_RUN_ID -or
+              $receipt.runAttempt -cne $env:GITHUB_RUN_ATTEMPT -or
+              $receipt.runnerLabel -cne 'windows-2022' -or
+              $receipt.fixedGitPath -cne 'C:\Program Files\Git\mingw64\bin\git.exe' -or
+              $receipt.gitImageSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+              $receipt.gitImageBytes -le 0 -or
+              $receipt.traceStarted -ne $false -or
+              $receipt.authorizesLoaderClosure -ne $false -or
+              $receipt.authorizesExecution -ne $false -or
+              (Get-FileHash -LiteralPath $receipt.fixedGitPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                $receipt.gitImageSha256) {
+            throw 'git_inventory_receipt_readback_invalid'
+          }
+      - name: Upload only the read-only digest receipt for one day
+        if: steps.inventory.outcome == 'success' && steps.bounds.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-owned-etw-git-inventory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\lexrunner-owned-etw-git-inventory-${{ github.run_id }}-${{ github.run_attempt }}\receipt.json
+          if-no-files-found: error
+          retention-days: 1

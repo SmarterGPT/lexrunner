@@ -1,7 +1,8 @@
 using System.Text.Json;
 
-// Source-only transaction policy. The image contains a draft native adapter,
-// but Program has no route to instantiate it; selftest uses only FakeAdapter.
+// Ordinary capture remains refused. The separately guarded manual calibration
+// route may instantiate the native adapter only on a disposable hosted runner;
+// selftest uses only fake adapters and synthetic ABI/serialization checks.
 internal static class Program
 {
     private const string SessionName = "LexRunner Windows Git Loader Qualification";
@@ -10,6 +11,23 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--census-offline")
+        {
+            var temp = Environment.GetEnvironmentVariable("RUNNER_TEMP");
+            if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
+                Environment.GetEnvironmentVariable("GITHUB_EVENT_NAME") != "workflow_dispatch" ||
+                string.IsNullOrWhiteSpace(temp) ||
+                !Path.IsPathFullyQualified(args[1]) ||
+                !Path.GetFullPath(args[1]).StartsWith(Path.GetFullPath(temp) +
+                    Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return CaptureCalibration.RefuseNoTrace("offline_census_preflight_required");
+            var result = SchemaCensus.Parse(args[1], 128L * 1024 * 1024,
+                TimeSpan.FromSeconds(30));
+            Console.WriteLine(JsonSerializer.Serialize(result));
+            return result.Accepted ? 0 : 3;
+        }
+        if (args.Length > 0 && args[0] == "--capture-calibrate")
+            return CaptureCalibration.Run(args);
         if (args is not ["--selftest"])
         {
             Console.WriteLine(JsonSerializer.Serialize(new
@@ -187,6 +205,24 @@ internal static class Program
             badStopBegan && badStop.BeginQuery(42) &&
             badStop.CompleteQuery(42, new QueryResult(0, matching)) &&
             !badStop.BeginStop(43) && !badStop.BeginStop(42));
+        foreach (var check in SchemaCensus.SelfTest())
+            CheckGate("census_" + check.Name, check.Passed);
+        CheckGate("calibration_bare_route_refused_before_trace",
+            !CaptureCalibration.ValidArguments(["--capture-calibrate"], out _, out _));
+        CheckGate("calibration_exact_shape_accepted_for_preflight",
+            CaptureCalibration.ValidArguments(
+                ["--capture-calibrate", "--manual-disposable-runner", "--expected-head",
+                    new string('a', 40), "--expected-git-sha256", new string('b', 64)],
+                out _, out _));
+        CheckGate("calibration_uppercase_digest_refused_before_trace",
+            !CaptureCalibration.ValidArguments(
+                ["--capture-calibrate", "--manual-disposable-runner", "--expected-head",
+                    new string('a', 40), "--expected-git-sha256", new string('B', 64)],
+                out _, out _));
+        CheckGate("native_stop_counter_and_offset_readback",
+            NativeTraceAdapter.SyntheticObservationReadback());
+        CheckGate("census_result_wire_roundtrip",
+            CaptureCalibration.SyntheticCensusWireRoundTrip());
         return cases;
     }
 }
@@ -196,7 +232,7 @@ internal sealed record TraceObservation(string Name, Guid Guid, string EtlPath, 
     uint Flags, uint EventsLost, uint LogBuffersLost, uint RealTimeBuffersLost);
 internal sealed record StartResult(uint Code, ulong Handle);
 internal sealed record QueryResult(uint Code, TraceObservation? Observation);
-internal sealed record StopResult(uint Code);
+internal sealed record StopResult(uint Code, TraceObservation? Observation = null);
 internal sealed record TraceDisposition(string ReasonCode, bool StopAttempted,
     bool StopConfirmed, bool HasLiveLoss, bool AuthorizesLoaderClosure, bool AuthorizesExecution);
 internal sealed record TestCase(string Name, bool Passed, string ReasonCode, int QueryCount, int StopCount);

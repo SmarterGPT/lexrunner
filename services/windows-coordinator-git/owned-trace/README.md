@@ -1,12 +1,14 @@
-# Owned Windows Git loader trace: ignored source draft
+# Owned Windows Git loader trace: manual calibration candidate
 
-Status: **source-only, not executed, not promoted** (2026-10-28). The source
-files in this directory are an independently reviewable ownership seam
-for a future disposable-host ETW capture. `Program` exposes only `--selftest`;
-all other argv refuses. `NativeTraceAdapter` compiles but is unreachable from
-this executable. No ETW session, Git fixture, installer, service, or registry
-selection was started or changed while preparing this draft. Every result
-keeps `authorizesLoaderClosure=false` and `authorizesExecution=false`.
+Status: **ignored source proposal, no active capture, not promoted**
+(2026-10-28). The independently reviewed ownership seam is extended with
+a guarded `--capture-calibrate` route for one manually dispatched disposable
+GitHub Windows runner. Ordinary `--capture` still refuses. No ETW session,
+Git fixture, installer, service, or registry selection was started or changed
+while preparing this draft. Every result keeps
+`authorizesLoaderClosure=false` and `authorizesExecution=false`.
+See `MANUAL_CALIBRATION.md` for the privacy, Job-at-creation and later
+loader-closure boundaries.
 
 ## Contract and correction to the older xperf plan
 
@@ -45,56 +47,51 @@ Microsoft says `ERROR_MORE_DATA` on STOP can mean the session was already
 stopped. No `-stopall`, xperf `-d`, update, alternate name, circular, append,
 preallocate, or new-file mode.
 
-The synthetic `OwnedTraceTransaction` currently starts, queries, and stops
-without any work between them. A later reviewed orchestrator must insert the
-fixed Git verifiers between start and final query, enforce a wall deadline
-(proposed 90 seconds per trace), monitor the ETL file cap, capture command/job
-receipts, and retain uncertain roots. It must preflight the reviewed commit
-and native image, Windows x64 disposable host, privilege, protected fresh
-directory with no reparse ancestors, source-only/no-secret job, and available
-disk. The fixed-name occupancy check must be read-only. The earlier
-`NT Kernel Logger` query source is useful discovery but does not check this
-new fixed name.
+The source-only `OwnedTraceTransaction` selftest still uses fake adapters.
+The manual route uses `NativeTraceAdapter` and a source-built fixed Git
+fixture for one `git --version`; it does not run import/stage/publish. Its
+subprocess ETL parser records only bounded TDH schema metadata. Unknown
+emitted schemas are diagnostic data; timeout, uncertain ownership, nonzero
+loss, uncertain STOP, parser failure or uncertain raw ETL deletion refuses
+upload. The fixed-name occupancy check is read-only. A failed Start never
+owns the existing session.
 
-The ETL is host-wide and can reveal unrelated process names and paths. Keep
-the raw ETL on restricted disposable storage only after a specific retention
-and access decision. Do not upload it as a public artifact. A bounded public
-receipt can contain hashes, counts and disposition, not unrelated raw paths.
-The eventual parser needs an independently reviewed raw event grammar,
-ProcessTrace/ETL header evidence, three present zero live and stopped-log loss
-counters, exact root-command intervals and Job identity, unique process
-lifetime keys, complete child/image/FileIo event handling and synthetic
-negative controls. A path from `Image_Load` is discovery, not a handle to the
-loaded bytes. Captured paths and post-trace hashes alone cannot prove file
-object continuity or installed loader closure.
+The ETL is host-wide and can reveal unrelated process names and paths. The
+manual workflow uploads only an at-most-8-KiB schema summary for one day
+after verified raw ETL deletion. It never uploads host-wide paths, event
+payloads, stdout, ETL or parser exports. This first capture is calibration:
+unknown MOF schemas are bounded diagnostic data. A schema inventory and one
+root creation FILETIME do not establish complete child/image/FileIo
+correlation, loaded-byte continuity or protected loader closure.
 
 ## Local source evidence
 
 Run from `D:\dev\lexrunner`:
 
 ```powershell
-dotnet run --project .\artifacts\windows-owned-trace-draft\20261028\OwnedTraceDraft.csproj -c Release -- --selftest
-dotnet .\artifacts\windows-owned-trace-draft\20261028\bin\Release\net8.0-windows\OwnedTraceDraft.dll --capture
+dotnet run --project .\services\windows-coordinator-git\owned-trace\OwnedTraceDraft.csproj -c Release -- --selftest
+dotnet .\services\windows-coordinator-git\owned-trace\bin\Release\net8.0-windows\OwnedTraceDraft.dll --capture
+dotnet .\services\windows-coordinator-git\owned-trace\bin\Release\net8.0-windows\OwnedTraceDraft.dll --capture-calibrate
 ```
 
-The first command compiles the unreachable native binding and runs the pure
-fake-adapter tests. On this Windows x64 host it returned exit 0, verified the
-120-byte native property layout, and passed 28 cases: failed/occupied start,
+The first command compiles the native binding and runs only synthetic tests.
+On this Windows x64 host it returned exit 0, verified the
+120-byte native property layout, and passed 42 cases: failed/occupied start,
 zero/invalid or foreign handles, second start, overlapping or mismatched
 query, all three nonzero loss counters, one clean stop, two no-retry uncertain
-stop outcomes, and the 1,023/1,024-code-unit path boundary. The second
-command returns child exit 3 with `source_only_selftest_required`; it cannot
-start a trace. This is source consistency, not a hosted ETW capture or a
-qualified Git dependency graph.
+stop outcomes, the 1,023/1,024-code-unit path boundary, x64 ETL consumer ABI,
+metadata-name bounds, and bare calibration refusal. The second and third
+commands return exit 3 before ETW. This is source consistency, not a hosted
+ETW capture or a qualified Git dependency graph.
 
 ## Hosted source gate
 
-The proposed `windows-bootstrap` CI step invokes `verify.ps1` on the hosted
-Windows x64 runner. It builds the .NET project, runs `--selftest`, invokes
-`--capture` only to require its exit-3 refusal, and records command, cwd,
-duration, exit code and bounded output hashes. The verifier checks all 28
+The `windows-bootstrap` CI step invokes `verify.ps1` on the hosted Windows
+x64 runner. It builds the .NET project, runs `--selftest`, invokes bare
+`--capture` and `--capture-calibrate` only to require exit-3 refusals, and
+records command, cwd, duration, exit code and bounded output hashes. The verifier checks all 42
 individual selftest results. `Test-ReceiptBounds.ps1` checks the exact
-source-only schema, case count, three expected command results, false
+source-only schema, case count, four expected command results, false
 trace/authority fields, strict UTF-8
 with LF and a receipt at most 4 KiB. The upload action receives only the
 verified `verification-receipt.json` for one day **only when both the source
@@ -107,13 +104,13 @@ Local verifier command (use a **fresh** destination under the repo's ignored
 
 ```powershell
 $stage = Join-Path 'D:\dev\lexrunner\artifacts\windows-owned-etw-source' ('qualification-local-' + [guid]::NewGuid().ToString('N'))
-pwsh -NoLogo -NoProfile -File .\artifacts\windows-owned-trace-draft\20261028\verify.ps1 -ArtifactDirectory $stage
-pwsh -NoLogo -NoProfile -File .\artifacts\windows-owned-trace-draft\20261028\Test-ReceiptBounds.ps1 -ArtifactDirectory $stage
+pwsh -NoLogo -NoProfile -File .\services\windows-coordinator-git\owned-trace\verify.ps1 -ArtifactDirectory $stage
+pwsh -NoLogo -NoProfile -File .\services\windows-coordinator-git\owned-trace\Test-ReceiptBounds.ps1 -ArtifactDirectory $stage
 ```
 
-The ignored draft's local build, selftest, refusal, and receipt-bounds gates
-passed. Its exact command and receipt hashes are in `DRAFT_CI_RECEIPT.json`.
-This is local source evidence; hosted CI has not run this proposed step.
+The ignored manual candidate's local build, selftest and bare-refusal checks
+passed. No active route was invoked. Hosted source CI and exact-head review
+remain required for this candidate.
 
 ## Primary sources
 

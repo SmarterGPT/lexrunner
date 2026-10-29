@@ -9,7 +9,7 @@ namespace LexRunner.WindowsCoordinator.Git;
 
 #if GIT_IMPORT_FIXTURE
 internal sealed record JobProcessObservation(uint ProcessId, uint ParentProcessId,
-    string ImageNativePath, string ObservedAt);
+    string ImageNativePath, string ObservedAt, long? CreationFileTimeUtc = null);
 #endif
 
 // Fixed Git-image, source-only child mechanism. The inherited handles and Job
@@ -37,13 +37,13 @@ internal static class BoundedGitChild
     internal static Task<CommandRecord> RunAsync(string phase, string cwd,
         string[] argv, IReadOnlyDictionary<string, string> env, CancellationToken token
 #if GIT_IMPORT_FIXTURE
-        , GraphSelectedGitProfile? graphProfile = null
+        , GraphSelectedGitProfile? graphProfile = null, string? calibrationGitSha256 = null
 #endif
         ) =>
         // Always return a command record, including a pre-launch cancellation.
         Task.Run(() => Run(phase, cwd, argv, env, token
 #if GIT_IMPORT_FIXTURE
-            , null, graphProfile
+            , null, graphProfile, calibrationGitSha256
 #endif
             ), CancellationToken.None);
 
@@ -54,13 +54,14 @@ internal static class BoundedGitChild
         string cwd, string[] argv, IReadOnlyDictionary<string, string> env,
         CancellationTokenSource cancellation) =>
         Task.Run(() => Run(phase, cwd, argv, env, cancellation.Token,
-            cancellation.Cancel, null), CancellationToken.None);
+            cancellation.Cancel, null, null), CancellationToken.None);
 #endif
 
     private static CommandRecord Run(string phase, string cwd, string[] argv,
         IReadOnlyDictionary<string, string> env, CancellationToken token
 #if GIT_IMPORT_FIXTURE
-        , Action? beforeResumeFixture, GraphSelectedGitProfile? graphProfile
+        , Action? beforeResumeFixture, GraphSelectedGitProfile? graphProfile,
+        string? calibrationGitSha256
 #endif
         )
     {
@@ -127,7 +128,14 @@ internal static class BoundedGitChild
             heldImageSha256 = Convert.ToHexString(SHA256.HashData(heldImage)).ToLowerInvariant();
             heldImage.Position = 0;
 #if GIT_IMPORT_FIXTURE
-            if (graphProfile is null)
+            if (calibrationGitSha256 is not null)
+            {
+                if (calibrationGitSha256.Length != 64 ||
+                    !calibrationGitSha256.All(Uri.IsHexDigit) ||
+                    !StringComparer.Ordinal.Equals(calibrationGitSha256, heldImageSha256))
+                    throw new InvalidOperationException("calibration_git_image_pin_mismatch");
+            }
+            else if (graphProfile is null)
             {
                 heldStaticImports = HeldStaticGitImports.OpenPinned();
                 staticImports = heldStaticImports.Observation;
@@ -185,6 +193,13 @@ internal static class BoundedGitChild
                     environmentBlock, cwd, ref startup, out child))
                 throw NativeFailure("git_child_create_failed");
             created = true; // JOB_LIST assigns before any child code can run.
+#if GIT_IMPORT_FIXTURE
+            if (!IsProcessInJob(child.Process, job, out var isJobMember) || !isJobMember)
+                throw NativeFailure("git_child_not_in_job_at_create");
+            if (!GetProcessTimes(child.Process, out var creationFileTimeUtc,
+                    out _, out _, out _) || creationFileTimeUtc <= 0)
+                throw NativeFailure("git_child_creation_time_unavailable");
+#endif
             if (!string.Equals(ProcessNativePath(child.Process), expectedNativeImage,
                     StringComparison.OrdinalIgnoreCase))
                 throw new IOException("suspended_git_image_mismatch");
@@ -193,7 +208,7 @@ internal static class BoundedGitChild
             rootProcessId = child.Id;
             observedJobProcesses.Add(child.Id, new JobProcessObservation(child.Id,
                 checked((uint)Environment.ProcessId), expectedNativeImage,
-                DateTimeOffset.UtcNow.ToString("O")));
+                DateTimeOffset.UtcNow.ToString("O"), creationFileTimeUtc));
 #endif
             // A canceled or expired request must never resume the suspended PID.
 #if GIT_IMPORT_FIXTURE
@@ -259,8 +274,11 @@ internal static class BoundedGitChild
             if (Convert.ToHexString(SHA256.HashData(heldImage)).ToLowerInvariant() != heldImageSha256)
                 throw new IOException("held_git_image_changed");
 #if GIT_IMPORT_FIXTURE
-            if (graphProfile is null) heldStaticImports!.AssertUnchanged();
-            else graphProfile.AssertUnchanged();
+            if (calibrationGitSha256 is null)
+            {
+                if (graphProfile is null) heldStaticImports!.AssertUnchanged();
+                else graphProfile.AssertUnchanged();
+            }
 #endif
         }
         catch (Exception exception)
@@ -583,6 +601,16 @@ internal static class BoundedGitChild
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+#if GIT_IMPORT_FIXTURE
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessTimes(IntPtr process, out long creation,
+        out long exit, out long kernel, out long user);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsProcessInJob(IntPtr process, IntPtr job,
+        [MarshalAs(UnmanagedType.Bool)] out bool inJob);
+#endif
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(IntPtr handle);

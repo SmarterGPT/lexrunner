@@ -11,12 +11,20 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <PropertyGroup Condition="'$(GitImportFixture)' == 'true'">
     <DefineConstants>$(DefineConstants);GIT_IMPORT_FIXTURE</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Remove="VerifierBoundedProcess.cs" />
+    <Compile Include="BoundedGitChild.cs" />
+    <Compile Include="GitBundleImport.cs" />
+    <Compile Include="GitWorktreePublish.cs" />
+    <Compile Include="GitWorktreeStage.cs" />
+    <Compile Include="GraphSelectedGitProfile.cs" />
+    <Compile Include="NativeWorktreePublication.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="StaticGitImports.cs" />
   </ItemGroup>
   <ItemGroup Condition="'$(GitImportFixture)' == 'true'">
     <Compile Include="../../installers/windows-coordinator/v2/GraphV2.cs" Link="GraphV2.cs" />
