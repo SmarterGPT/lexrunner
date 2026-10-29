@@ -44,7 +44,18 @@ function Write-Receipt {
     [IO.File]::WriteAllBytes($receiptPath, $bytes)
 }
 
+function Safe-ReadFailureCode([string]$message) {
+    # Never retain exception text from the hosted tool or process launcher.
+    if ($message -cin @('xperf_output_limit', 'xperf_read_timeout',
+            'xperf_start_failed', 'output_collision',
+            'xperf_read_command_failed', 'existing_kernel_logger_observed')) {
+        return $message
+    }
+    return 'xperf_read_failure_unclassified'
+}
+
 function Invoke-BoundedReadOnlyXperf([string]$label, [string[]]$arguments, [string]$xperfPath, [string]$outputRoot) {
+    $script:lastXperfReadFailure = $null
     $stdoutPath = Join-Path $outputRoot ($label + '.stdout')
     $stderrPath = Join-Path $outputRoot ($label + '.stderr')
     if ([IO.File]::Exists($stdoutPath) -or [IO.File]::Exists($stderrPath)) {
@@ -52,8 +63,12 @@ function Invoke-BoundedReadOnlyXperf([string]$label, [string[]]$arguments, [stri
     }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $child = $null
+    $completed = $false
     try {
-        $child = Start-Process -FilePath $xperfPath -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        try {
+            $child = Start-Process -FilePath $xperfPath -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        }
+        catch { throw 'xperf_start_failed' }
         while (-not $child.HasExited) {
             if ((Get-ExistingLength $stdoutPath) -gt 65536 -or
                 (Get-ExistingLength $stderrPath) -gt 65536) {
@@ -67,7 +82,7 @@ function Invoke-BoundedReadOnlyXperf([string]$label, [string[]]$arguments, [stri
             (Get-ExistingLength $stderrPath) -gt 65536) {
             throw 'xperf_output_limit'
         }
-        return [ordered]@{
+        $result = [ordered]@{
             label = $label
             arguments = $arguments
             exitCode = $child.ExitCode
@@ -77,13 +92,33 @@ function Invoke-BoundedReadOnlyXperf([string]$label, [string[]]$arguments, [stri
             stderrBytes = (Get-ExistingLength $stderrPath)
             stderrSha256 = (Get-FileHash -LiteralPath $stderrPath -Algorithm SHA256).Hash.ToLowerInvariant()
         }
+        $completed = $true
+        return $result
     }
     finally {
+        $childTerminal = $null
         if ($null -ne $child) {
-            if (-not $child.HasExited) {
+            try { $childTerminal = $child.HasExited } catch { $childTerminal = $false }
+            if (-not $childTerminal) {
                 try { $child.Kill($true) } catch { }
                 try { $child.WaitForExit(5000) | Out-Null } catch { }
+                try { $childTerminal = $child.HasExited } catch { $childTerminal = $false }
             }
+        }
+        if (-not $completed) {
+            $stdoutBytes = $null
+            $stderrBytes = $null
+            try { $stdoutBytes = Get-ExistingLength $stdoutPath } catch { }
+            try { $stderrBytes = Get-ExistingLength $stderrPath } catch { }
+            $script:lastXperfReadFailure = [ordered]@{
+                label = $label
+                durationMs = $clock.ElapsedMilliseconds
+                stdoutBytesAtCleanup = $stdoutBytes
+                stderrBytesAtCleanup = $stderrBytes
+                childTerminalObserved = $childTerminal
+            }
+        }
+        if ($null -ne $child) {
             $child.Dispose()
         }
         # A child can write past the polling threshold before it is killed.
@@ -129,6 +164,8 @@ $receipt = [ordered]@{
     traceCaptured = $false
     authorizesLoaderClosure = $false
     authorizesExecution = $false
+    errorCode = $null
+    failedRead = $null
 }
 Write-Receipt
 $stage = 'xperf_discovery'
@@ -191,6 +228,11 @@ catch {
     $receipt.result = 'refused'
     $receipt.reason = $stage
     $receipt.errorType = $_.Exception.GetType().Name
+    $receipt.errorCode = Safe-ReadFailureCode $_.Exception.Message
+    if ($stage -match '^xperf_(help-start|help-stop|help-processing|help-tracestats|loggers)$' -and
+        $null -ne $script:lastXperfReadFailure) {
+        $receipt.failedRead = $script:lastXperfReadFailure
+    }
     $receipt.completedAt = [DateTimeOffset]::UtcNow.ToString('O')
     Write-Receipt
     [Console]::Error.WriteLine('etw_calibration_preflight_refused')
