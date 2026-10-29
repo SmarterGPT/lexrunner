@@ -16,6 +16,7 @@ on:
       - "services/windows-coordinator-host/**"
       - "services/windows-coordinator-client/**"
       - "services/windows-coordinator-service/**"
+      - "services/windows-coordinator-worker-slot/**"
       - "services/windows-coordinator-admission/**"
       - "services/windows-coordinator-git/**"
       - "services/windows-coordinator-checkout/**"
@@ -207,6 +208,7 @@ jobs:
   # slice through verify-removal.ps1. Full native-host conformance remains #893 work.
   windows-bootstrap:
     runs-on: windows-latest
+    timeout-minutes: 45
     if: >-
       github.event_name == 'pull_request' ||
       (github.event_name == 'workflow_dispatch' && inputs.level != 'minimal')
@@ -287,6 +289,9 @@ jobs:
       - name: Qualify fail-closed Windows coordinator service source
         shell: pwsh
         run: ./services/windows-coordinator-service/verify.ps1
+      - name: Qualify inactive Windows worker-slot source
+        shell: pwsh
+        run: ./services/windows-coordinator-worker-slot/verify.ps1
       - name: Qualify inactive Windows coordinator protected-root source
         shell: pwsh
         run: ./services/windows-coordinator-root-provisioner/verify-portable.ps1
@@ -344,6 +349,7 @@ jobs:
             artifacts/windows-coordinator-host-probe/verification-receipt.json
             artifacts/windows-coordinator-client/verification-receipt.json
             artifacts/windows-coordinator-service-source/verification-receipt.json
+            artifacts/windows-coordinator-worker-slot-source/verification-receipt.json
             artifacts/windows-coordinator-root-provisioner/run-*/verification-receipt.json
             artifacts/windows-selection-publisher-*/verification-receipt.json
             artifacts/windows-selection-custody-*/verification-receipt.json
