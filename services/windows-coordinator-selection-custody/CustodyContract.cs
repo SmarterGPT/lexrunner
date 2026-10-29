@@ -26,6 +26,13 @@ internal sealed record CustodyResult(string State, string Reason)
         "selection_changed" or "registry_structural_match_only";
 }
 
+// These are comparison data from two structural reads, not a publisher
+// credential, an installed-graph pin, or permission to open a process lease.
+internal sealed record StructuralSelectionCandidate(string GenerationId, string GraphDigest,
+    string ManifestDigest, string ServiceImageDigest, long Revision);
+internal sealed record StructuralSelectionReadback(CustodyResult Custody,
+    StructuralSelectionCandidate? Candidate);
+
 internal sealed class CustodyException(string reason) : Exception(reason)
 {
     internal string Reason { get; } = reason;
@@ -50,19 +57,33 @@ internal static class CustodyContract
     internal sealed record Selection(string Text, string GenerationId, string GraphDigest,
         string ManifestDigest, string ServiceImageDigest, long Revision);
 
-    private sealed record Details(string SelectionText, ulong HighWater, string CatalogText);
+    private sealed record Details(Selection Selection, ulong HighWater, string CatalogText);
 
-    internal static CustodyResult Assess(RegistrySnapshot first, RegistrySnapshot second)
+    internal static CustodyResult Assess(RegistrySnapshot first, RegistrySnapshot second) =>
+        AssessSelected(first, second).Custody;
+
+    internal static StructuralSelectionReadback AssessSelected(RegistrySnapshot first,
+        RegistrySnapshot second)
     {
         try
         {
             var initial = ValidateOne(first);
             var final = ValidateOne(second);
             if (initial != final) throw new CustodyException("selection_changed");
-            return CustodyResult.Observed();
+            var selected = initial.Selection;
+            return new StructuralSelectionReadback(CustodyResult.Observed(),
+                new StructuralSelectionCandidate(selected.GenerationId, selected.GraphDigest,
+                    selected.ManifestDigest, selected.ServiceImageDigest, selected.Revision));
         }
-        catch (CustodyException error) { return CustodyResult.Unavailable(error.Reason); }
-        catch { return CustodyResult.Unavailable("registry_unavailable"); }
+        catch (CustodyException error)
+        {
+            return new StructuralSelectionReadback(CustodyResult.Unavailable(error.Reason), null);
+        }
+        catch
+        {
+            return new StructuralSelectionReadback(CustodyResult.Unavailable("registry_unavailable"),
+                null);
+        }
     }
 
     internal static Selection ParseSelection(string value)
@@ -151,7 +172,7 @@ internal static class CustodyContract
             image != selection.ServiceImageDigest || name != "LexRunnerCoordinator")
             throw new CustodyException("catalog_mismatch");
         if (state != "qualified") throw new CustodyException("generation_unqualified");
-        return new Details(selection.Text, highWater,
+        return new Details(selection, highWater,
             graph + ":" + manifest + ":" + image + ":" + state + ":" + name);
     }
 

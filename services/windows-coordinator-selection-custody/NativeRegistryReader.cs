@@ -20,7 +20,11 @@ internal static class NativeRegistryReader
     private const int ErrorInsufficientBuffer = 122;
     private static readonly nint Hklm = new(unchecked((int)0x80000002));
 
-    internal static CustodyResult Observe()
+    internal static CustodyResult Observe() => ObserveSelected().Custody;
+
+    // Service code must link this reader into its own protected image before
+    // using the candidate. The returned fields never authorize a lease.
+    internal static StructuralSelectionReadback ObserveSelected()
     {
         try
         {
@@ -28,10 +32,17 @@ internal static class NativeRegistryReader
             RejectLink(software.Handle);
             var first = ReadOnce(software.Handle);
             var second = ReadOnce(software.Handle);
-            return CustodyContract.Assess(first, second);
+            return CustodyContract.AssessSelected(first, second);
         }
-        catch (CustodyException error) { return CustodyResult.Unavailable(error.Reason); }
-        catch { return CustodyResult.Unavailable("registry_unavailable"); }
+        catch (CustodyException error)
+        {
+            return new StructuralSelectionReadback(CustodyResult.Unavailable(error.Reason), null);
+        }
+        catch
+        {
+            return new StructuralSelectionReadback(CustodyResult.Unavailable("registry_unavailable"),
+                null);
+        }
     }
 
     private static RegistrySnapshot ReadOnce(nint software)

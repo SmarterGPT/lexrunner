@@ -41,6 +41,15 @@ mistyped, unqualified, or changed observations return a bounded unavailable
 reason. Even `observed` sets `authorizesLaunch`, `productionReady`, and
 `helperMissingCleared` to `false`.
 
+The in-process ObserveSelected API now returns only a structural candidate:
+the exact selected generation, graph, manifest and service-image digests plus
+revision after two matching fixed-path reads. A refusal returns no candidate.
+The CLI diagnostic still emits no selection bytes, and no caller path or digest
+is accepted. A service can later link this source into its own protected image
+for comparison against independently authenticated installed release bytes.
+No current service imports it; the candidate cannot construct
+ProtectedGenerationLease, and production still reports helper_missing.
+
 This source deliberately accepts only one selected generation. It does not
 model retired generations, update/repair, or uninstall retention. A matching
 high-water number is not evidence that it survived a previous installation or

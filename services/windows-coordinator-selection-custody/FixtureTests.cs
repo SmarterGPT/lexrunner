@@ -26,6 +26,12 @@ internal static class FixtureTests
             {
                 ["positive_structural_only"] = CustodyContract.Assess(good, good) ==
                     CustodyResult.Observed(),
+                ["positive_selected_candidate"] = Candidate(good, good),
+                ["changed_candidate_refused"] =
+                    CustodyContract.AssessSelected(good, Sample(2)).Candidate is null,
+                ["unqualified_candidate_refused"] = CustodyContract.AssessSelected(
+                    WithCatalogValue(good, "State", Sz("provisioned-unqualified")), good)
+                    .Candidate is null,
                 ["root_link"] = Reason(good with { Root = good.Root with { IsLink = true } },
                     good, "registry_link"),
                 ["generations_link"] = Reason(good with { Generations = good.Generations with
@@ -75,7 +81,7 @@ internal static class FixtureTests
             };
             foreach (var (name, passed) in observations)
                 if (!passed) { Console.Error.WriteLine("fixture_failed:" + name); return false; }
-            return observations.Count == 21;
+            return observations.Count == 24;
         }
         catch (Exception error)
         {
@@ -84,10 +90,21 @@ internal static class FixtureTests
         }
     }
 
+    private static bool Candidate(RegistrySnapshot first, RegistrySnapshot second)
+    {
+        var readback = CustodyContract.AssessSelected(first, second);
+        var selected = readback.Candidate;
+        return readback.Custody == CustodyResult.Observed() &&
+            selected is not null && selected.GenerationId == Id &&
+            selected.GraphDigest == Id && selected.ManifestDigest == Manifest &&
+            selected.ServiceImageDigest == Image && selected.Revision == 1;
+    }
+
     private static bool Reason(RegistrySnapshot first, RegistrySnapshot second, string expected)
     {
-        var result = CustodyContract.Assess(first, second);
-        return result.State == "unavailable" && result.Reason == expected;
+        var readback = CustodyContract.AssessSelected(first, second);
+        return readback.Custody.State == "unavailable" &&
+            readback.Custody.Reason == expected && readback.Candidate is null;
     }
 
     private static RegistrySnapshot Sample(long revision)
