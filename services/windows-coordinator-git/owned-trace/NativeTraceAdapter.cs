@@ -1,0 +1,323 @@
+using System.Runtime.InteropServices;
+
+// Not wired to Program. No command can instantiate this adapter in this draft.
+// This source exists for independent ABI and ownership review before a hosted
+// capture route is proposed. It must never run on a user workstation.
+internal sealed class NativeTraceAdapter : ITraceAdapter
+{
+    private const uint EventTraceControlQuery = 0;
+    private const uint EventTraceControlStop = 1;
+    private const uint WnodeFlagTracedGuid = 0x00020000;
+    private const int MaximumNameChars = 1024;
+    private const uint BufferSizeKib = 64;
+    private const uint MinimumBuffers = 64;
+    private const uint MaximumBuffers = 128;
+    private const uint MaximumFileSizeMib = 128;
+
+    private readonly TraceIdentity _expected;
+    private readonly OwnedHandleGate _gate;
+
+    internal NativeTraceAdapter(TraceIdentity expected)
+    {
+        _expected = expected;
+        _gate = new OwnedHandleGate(expected);
+    }
+
+    internal static bool IdentityIsBounded(TraceIdentity expected) =>
+        expected.Guid != Guid.Empty &&
+        expected.Name is "LexRunner Windows Git Loader Qualification" &&
+        expected.Name.Length < MaximumNameChars &&
+        expected.EtlPath.Length > 0 &&
+        expected.EtlPath.Length < MaximumNameChars &&
+        !expected.EtlPath.Contains('\0') &&
+        Path.IsPathFullyQualified(expected.EtlPath) &&
+        expected.Mode == 0x02000001 && expected.Flags == 0x06000307;
+
+    internal static bool LayoutIsExpected() =>
+        OperatingSystem.IsWindows() &&
+        RuntimeInformation.ProcessArchitecture == Architecture.X64 &&
+        Marshal.SizeOf<WnodeHeader>() == 48 &&
+        Marshal.SizeOf<EventTraceProperties>() == 120 &&
+        Marshal.OffsetOf<EventTraceProperties>(nameof(EventTraceProperties.EventsLost)).ToInt32() == 88 &&
+        Marshal.OffsetOf<EventTraceProperties>(nameof(EventTraceProperties.LogBuffersLost)).ToInt32() == 96 &&
+        Marshal.OffsetOf<EventTraceProperties>(nameof(EventTraceProperties.RealTimeBuffersLost)).ToInt32() == 100 &&
+        Marshal.OffsetOf<EventTraceProperties>(nameof(EventTraceProperties.LogFileNameOffset)).ToInt32() == 112 &&
+        Marshal.OffsetOf<EventTraceProperties>(nameof(EventTraceProperties.LoggerNameOffset)).ToInt32() == 116;
+
+    public StartResult Start(TraceIdentity expected)
+    {
+        if (!_gate.BeginStart() || !LayoutIsExpected() ||
+            expected != _expected || !IdentityIsBounded(expected))
+            return new StartResult(87, 0); // ERROR_INVALID_PARAMETER
+
+        var buffer = Allocate(expected.Guid);
+        try
+        {
+            var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
+            props.BufferSize = BufferSizeKib;
+            props.MinimumBuffers = MinimumBuffers;
+            props.MaximumBuffers = MaximumBuffers;
+            props.MaximumFileSize = MaximumFileSizeMib;
+            props.LogFileMode = expected.Mode;
+            props.EnableFlags = expected.Flags;
+            props.Wnode.ClientContext = 1; // QPC; no system-time clock request
+            Marshal.StructureToPtr(props, buffer, false);
+            WriteString(buffer, props.LogFileNameOffset, expected.EtlPath);
+            uint code;
+            ulong handle;
+            try { code = StartTraceW(out handle, expected.Name, buffer); }
+            catch (DllNotFoundException) { return new StartResult(127, 0); }
+            catch (EntryPointNotFoundException) { return new StartResult(127, 0); }
+            var result = new StartResult(code, code == 0 ? handle : 0);
+            _gate.CompleteStart(result);
+            return result;
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    public QueryResult Query(ulong returnedHandle)
+    {
+        if (!LayoutIsExpected() || !_gate.BeginQuery(returnedHandle))
+            return new QueryResult(87, null);
+        var buffer = Allocate(_expected.Guid);
+        try
+        {
+            uint code;
+            try { code = ControlTraceW(returnedHandle, null, buffer, EventTraceControlQuery); }
+            catch (DllNotFoundException)
+            {
+                var missing = new QueryResult(127, null);
+                _gate.CompleteQuery(returnedHandle, missing);
+                return missing;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                var missing = new QueryResult(127, null);
+                _gate.CompleteQuery(returnedHandle, missing);
+                return missing;
+            }
+            if (code != 0)
+            {
+                var failed = new QueryResult(code, null);
+                _gate.CompleteQuery(returnedHandle, failed);
+                return failed;
+            }
+
+            var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
+            var capacity = Marshal.ReadInt32(buffer);
+            if (capacity < Marshal.SizeOf<EventTraceProperties>() ||
+                capacity > Capacity ||
+                !TryReadString(buffer, props.LoggerNameOffset, capacity, out var name) ||
+                !TryReadString(buffer, props.LogFileNameOffset, capacity, out var path))
+            {
+                var invalid = new QueryResult(13, null); // ERROR_INVALID_DATA
+                _gate.CompleteQuery(returnedHandle, invalid);
+                return invalid;
+            }
+            var result = new QueryResult(0, new TraceObservation(name!, props.Wnode.Guid, path!,
+                props.LogFileMode, props.EnableFlags, props.EventsLost,
+                props.LogBuffersLost, props.RealTimeBuffersLost));
+            return _gate.CompleteQuery(returnedHandle, result) ?
+                result : new QueryResult(13, null);
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    public StopResult Stop(ulong returnedHandle)
+    {
+        if (!LayoutIsExpected() || !_gate.BeginStop(returnedHandle))
+            return new StopResult(87);
+        var buffer = Allocate(_expected.Guid);
+        try
+        {
+            // Only the StartTraceW-returned handle, never a name. Even
+            // ERROR_MORE_DATA may mean the session has already stopped.
+            try { return new StopResult(ControlTraceW(returnedHandle, null, buffer, EventTraceControlStop)); }
+            catch (DllNotFoundException) { return new StopResult(127); }
+            catch (EntryPointNotFoundException) { return new StopResult(127); }
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private static int Capacity => checked(Marshal.SizeOf<EventTraceProperties>() +
+        2 * (MaximumNameChars + 1) * sizeof(char));
+
+    private static IntPtr Allocate(Guid guid)
+    {
+        var buffer = Marshal.AllocHGlobal(Capacity);
+        Marshal.Copy(new byte[Capacity], 0, buffer, Capacity);
+        var props = new EventTraceProperties
+        {
+            Wnode = new WnodeHeader
+            {
+                BufferSize = checked((uint)Capacity),
+                Guid = guid,
+                Flags = WnodeFlagTracedGuid,
+            },
+            LoggerNameOffset = checked((uint)Marshal.SizeOf<EventTraceProperties>()),
+            LogFileNameOffset = checked((uint)(Marshal.SizeOf<EventTraceProperties>() +
+                (MaximumNameChars + 1) * sizeof(char))),
+        };
+        Marshal.StructureToPtr(props, buffer, false);
+        return buffer;
+    }
+
+    private static void WriteString(IntPtr buffer, uint offset, string text)
+    {
+        for (var i = 0; i < text.Length; i++)
+            Marshal.WriteInt16(buffer, checked((int)offset + i * sizeof(char)), unchecked((short)text[i]));
+    }
+
+    private static bool TryReadString(IntPtr buffer, uint offset, int capacity, out string? text)
+    {
+        text = null;
+        var min = Marshal.SizeOf<EventTraceProperties>();
+        if (offset < min || offset >= capacity || (offset & 1) != 0)
+            return false;
+        var chars = new char[MaximumNameChars];
+        for (var i = 0; i < chars.Length; i++)
+        {
+            var position = checked((int)offset + i * sizeof(char));
+            if (position + sizeof(char) > capacity) return false;
+            var value = unchecked((char)Marshal.ReadInt16(buffer, position));
+            if (value == '\0')
+            {
+                text = new string(chars, 0, i);
+                return i != 0;
+            }
+            chars[i] = value;
+        }
+        return false;
+    }
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("Sechost.dll", EntryPoint = "StartTraceW", ExactSpelling = true, CharSet = CharSet.Unicode)]
+    private static extern uint StartTraceW(out ulong sessionHandle,
+        [MarshalAs(UnmanagedType.LPWStr)] string instanceName, IntPtr properties);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("Sechost.dll", EntryPoint = "ControlTraceW", ExactSpelling = true, CharSet = CharSet.Unicode)]
+    private static extern uint ControlTraceW(ulong traceId,
+        [MarshalAs(UnmanagedType.LPWStr)] string? instanceName, IntPtr properties, uint controlCode);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WnodeHeader
+    {
+        public uint BufferSize;
+        public uint ProviderId;
+        public ulong HistoricalContext;
+        public long TimeStamp;
+        public Guid Guid;
+        public uint ClientContext;
+        public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct EventTraceProperties
+    {
+        public WnodeHeader Wnode;
+        public uint BufferSize;
+        public uint MinimumBuffers;
+        public uint MaximumBuffers;
+        public uint MaximumFileSize;
+        public uint LogFileMode;
+        public uint FlushTimer;
+        public uint EnableFlags;
+        public int AgeLimit;
+        public uint NumberOfBuffers;
+        public uint FreeBuffers;
+        public uint EventsLost;
+        public uint BuffersWritten;
+        public uint LogBuffersLost;
+        public uint RealTimeBuffersLost;
+        public IntPtr LoggerThreadId;
+        public uint LogFileNameOffset;
+        public uint LoggerNameOffset;
+    }
+}
+
+// One adapter instance owns at most one StartTraceW result. A successful
+// matching query is needed before the single STOP attempt. Query begins by
+// invalidating any prior match, so a later failed query cannot reuse it.
+internal sealed class OwnedHandleGate(TraceIdentity expected)
+{
+    private enum State { Unused, StartAttempted, Owned, QueryInFlight, QueryMatched, StopAttempted, Uncertain }
+    private readonly object _sync = new();
+    private State _state;
+    private ulong _handle;
+
+    internal bool BeginStart()
+    {
+        lock (_sync)
+        {
+            if (_state != State.Unused) return false;
+            _state = State.StartAttempted;
+            return true;
+        }
+    }
+
+    internal void CompleteStart(StartResult result)
+    {
+        lock (_sync)
+        {
+            if (_state != State.StartAttempted)
+                throw new InvalidOperationException("start_state_invalid");
+            if (result.Code == 0 && result.Handle is not (0 or ulong.MaxValue))
+            {
+                _handle = result.Handle;
+                _state = State.Owned;
+            }
+        }
+    }
+
+    internal bool BeginQuery(ulong handle)
+    {
+        lock (_sync)
+        {
+            if (_state != State.Owned && _state != State.QueryMatched)
+                return false;
+            if (handle != _handle)
+            {
+                _state = State.Uncertain;
+                return false;
+            }
+            _state = State.QueryInFlight;
+            return true;
+        }
+    }
+
+    internal bool CompleteQuery(ulong handle, QueryResult result)
+    {
+        lock (_sync)
+        {
+            if (_state != State.QueryInFlight || handle != _handle)
+                return false;
+            if (
+                result.Code != 0 || result.Observation is not { } observed ||
+                observed.Name != expected.Name || observed.Guid != expected.Guid ||
+                observed.EtlPath != expected.EtlPath || observed.Mode != expected.Mode ||
+                observed.Flags != expected.Flags)
+            {
+                _state = State.Uncertain;
+                return false;
+            }
+            _state = State.QueryMatched;
+            return true;
+        }
+    }
+
+    internal bool BeginStop(ulong handle)
+    {
+        lock (_sync)
+        {
+            if (_state != State.QueryMatched) return false;
+            if (handle != _handle)
+            {
+                _state = State.Uncertain;
+                return false;
+            }
+            _state = State.StopAttempted;
+            return true;
+        }
+    }
+}
