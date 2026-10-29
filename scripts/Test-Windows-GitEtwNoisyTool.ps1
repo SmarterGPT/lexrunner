@@ -19,7 +19,7 @@ $tokens = $null
 $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($preflightPath, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count -ne 0) { throw 'preflight_parse_failed' }
-foreach ($name in @('Get-ExistingLength', 'Invoke-BoundedReadOnlyXperf')) {
+foreach ($name in @('Get-ExistingLength', 'Safe-ReadFailureCode', 'Invoke-BoundedReadOnlyXperf')) {
     $definition = $ast.Find({
         param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -42,6 +42,34 @@ catch {
     if ($observed -ne 'xperf_output_limit') { throw }
 }
 $clock.Stop()
+if ((Safe-ReadFailureCode $observed) -cne 'xperf_output_limit' -or
+    $script:lastXperfReadFailure.label -cne 'help-start' -or
+    $script:lastXperfReadFailure.stdoutBytesAtCleanup -le 65536 -or
+    $script:lastXperfReadFailure.childTerminalObserved -ne $true) {
+    throw 'noisy_failure_diagnostic_invalid'
+}
+$noiseFailure = $script:lastXperfReadFailure
+if ((Safe-ReadFailureCode 'xperf_read_timeout') -cne 'xperf_read_timeout' -or
+    (Safe-ReadFailureCode 'untrusted tool output or path') -cne 'xperf_read_failure_unclassified') {
+    throw 'failure_code_allowlist_invalid'
+}
+
+$missingImage = Join-Path $testTemp 'missing-xperf.exe'
+if ([IO.File]::Exists($missingImage)) { throw 'missing-image-control_occupied' }
+$startFailure = $null
+try {
+    Invoke-BoundedReadOnlyXperf 'help-stop' @('-help') $missingImage $outputRoot | Out-Null
+    throw 'missing_image_not_refused'
+}
+catch {
+    $startFailure = $_.Exception.Message
+    if ($startFailure -cne 'xperf_start_failed') { throw }
+}
+if ((Safe-ReadFailureCode $startFailure) -cne 'xperf_start_failed' -or
+    $script:lastXperfReadFailure.label -cne 'help-stop' -or
+    $null -ne $script:lastXperfReadFailure.childTerminalObserved) {
+    throw 'start_failure_diagnostic_invalid'
+}
 
 $noiseFiles = @(Get-ChildItem -LiteralPath $outputRoot -File -Force)
 if (@($noiseFiles | Where-Object Length -GT 65536).Count -ne 0) {
@@ -94,6 +122,9 @@ $testReceipt = [ordered]@{
     fakeToolSha256 = (Get-FileHash -LiteralPath $fakePath -Algorithm SHA256).Hash.ToLowerInvariant()
     noisyToolDurationMs = $clock.ElapsedMilliseconds
     noisyToolRefusal = $observed
+    noisyToolFailure = $noiseFailure
+    missingImageRefusal = $startFailure
+    unknownErrorCode = Safe-ReadFailureCode 'untrusted tool output or path'
     rawNoisyOutputMaxBytes = if ($noiseFiles.Count -eq 0) { 0 } else { ($noiseFiles | Measure-Object Length -Maximum).Maximum }
     boundedStageExitCode = $guardPassCode
     boundedStageBytes = ($staged | Measure-Object Length -Sum).Sum
@@ -105,3 +136,4 @@ $testReceipt = [ordered]@{
 $testReceiptPath = Join-Path $draftRoot 'NEGATIVE_CONTROL_RECEIPT.json'
 [IO.File]::WriteAllText($testReceiptPath, ((ConvertTo-Json -InputObject $testReceipt -Depth 5) + [char]10), [Text.UTF8Encoding]::new($false))
 Write-Output ('noisy_tool_negative_passed receipt=' + $testReceiptPath)
+exit 0

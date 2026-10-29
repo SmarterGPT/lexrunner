@@ -28,6 +28,8 @@ on:
       - "installers/windows-coordinator/**"
       - "scripts/*WindowsCoordinator*.ps1"
       - "scripts/*windows-coordinator*.ts"
+      - "scripts/Windows-GitEtwPreflight.ps1"
+      - "scripts/Test-Windows-GitEtwNoisyTool.ps1"
       - "docs/architecture/windows-coordinator-*.md"
       - "package*.json"
       - "tsconfig*.json"
@@ -304,6 +306,9 @@ jobs:
           $id = [guid]::NewGuid().ToString('N')
           $artifact = Join-Path $PWD "artifacts/windows-coordinator-v2-msi-offline/source-$id"
           ./installers/windows-coordinator/v2/verify.ps1 -ArtifactDirectory $artifact
+      - name: Verify Windows Git ETW diagnostic bounds without starting ETW
+        shell: pwsh
+        run: ./scripts/Test-Windows-GitEtwNoisyTool.ps1
       - name: Run native Windows handle-authority proof
         shell: pwsh
         run: ./proofs/windows-workspace-boundary/verify.ps1
@@ -343,6 +348,7 @@ jobs:
             artifacts/windows-coordinator-git-portable/receipt-*.json
             artifacts/windows-coordinator-checkout-portable/receipt-*.json
             artifacts/windows-coordinator-v2-msi-offline/source-*/verification-receipt.json
+            artifacts/windows-git-etw-tool-preflight/NEGATIVE_CONTROL_RECEIPT.json
           if-no-files-found: warn
 
   # Full manual-only determinism and license gate.
