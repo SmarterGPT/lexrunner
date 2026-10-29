@@ -164,6 +164,7 @@ internal static class FixtureTests
         return frame;
     }
 
+    [SupportedOSPlatform("windows")]
     internal static int RunAll()
     {
         var results = new List<TestCase>();
@@ -257,6 +258,7 @@ internal static class FixtureTests
         CoordinatorSelectionFixtureTests.Run(results, failures);
         CoordinatorV2RegistryFixtureTests.Run(results, failures);
         CoordinatorV3RegistryFixtureTests.Run(results, failures);
+        V3InstalledFixtureTests.Run(results, failures);
         Program.Emit(new TestReport { State = failures.Count == 0 ? "pass" : "fail",
             Profile = "synthetic_same_user_non_authorizing", Results = results, Failures = failures },
             failures.Count == 0 ? 0 : 1);

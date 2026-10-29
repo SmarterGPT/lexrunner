@@ -105,7 +105,11 @@ try {
           'shape_mismatch', 'selection_unavailable', 'selection_invalid',
           'high_water_invalid', 'high_water_mismatch', 'catalog_mismatch',
           'generation_unqualified', 'selection_changed',
-          'registry_structural_match_only') -or
+          'registry_structural_match_only', 'graph_unavailable', 'graph_invalid',
+          'graph_mismatch', 'image_unavailable', 'image_mismatch',
+          'scm_unavailable', 'scm_config_mismatch', 'scm_config_changed',
+          'installed_file_unavailable', 'generation_path_unavailable',
+          'installed_readback_unavailable', 'installed_structural_match_only') -or
       ((@($status.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'reason,state')) {
     throw 'Ordinary status did not retain helper_missing.'
   }
@@ -113,6 +117,11 @@ try {
     $projectRoot 3
   if (($excludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
     throw 'Fixture mode was available in the ordinary image.'
+  }
+  $v3ExcludedText = Invoke-CheckedStep 'v3_fixture_excluded' $normalImage `
+    @('--v3-installed-fixture-selftest') $projectRoot 3
+  if (($v3ExcludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
+    throw 'V3 installed fixture mode was available in the ordinary image.'
   }
   $sendText = Invoke-CheckedStep 'ordinary_send_refused' $normalImage @('--execute') `
     $projectRoot 3
@@ -122,13 +131,22 @@ try {
   Invoke-CheckedStep 'fixture_publish' 'dotnet' ($buildArgs + @(
       '-p:CoordinatorClientFixtureTests=true', '-o', $fixtureRoot)) `
     $projectRoot 0 | Out-Null
+  $pureText = Invoke-CheckedStep 'v3_installed_pure_selftest' $fixtureImage `
+    @('--v3-installed-fixture-selftest') $projectRoot 0
+  $pure = $pureText.Trim() | ConvertFrom-Json
+  if ($pure.state -ne 'pass' -or
+      $pure.profile -ne 'v3_installed_source_only_pure' -or
+      $pure.results.Count -ne 19 -or $pure.failures.Count -ne 0 -or
+      @($pure.results | Where-Object { -not $_.passed }).Count -ne 0) {
+    throw 'V3 installed pure fixture tests did not all pass.'
+  }
   $testText = Invoke-CheckedStep 'native_selftest' $fixtureImage @('--selftest') `
     $projectRoot 0
   $test = $testText.Trim() | ConvertFrom-Json
   $testCount = $test.results.Count
   if ($test.state -ne 'pass' -or
       $test.profile -ne 'synthetic_same_user_non_authorizing' -or
-      $test.failures.Count -ne 0 -or $test.results.Count -ne 32 -or
+      $test.failures.Count -ne 0 -or $test.results.Count -ne 51 -or
       @($test.results | Where-Object { -not $_.passed }).Count -ne 0) {
     throw 'Native fixture tests did not all pass.'
   }
@@ -154,6 +172,7 @@ finally {
       'CoordinatorAcquisition.cs', 'CoordinatorSelectionFixtureTests.cs',
       'CoordinatorV2RegistryObservation.cs', 'CoordinatorV2RegistryFixtureTests.cs',
       'CoordinatorV3RegistryObservation.cs', 'CoordinatorV3RegistryFixtureTests.cs',
+      'CoordinatorV3InstalledObservation.cs', 'V3InstalledFixtureTests.cs',
       'README.md', 'verify.ps1')) {
     $path = Join-Path $projectRoot $name
     if (Test-Path -LiteralPath $path) {
@@ -166,6 +185,9 @@ finally {
     $sources["selection-custody/$name"] =
       (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
   }
+  $graphSource = Join-Path $repoRoot 'installers/windows-coordinator/v3/GraphV3.cs'
+  $sources['graph-v3/GraphV3.cs'] =
+    (Get-FileHash -LiteralPath $graphSource -Algorithm SHA256).Hash.ToLowerInvariant()
   foreach ($name in @('package.json', 'scripts/validate-package-boundary.ts')) {
     $path = Join-Path $repoRoot $name
     $sources[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()

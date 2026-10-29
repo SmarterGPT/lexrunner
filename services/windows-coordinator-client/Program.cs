@@ -13,6 +13,8 @@ internal static class Program
 #if COORDINATOR_CLIENT_FIXTURE_TESTS
             if (args is ["--selftest"])
                 return FixtureTests.RunAll();
+            if (args is ["--v3-installed-fixture-selftest"])
+                return V3InstalledFixtureTests.RunPure();
             if (args.Length == 3 && args[0] == "--fixture-server")
                 return FixtureServer.Run(args[1], args[2]);
 #endif
@@ -21,9 +23,9 @@ internal static class Program
             // In particular, a caller cannot supply a pipe, PID, path or pin.
             if (args is ["--status"])
             {
-                // The v3 HKLM reader is an observation only. A structural
-                // registry match cannot construct an endpoint or send a frame.
-                var selection = CoordinatorV3RegistryObservation.Observe();
+                // Read-only v3 registry, held-byte and fixed-SCM comparison.
+                // No source result can construct an endpoint or send a frame.
+                var selection = CoordinatorV3InstalledObservation.Observe();
                 var service = new ScmServiceSnapshots();
                 var status = service.Read();
                 return Emit(new Output { State = "helper_missing",

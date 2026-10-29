@@ -8,20 +8,29 @@ bounded diagnostic, but it still reports `helper_missing` even if that service
 exists. No caller argument can supply a pipe name, PID, image path, or pin in
 the ordinary image.
 
-The ordinary `--status` path makes a read-only v3 structural observation of the fixed
+The ordinary `--status` path makes a read-only v3 observation of the fixed
 64-bit `HKLM\Software\SmarterGPT.LexRunner.WindowsCoordinator` key through the
 shared native selection-custody reader. It holds opened registry keys, refuses
 registry links, checks the SYSTEM owner and protected exact DACL, requires
 typed canonical v3 `ActiveSelection` and `HighWaterRevision` values, checks the
 selected catalog including both fixed service names and image digests, and compares
-two structural snapshots. The result is only a
+two structural snapshots. After that candidate, it derives the fixed Program Files
+generation path, opens and retains the manifest and both fixed service images
+without write/delete sharing, checks graph and image bytes against the v3 roles,
+observes both fixed SCM configurations, then rereads selection and SCM. The
+result is only a
 bounded diagnostic reason: even a structural match still reports
 `helper_missing` and cannot construct a production endpoint or send a request.
 The old v1 and v2 observations remain isolated as source/reference fixtures.
-The initial MSI authors no v3 selection or catalog. This v3 registry observation
-does not open or hash the installed graph or either image, inspect the worker
-SCM object, authenticate the publisher, retain high-water across upgrades,
-bind the running processes, qualify loader closure, or prove cross-account access.
+The initial MSI authors no v3 selection or catalog. This v3 observation does
+not authenticate the publisher, retain high-water across upgrades, close the
+full loader/support graph, bind running process images/tokens to the held files,
+or prove cross-account access. Path ancestry is checked by pathname before
+opening leaf files and is not a held no-swap namespace. The SCM observations
+are sequential, read-only configuration comparisons; they do not prove the
+service objects' DACLs, actual PIDs or loaded modules. Even an observed match
+returns `helper_missing` and cannot create `SelectedEndpoint` or a generation
+lease.
 
 The source binding sequence for a future protected selection is:
 
@@ -56,7 +65,10 @@ stalled read and write cancellation, and disconnect. This aligns with the
 independently reviewed PIPE-RIGHTS-001 and PIPE-OVERLAPPED-001 controls on this
 host; those controls were same-user and medium-integrity. Cross-account service
 access, protected selection, image custody, activation, and effectful execution
-remain separate qualification work.
+remain separate qualification work. The additional v3 pure route checks exact
+graph/selection/image-role and two-service SCM comparisons with 19 synthetic
+positive/negative cases. Its direct route creates no pipe or installed state;
+the existing client fixture still exercises its own disposable pipe.
 
 On native Windows with the .NET 8 SDK and npm dependencies, run:
 

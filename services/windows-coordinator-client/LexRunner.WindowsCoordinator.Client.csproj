@@ -18,5 +18,6 @@
     <Compile Include="..\windows-coordinator-selection-custody\NativeRegistryReader.cs" Link="SelectionCustody\NativeRegistryReader.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\CustodyContractV3.cs" Link="SelectionCustody\CustodyContractV3.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\NativeRegistryReaderV3.cs" Link="SelectionCustody\NativeRegistryReaderV3.cs" />
+    <Compile Include="..\..\installers\windows-coordinator\v3\GraphV3.cs" Link="GraphV3\GraphV3.cs" />
   </ItemGroup>
 </Project>
