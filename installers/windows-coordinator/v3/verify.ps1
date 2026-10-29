@@ -100,3 +100,4 @@ Write-Output ([pscustomobject]@{
   authorizesLaunch = $false
 } | ConvertTo-Json -Compress)
 Write-Output "receipt=$receiptPath"
+exit 0
