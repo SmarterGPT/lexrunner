@@ -23,6 +23,10 @@
     "mcp-server.mjs",
     "README.md",
     "README.mcp.md",
+    "MERGE_WEAVE_QUICKSTART.md",
+    "docs/agent-evaluation.md",
+    "docs/offline-planning.md",
+    "docs/bitbucket-planning.md",
     "CHANGELOG.md",
     "NOTICE.md",
     "LICENSE.md",
@@ -89,7 +93,7 @@
     "build": "npm run clean:dist && tsup && npm run validate:build-artifacts",
     "pretest": "npm run build",
     "generate:schemas": "tsx scripts/generate-plan-schema.ts && tsx scripts/generate-gate-schema.ts && tsx scripts/generate-flake-schema.ts && tsx scripts/generate-executor-manifest-schema.ts && tsx scripts/generate-run-schemas.ts",
-    "lint": "npm run check:node-runtime && npm run docs:surface:check && npm run typecheck && npm run format:check",
+    "lint": "npm run check:node-runtime && npm run check:lex-compatibility && npm run docs:surface:check && npm run typecheck && npm run format:check",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -126,7 +130,8 @@
     "test:run": "vitest run",
     "check:node-runtime": "node scripts/check-node-runtime-drift.mjs",
     "check:release-drift": "node scripts/check-release-drift.mjs",
-    "prepare": "husky"
+    "prepare": "husky",
+    "check:lex-compatibility": "node scripts/check-lex-compatibility.mjs"
   },
   "dependencies": {
     "@babel/parser": "^7.28.4",
@@ -134,10 +139,10 @@
     "@modelcontextprotocol/sdk": "^1.18.2",
     "@octokit/auth-token": "^6.0.0",
     "@octokit/rest": "^22.0.0",
-    "@smartergpt/lex": "4.0.3",
+    "@smartergpt/lex": "4.4.4",
     "@types/babel__traverse": "^7.28.0",
     "ajv": "^8.20.0",
-    "better-sqlite3-multiple-ciphers": "^12.6.2",
+    "better-sqlite3-multiple-ciphers": "13.0.3",
     "chalk": "^5.3.0",
     "commander": "^14.0.2",
     "dotenv": "^17.2.3",
@@ -173,7 +178,7 @@
     ]
   },
   "allowScripts": {
-    "better-sqlite3-multiple-ciphers@12.11.1": true,
+    "better-sqlite3-multiple-ciphers@13.0.3": true,
     "esbuild@0.28.1": true,
     "@smartergpt/lex": false
   }

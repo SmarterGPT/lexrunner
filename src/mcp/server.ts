@@ -16,6 +16,14 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import packageMetadata from "../../package.json" with { type: "json" };
+import {
+  createBitbucketPlanForMcp,
+  discoverBitbucketForMcp,
+  McpDiscoverJsonSchema,
+  McpForgeArgumentsError,
+  parseMcpDiscoveryArgs,
+  parseMcpPlanCreationArgs,
+} from "./forge-planning.js";
 
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import {
@@ -303,7 +311,7 @@ function createServer(options?: McpServerOptions): Server {
         {
           name: "plan_create",
           description:
-            "Create a plan from configuration files or auto-discover from GitHub PRs. GitHub discovery requires githubToken, GITHUB_TOKEN, or GH_TOKEN.",
+            "Create a plan from configuration files or GitHub PRs; GitHub discovery requires githubToken, GITHUB_TOKEN, or GH_TOKEN. fromBitbucket returns a planning-only plan in the response without local artifacts, Git or profile access; private Bitbucket repositories use BITBUCKET_TOKEN.",
           inputSchema: {
             type: "object",
             properties: {
@@ -332,6 +340,12 @@ function createServer(options?: McpServerOptions): Server {
               fromGithub: {
                 type: "boolean",
                 description: "Auto-discover PRs from GitHub API",
+                default: false,
+              },
+              fromBitbucket: {
+                type: "boolean",
+                description:
+                  "Read-only Bitbucket Cloud planning; requires explicit owner/repo, returns the plan without writing files; local routing/output and GitHub-only options are unsupported",
                 default: false,
               },
               query: {
@@ -838,31 +852,8 @@ function createServer(options?: McpServerOptions): Server {
         {
           name: "discover",
           description:
-            "Discover open pull requests from GitHub with optional dependency suggestions. Requires GITHUB_TOKEN environment variable.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              owner: {
-                type: "string",
-                description: "GitHub repository owner",
-              },
-              repo: {
-                type: "string",
-                description: "GitHub repository name",
-              },
-              state: {
-                type: "string",
-                enum: ["open", "closed", "all"],
-                description: "PR state filter (default: open)",
-                default: "open",
-              },
-              suggest: {
-                type: "boolean",
-                description: "Generate dependency suggestions using heuristics",
-                default: false,
-              },
-            },
-          },
+            "Discover pull requests from GitHub (requires GITHUB_TOKEN) or explicit provider=bitbucket with owner/repo. Bitbucket uses only GET requests, optional BITBUCKET_TOKEN, and never runs gates or merges.",
+          inputSchema: McpDiscoverJsonSchema,
         },
         {
           name: "weave_status",
@@ -1339,8 +1330,13 @@ async function handlePlanCreate(
   serverBaseDir: string
 ): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
+    const selected = parseMcpPlanCreationArgs(args);
+    if (selected.fromBitbucket) {
+      const result = await createBitbucketPlanForMcp(args);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
     const operation = await new PlanCreationOperationService().run({
-      args,
+      args: selected.args,
       startupDir: serverBaseDir,
       requireGitHubToken: true,
     });
@@ -1370,6 +1366,12 @@ async function handlePlanCreate(
     if (error instanceof WriteProtectionError) {
       const axError = writeProtectionError(error.message, "plan.create");
       throwMcpAXError(ErrorCode.InvalidRequest, axError);
+    }
+    if (error instanceof McpForgeArgumentsError) {
+      throwMcpAXError(
+        ErrorCode.InvalidParams,
+        mcpToolError(error.code, error.message, { tool: "plan.create" })
+      );
     }
     if (error instanceof PlanCreationOperationError || error instanceof RepositoryBindingError) {
       throwMcpToolError(ErrorCode.InvalidParams, "plan.create", error, "route plan creation");
@@ -2338,13 +2340,15 @@ async function handleSubmitDecision(
 /**
  * Handle discover tool - Discover open pull requests from GitHub
  */
-async function handleDiscover(args: {
-  owner?: string;
-  repo?: string;
-  state?: string;
-  suggest?: boolean;
-}): Promise<{ content: [{ type: "text"; text: string }] }> {
+async function handleDiscover(
+  raw: unknown
+): Promise<{ content: [{ type: "text"; text: string }] }> {
   try {
+    const args = parseMcpDiscoveryArgs(raw);
+    if (args.provider === "bitbucket") {
+      const result = await discoverBitbucketForMcp(args);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
     // Check for GitHub authentication early
     ensureGitHubToken();
 
@@ -2393,7 +2397,7 @@ async function handleDiscover(args: {
     if (error instanceof McpError) {
       throw error;
     }
-    if (error instanceof IntegrationQueryServiceError) {
+    if (error instanceof McpForgeArgumentsError || error instanceof IntegrationQueryServiceError) {
       throwMcpAXError(
         ErrorCode.InvalidParams,
         mcpToolError(error.code, error.message, { tool: "discover" })

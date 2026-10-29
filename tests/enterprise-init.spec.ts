@@ -53,6 +53,18 @@ describe("Enterprise Onboarding", () => {
       expect(result.detectedCI).toContain("gitlab-ci");
     });
 
+    it("detects Bitbucket Pipelines and preserves existing CI precedence", () => {
+      fs.writeFileSync(path.join(tempDir, "bitbucket-pipelines.yml"), "pipelines: {}");
+      expect(detectEnvironment(tempDir).ciProvider).toBe("bitbucket-pipelines");
+      expect(generateGateMappingConfig("bitbucket-pipelines", ["lint", "test"])).toContain(
+        "pipeline: bitbucket-pipelines.yml"
+      );
+      fs.mkdirSync(path.join(tempDir, ".github", "workflows"), { recursive: true });
+      const result = detectEnvironment(tempDir);
+      expect(result.ciProvider).toBe("github-actions");
+      expect(result.detectedCI).toContain("bitbucket-pipelines");
+    });
+
     it("should detect monorepo with package.json workspaces", () => {
       fs.writeFileSync(
         path.join(tempDir, "package.json"),

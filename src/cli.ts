@@ -1466,6 +1466,14 @@ export {
 export { mcpToolError, workflowGuideArgumentsError, writeProtectionError } from "./errors/index.js";
 export { isWriteProtectionError, WriteProtectionError } from "./config/profileResolver.js";
 export { WorkflowGuideArgs } from "./mcp/types.js";
+export {
+  createBitbucketPlanForMcp,
+  discoverBitbucketForMcp,
+  McpDiscoverJsonSchema,
+  McpForgeArgumentsError,
+  parseMcpDiscoveryArgs,
+  parseMcpPlanCreationArgs,
+} from "./mcp/forge-planning.js";
 
 // LPR-037: Workflow guidance exports for MCP
 export { createWorkflowGuide } from "./mcp/workflow/state-machine.js";

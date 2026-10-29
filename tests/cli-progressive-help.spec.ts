@@ -24,6 +24,16 @@ function fixture() {
 }
 
 describe("progressive root help", () => {
+  it("shows the offline planning entry point without running authored work", () => {
+    const { root, action, output } = fixture();
+    root.command("plan").command("levels").action(action);
+    expect(() => root.parse(["--help"], { from: "user" })).toThrow(CommanderError);
+    const rendered = output();
+    expect(rendered).toMatch(/\n\s+plan\b/);
+    expect(rendered).toContain("lexrunner plan levels --plan plan.json --json");
+    expect(rendered).toContain("no Git checkout, profile, network or token");
+    expect(action).not.toHaveBeenCalled();
+  });
   it("filters presentation without deleting registrations or nested recovery help", () => {
     const { root } = fixture();
     const before = collectRegisteredCliSurface(root);

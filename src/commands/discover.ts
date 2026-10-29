@@ -7,6 +7,7 @@ import { createGitHubAPI, GitHubAPI, GitHubAPIError } from "../github/api.js";
 import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import { throwExit } from "../cli/exitHandler.js";
 import { DiscoveryQueryService } from "../application/integration-query-services.js";
+import { runBitbucketDiscovery } from "../forge/commands.js";
 
 interface DiscoverCommandDeps {
   jsonModeActive: () => boolean;
@@ -19,6 +20,9 @@ export function registerDiscoverCommand(program: Command, deps: DiscoverCommandD
   program
     .command("discover")
     .description("Discover open pull requests from GitHub (canonical: lexrunner weave discover)")
+    .option("--provider <forge>", "Read-only discovery provider (github|bitbucket)", "github")
+    .option("--query <query>", "Bitbucket q filter (state is added inside q)")
+    .option("--target <branch>", "Bitbucket destination branch filter")
     .option("--owner <owner>", "GitHub repository owner")
     .option("--repo <repo>", "GitHub repository name")
     .option("--state <state>", "PR state filter", "open")
@@ -41,6 +45,13 @@ Common Issues:
     )
     .action(async (opts) => {
       try {
+        if (opts.provider === "bitbucket") {
+          await runBitbucketDiscovery(opts);
+          return;
+        }
+        if (opts.provider !== "github" || opts.query || opts.target) {
+          throw new Error("Unsupported discovery provider or provider-specific filter");
+        }
         let githubAPI = await createGitHubAPI();
 
         // Override with command line options if provided

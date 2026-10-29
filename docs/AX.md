@@ -45,11 +45,11 @@ itself is tested against `inspectRegisteredCliSurface()` and the published MCP `
 
 <!-- BEGIN GENERATED AX SURFACE -->
 
-Matrix schema: **1.0.0**. Live inventory: **143 CLI registrations** and **37 MCP tools**.
+Matrix schema: **1.0.0**. Live inventory: **144 CLI registrations** and **37 MCP tools**.
 
 | Surface | Canonical | Compatibility | Deprecated | Internal only | Remove |
 | ------- | --------: | ------------: | ---------: | ------------: | -----: |
-| CLI     |       104 |             9 |         15 |            15 |      0 |
+| CLI     |       105 |             9 |         15 |            15 |      0 |
 | MCP     |        33 |             0 |          4 |             0 |      0 |
 
 ### Canonical CLI/MCP semantic pairs
@@ -91,6 +91,7 @@ Matrix schema: **1.0.0**. Live inventory: **143 CLI registrations** and **37 MCP
 
 ### Intentional parity exceptions
 
+- CLI `lexrunner plan levels`: forge-neutral CLI entry to the shared MergeOrderQueryService; the existing merge-order MCP tool exposes the same dependency query
 - MCP `workflow.guide`: agent-only workflow guidance; humans use CLI help and checked-in documentation
 - CLI `lexrunner plan-review`: interactive human approval is intentionally not exposed as an MCP mutation
 - CLI `lexrunner idea`: human ideation and GitHub issue creation remain an explicit local workflow

@@ -21,7 +21,9 @@ crossing the boundary.
 ## Evidence to inspect
 
 1. **Workflow shape:** PR volume, concurrent branches, dependency ordering, integration branches,
-   release cadence, and frequency of conflict or sequencing problems.
+   release cadence, and frequency of conflict or sequencing problems. Also inspect epics or
+   backlogs whose tickets share prerequisites, and repeated verification commands that need
+   retained evidence. These can fit the planning/gates layer without GitHub or concurrent PRs.
 2. **Existing automation:** CI, merge queues, dependency bots, task runners, agent tools, and any
    current plan/gate/evidence system. Identify overlap instead of assuming replacement.
 3. **Authority:** who may run code, create branches, push, open PRs, merge, publish, access secrets,
@@ -35,15 +37,25 @@ crossing the boundary.
 
 ## Decision rubric
 
-- **`adopt`** — dependency-aware multi-PR integration is routine, existing automation has a clear
+- **`adopt`** — dependency-aware multi-PR integration, task planning, or gated verification is routine, existing automation has a clear
   gap, authority is understood, and the maintenance cost is proportionate.
 - **`pilot`** — there is a plausible fit, but one bounded repository/workflow trial is needed to
   validate overlap, cost, platform behavior, or authority.
 - **`defer`** — the need may exist later, but a prerequisite such as runtime migration, package
   access, CI ownership, or workflow stabilization is missing now.
-- **`not a fit`** — the repository lacks the concurrency/integration problem, existing automation
+- **`not a fit`** — the repository lacks a dependency-planning, verification, or integration gap, existing automation
   already solves it with lower cost, or required authority/platform constraints conflict with the
   operating model.
+
+Evaluate each layer independently. A Bitbucket-hosted repository or ticket-only
+backlog can use a hand-authored `plan.json` and `lexrunner plan levels --plan
+plan.json --json` without Git, forge access, a profile or tokens. Gates execute
+declared commands and write evidence, so they require separate authorization and
+an explicit local candidate. Do not run them as part of this evaluation. Neither
+levels nor manual-plan receipts establish merge eligibility. See the packaged
+[offline planning guide](offline-planning.md) and the README's
+[Planning and gates only](../README.md#planning-and-gates-only) section before
+rejecting a repository solely for its forge or lack of concurrent PRs.
 
 ## Required response
 

@@ -31,8 +31,8 @@ const MARKER = ".lexrunner-dogfood-allocation.json";
 const RECEIPT = "dogfood-receipt.json";
 const DEFAULT_ALLOCATION_ROOT = path.join(os.tmpdir(), "lexrunner-ecosystem-dogfood");
 export const DEFAULT_VERSIONS = {
-  lex: "4.0.3",
-  lexMcp: "4.0.3",
+  lex: "4.4.4",
+  lexMcp: "4.4.4",
   axf: "2.1.1",
   lexsona: "2.0.2",
 } as const;
@@ -45,7 +45,7 @@ export const DOGFOOD_INSTALL_POLICY = {
 
 const EXACT_STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const NATIVE_PACKAGE = "better-sqlite3-multiple-ciphers";
-const NATIVE_BINDING_RELATIVE = path.join("build", "Release", "better_sqlite3.node");
+const QUALIFIED_NATIVE_VERSION = "13.0.3";
 
 interface DogfoodMarker {
   schema_version: 1;
@@ -256,7 +256,7 @@ export async function runEcosystemDogfood(options: RunOptions): Promise<Record<s
     );
     receipt = await advanceReceipt(runRoot, receipt, "registry-lock", registryLockEvidence);
 
-    const nativeBindingEvidence = await materializeReviewedNativeBinding(
+    const nativeBindingEvidence = await verifyReviewedNativePrebuild(
       options.projectRoot,
       consumerRoot
     );
@@ -548,7 +548,23 @@ async function runCommand(
   });
 }
 
-async function materializeReviewedNativeBinding(
+export function reviewedNativePrebuildRelative(
+  platform = process.platform as string,
+  architecture = process.arch as string,
+  linuxMusl = platform === "linux" && !process.report?.getReport().header.glibcVersionRuntime
+): string {
+  if (
+    !["linux", "darwin", "win32"].includes(platform) ||
+    !["x64", "arm64"].includes(architecture)
+  ) {
+    throw failure("native_binding_prebuild_platform_unsupported");
+  }
+  // Exact 13.0.3's public default loader selects this shipped N-API prebuild first.
+  // No node-gyp fallback or cross-version binary copy is qualified by this harness.
+  return path.join("prebuilds", `${linuxMusl ? "linuxmusl" : platform}-${architecture}.node`);
+}
+
+export async function verifyReviewedNativePrebuild(
   projectRoot: string,
   consumerRoot: string
 ): Promise<string> {
@@ -572,7 +588,8 @@ async function materializeReviewedNativeBinding(
     throw failure("native_binding_package_name_mismatch");
   }
   for (const identity of [sourceManifest, targetManifest, sourceLock, targetLock]) {
-    if (identity.version !== sourceLock.version) throw failure("native_binding_version_mismatch");
+    if (identity.version !== QUALIFIED_NATIVE_VERSION)
+      throw failure("native_binding_version_mismatch");
   }
   if (
     sourceLock.resolved !== targetLock.resolved ||
@@ -583,25 +600,36 @@ async function materializeReviewedNativeBinding(
     throw failure("native_binding_registry_identity_mismatch");
   }
 
-  const sourceBindingInput = path.join(sourcePackageRoot, NATIVE_BINDING_RELATIVE);
-  const sourceStat = await lstat(sourceBindingInput);
-  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
-    throw failure("native_binding_source_invalid");
-  }
-  const sourceBinding = await realpath(sourceBindingInput);
-  assertDescendant(sourcePackageRoot, sourceBinding, "native_binding_source_escape");
-  const targetDirectory = path.join(targetPackageRoot, "build", "Release");
-  await mkdir(targetDirectory, { recursive: true });
-  const resolvedTargetDirectory = await realpath(targetDirectory);
-  assertDescendant(targetPackageRoot, resolvedTargetDirectory, "native_binding_target_escape");
-  const bytes = await readFile(sourceBinding);
-  await writeFile(path.join(resolvedTargetDirectory, "better_sqlite3.node"), bytes, { flag: "wx" });
+  const bindingRelative = reviewedNativePrebuildRelative();
+  const bindings = await Promise.all(
+    [sourcePackageRoot, targetPackageRoot].map(async (root) => {
+      const prebuildDirectory = path.join(root, "prebuilds");
+      const directoryStat = await lstat(prebuildDirectory);
+      if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink())
+        throw failure("native_binding_prebuild_directory_invalid");
+      const input = path.join(root, bindingRelative);
+      const stat = await lstat(input);
+      if (
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        stat.size === 0 ||
+        stat.size > 64 * 1024 * 1024
+      ) {
+        throw failure("native_binding_prebuild_invalid");
+      }
+      const resolved = await realpath(input);
+      assertDescendant(root, resolved, "native_binding_prebuild_escape");
+      return readFile(resolved);
+    })
+  );
+  if (!bindings[0]!.equals(bindings[1]!)) throw failure("native_binding_prebuild_bytes_mismatch");
   return computeCanonicalHash({
     package: NATIVE_PACKAGE,
     version: sourceLock.version,
     resolved: sourceLock.resolved,
     integrity: sourceLock.integrity,
-    binding_sha256: hashBytes(bytes),
+    binding_relative: bindingRelative.split(path.sep).join("/"),
+    binding_sha256: hashBytes(bindings[0]!),
     platform: process.platform,
     architecture: process.arch,
     node_abi: process.versions.modules,
@@ -825,6 +853,11 @@ async function materializeCandidate(
     "mcp-server.mjs",
     "README.md",
     "README.mcp.md",
+    "MERGE_WEAVE_QUICKSTART.md",
+    "docs/README.md",
+    "docs/agent-evaluation.md",
+    "docs/offline-planning.md",
+    "docs/bitbucket-planning.md",
     "CHANGELOG.md",
     "NOTICE.md",
     "LICENSE.md",

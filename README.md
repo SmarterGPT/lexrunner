@@ -6,7 +6,9 @@ explicit authority.
 
 It is useful when a repository has concurrent PRs, dependencies between changes, repeated local
 and CI checks, or agent-assisted implementation that needs a durable handoff. It is usually not a
-fit for a repository with one occasional PR and no integration-order problem.
+fit for a repository with one occasional PR and no dependency-planning or verification gap.
+Dependency-ordered tickets and repeatable command gates can also be useful without GitHub;
+see [Planning and gates only](#planning-and-gates-only).
 
 > **Ask your agent:** “Read [`docs/agent-evaluation.md`](docs/agent-evaluation.md), evaluate this
 > repository without installing or changing anything, and return `adopt`, `pilot`, `defer`, or
@@ -50,6 +52,60 @@ explains clean-checkout preparation, exact-input checks and separately authorize
 
 [Start the walkthrough](MERGE_WEAVE_QUICKSTART.md) ·
 [Choose another SmarterGPT workflow](https://smartergpt.dev/docs/how-to-use/)
+
+## Planning and gates only
+
+You can author `plan.json` directly for tickets or tasks, without PR discovery. For
+example, a data load can precede two independent consumers:
+
+<!-- lexrunner-plan-example:readme-offline -->
+
+```json
+{
+  "schemaVersion": "1.0.0",
+  "target": "main",
+  "policy": { "requiredGates": [], "maxWorkers": 1 },
+  "items": [
+    { "name": "load-data", "deps": [], "gates": [] },
+    { "name": "report", "deps": ["load-data"], "gates": [] },
+    { "name": "export", "deps": ["load-data"], "gates": [] }
+  ]
+}
+```
+
+```bash
+lexrunner plan levels --plan plan.json --json
+```
+
+This read-only command validates the plan and returns dependency levels without
+Git, a checkout, a profile, network access, or a GitHub token. It does not execute
+tasks. `target` is retained for schema compatibility; it does not turn these task
+names into branches. Cycles and missing dependencies are rejected with the same
+diagnostics as the existing merge-order query.
+
+For gated verification, add a reviewed command gate to an item, for example
+`{ "name": "verify", "run": "node --version" }`, and run it from an explicitly
+chosen local candidate repository:
+
+```bash
+lexrunner gate run --plan plan.json --repo-root . --artifact-dir artifacts/planning-trial --json
+```
+
+Gate execution runs declared code and writes receipts and evidence; it needs
+separate authorization from read-only planning. An empty gate list checks no work.
+Manual plans without `gitInputs` can use the gate runner, but their receipts do
+not establish immutable candidate identity or merge eligibility. A recorded result
+is evidence to inspect, not permission to merge.
+
+`plan.json` is an interchange format: your own tracker exporter can produce its
+items, declared dependencies and gates, and consume the resulting levels and
+evidence. No tracker integration is implied. The [offline planning guide](docs/offline-planning.md),
+[evaluation rubric](docs/agent-evaluation.md) and [merge-weave quickstart](MERGE_WEAVE_QUICKSTART.md)
+are included in the npm package so evaluators can choose the needed layer offline.
+
+For hosted PR discovery, see [Bitbucket Cloud discovery and planning](docs/bitbucket-planning.md).
+That provider uses read-only GET requests and freezes a plan; Bitbucket apply/merge
+is unsupported. GitHub's existing integration workflow remains available.
 
 ## Add capabilities when needed
 

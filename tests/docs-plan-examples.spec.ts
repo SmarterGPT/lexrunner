@@ -25,6 +25,7 @@ const expectedMarkdownExamples: Record<string, string> = {
   "merge-weave-setup-manual": "docs/MERGE_WEAVE_SETUP.md",
   "quick-merge-pyramid-generated": "docs/tutorials/quick-merge-pyramid.md",
   "quickstart-manual": "docs/quickstart.md",
+  "readme-offline": "README.md",
   "security-vulnerability-gate": "docs/SECURITY_IMPLEMENTATION.md",
   "working-example": "examples/WORKING_EXAMPLE.md",
 };

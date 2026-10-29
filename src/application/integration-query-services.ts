@@ -13,6 +13,7 @@ import { canonicalJSONStringify } from "../util/canonicalJson.js";
 import { createFileAnalyzer } from "../planner/fileAnalysis.js";
 import { loadGateEvidence, type GateEvidenceArtifactReference } from "./gate-evidence-service.js";
 import type { RetainedGateEvidenceReport } from "./retained-gate-evidence.js";
+import { GitHubForgeProvider } from "../forge/github.js";
 
 const MAX_COLLECTION = 256;
 const MAX_LABEL_BYTES = 512;
@@ -45,10 +46,18 @@ export class DiscoveryQueryService {
     suggest?: boolean;
   }): Promise<BoundedDiscoveryResult> {
     const auth = await input.github.checkAuth();
-    const discovered = await input.github.discoverPullRequests(input.state);
+    const discovered = await new GitHubForgeProvider(input.github).discover({ state: input.state });
     assertCollection(discovered, "pull requests");
-    const pullRequests = discovered.map(({ body: _body, ...pullRequest }) => ({
-      ...pullRequest,
+    const pullRequests = discovered.map((pullRequest) => ({
+      number: pullRequest.number,
+      state: pullRequest.state,
+      createdAt: pullRequest.createdAt!,
+      updatedAt: pullRequest.updatedAt!,
+      ...(pullRequest.draft !== undefined ? { draft: pullRequest.draft } : {}),
+      ...(pullRequest.mergeable !== undefined ? { mergeable: pullRequest.mergeable } : {}),
+      ...(pullRequest.reviewRequested !== undefined
+        ? { reviewRequested: pullRequest.reviewRequested }
+        : {}),
       title: bounded(pullRequest.title),
       branch: bounded(pullRequest.branch),
       sha: bounded(pullRequest.sha),

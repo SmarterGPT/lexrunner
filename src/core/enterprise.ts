@@ -9,7 +9,8 @@ import YAML from "yaml";
 
 export type AuditProfile = "off" | "basic" | "soc2" | "hipaa-strict";
 export type PolicyTemplate = "basic" | "enterprise-standard" | "strict";
-export type CIProvider = "github-actions" | "gitlab-ci" | "circleci" | "jenkins" | "other";
+export type CIProvider =
+  "github-actions" | "gitlab-ci" | "circleci" | "jenkins" | "bitbucket-pipelines" | "other";
 export type ProjectStructure = "monorepo" | "multi-repo" | "single-repo";
 
 export interface EnterpriseConfig {
@@ -68,6 +69,10 @@ export function detectEnvironment(baseDir: string): EnvironmentDetectionResult {
   if (fs.existsSync(path.join(baseDir, "Jenkinsfile"))) {
     detectedCI.push("jenkins");
     if (ciProvider === "other") ciProvider = "jenkins";
+  }
+  if (fs.existsSync(path.join(baseDir, "bitbucket-pipelines.yml"))) {
+    detectedCI.push("bitbucket-pipelines");
+    if (ciProvider === "other") ciProvider = "bitbucket-pipelines";
   }
 
   // Detect monorepo
@@ -290,6 +295,21 @@ ${gates
     (gate) => `  ${gate}:
     job: ${gate}
     stage: test`
+  )
+  .join("\n")}
+`,
+
+    "bitbucket-pipelines": (gates) => `# Bitbucket Pipelines Gate Mapping
+# Suggested step names only; verify these against your actual pipeline.
+# Commit statuses and reruns are observations, not gate or merge authority.
+version: 1
+provider: bitbucket-pipelines
+gates:
+${gates
+  .map(
+    (gate) => `  ${gate}:
+    pipeline: bitbucket-pipelines.yml
+    step: ${gate}`
   )
   .join("\n")}
 `,

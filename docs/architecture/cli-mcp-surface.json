@@ -133,6 +133,7 @@
       "metrics show",
       "plan-diff",
       "plan-review",
+      "plan levels",
       "preview-constraints",
       "query",
       "retry",
@@ -525,6 +526,10 @@
       }
     ],
     "intentionalParityExceptions": [
+      {
+        "cli": "plan levels",
+        "reason": "forge-neutral CLI entry to the shared MergeOrderQueryService; the existing merge-order MCP tool exposes the same dependency query"
+      },
       {
         "tool": "workflow.guide",
         "reason": "agent-only workflow guidance; humans use CLI help and checked-in documentation"

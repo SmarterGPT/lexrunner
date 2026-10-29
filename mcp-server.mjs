@@ -296,7 +296,7 @@ const tools = {
 
   "plan.create": {
     description:
-      "Create a plan from configuration files or auto-discover from GitHub PRs. GitHub discovery requires githubToken, GITHUB_TOKEN, or GH_TOKEN.",
+      "Create a plan from configuration files or GitHub PRs; GitHub discovery requires githubToken, GITHUB_TOKEN, or GH_TOKEN. fromBitbucket returns a planning-only plan in the response without local artifacts, Git or profile access; private Bitbucket repositories use BITBUCKET_TOKEN.",
     inputSchema: {
       type: "object",
       properties: {
@@ -325,6 +325,12 @@ const tools = {
         fromGithub: {
           type: "boolean",
           description: "Auto-discover PRs from GitHub API",
+          default: false,
+        },
+        fromBitbucket: {
+          type: "boolean",
+          description:
+            "Read-only Bitbucket Cloud planning; requires explicit owner/repo, returns the plan without writing files; local routing/output and GitHub-only options are unsupported",
           default: false,
         },
         query: {
@@ -397,8 +403,13 @@ const tools = {
     },
     call: async (args) => {
       try {
+        const selected = core.parseMcpPlanCreationArgs(args);
+        if (selected.fromBitbucket) {
+          const result = await core.createBitbucketPlanForMcp(args);
+          return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        }
         const operation = await new core.PlanCreationOperationService().run({
-          args,
+          args: selected.args,
           startupDir: serverBaseDir,
           requireGitHubToken: true,
         });
@@ -854,33 +865,16 @@ const tools = {
   // ─────────────────────────────────────────────────────────────────────────────
 
   discover: {
-    description: "Discover open pull requests from GitHub with optional dependency suggestions",
-    inputSchema: {
-      type: "object",
-      properties: {
-        owner: {
-          type: "string",
-          description: "GitHub repository owner",
-        },
-        repo: {
-          type: "string",
-          description: "GitHub repository name",
-        },
-        state: {
-          type: "string",
-          enum: ["open", "closed", "all"],
-          description: "PR state filter (default: open)",
-          default: "open",
-        },
-        suggest: {
-          type: "boolean",
-          description: "Generate dependency suggestions using heuristics",
-          default: false,
-        },
-      },
-    },
-    call: async (args) => {
+    description:
+      "Discover pull requests from GitHub (requires GITHUB_TOKEN) or explicit provider=bitbucket with owner/repo. Bitbucket uses only GET requests, optional BITBUCKET_TOKEN, and never runs gates or merges.",
+    inputSchema: core.McpDiscoverJsonSchema,
+    call: async (raw) => {
       try {
+        const args = core.parseMcpDiscoveryArgs(raw);
+        if (args.provider === "bitbucket") {
+          const result = await core.discoverBitbucketForMcp(args);
+          return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        }
         const { createGitHubAPI, GitHubAPI, DiscoveryQueryService } = await import("./dist/cli.js");
 
         let githubAPI = await createGitHubAPI();
@@ -915,7 +909,7 @@ const tools = {
           ],
         };
       } catch (error) {
-        throw new Error(`Failed to discover PRs: ${error.message}`);
+        throw sharedServiceError(error, "discover", "DISCOVERY_FAILED");
       }
     },
   },
@@ -1228,6 +1222,7 @@ function planValidationToolResult(error) {
 }
 
 const INVALID_PARAMETER_CODES = new Set([
+  "FORGE_ARGUMENTS_INVALID",
   "GATE_CANDIDATE_ROOT_INVALID",
   "WORKSPACE_DIAGNOSTICS_ARGUMENTS_INVALID",
   "PLAN_CREATION_ARGUMENTS_INVALID",
