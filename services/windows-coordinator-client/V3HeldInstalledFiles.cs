@@ -70,6 +70,7 @@ internal sealed class V3HeldInstalledFiles : IDisposable
 #if COORDINATOR_CLIENT_FIXTURE_TESTS
     // Fixture-only pause after the native root handle has an owned reference.
     internal static Action? FixtureAfterParentAddRef;
+    internal static Action<SafeFileHandle>? FixtureBeforeRootObserve;
 
     // Only a separately compiled fixture image can select a disposable root.
     internal static V3HeldInstalledFiles OpenFixture(string root, string generationId)
@@ -97,8 +98,16 @@ internal sealed class V3HeldInstalledFiles : IDisposable
                 rootHandle.Dispose();
                 throw new V3HeldPathException("generation_path_unavailable");
             }
-            var rootIdentity = Observe(rootHandle, root, true, null);
-            directories.Add(new HeldDirectory(rootHandle, root, rootIdentity));
+            HeldIdentity rootIdentity;
+            try
+            {
+#if COORDINATOR_CLIENT_FIXTURE_TESTS
+                FixtureBeforeRootObserve?.Invoke(rootHandle);
+#endif
+                rootIdentity = Observe(rootHandle, root, true, null);
+                directories.Add(new HeldDirectory(rootHandle, root, rootIdentity));
+            }
+            catch { rootHandle.Dispose(); throw; }
             var path = root;
             for (var index = 0; index < children.Length; index++)
             {

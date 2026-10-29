@@ -80,6 +80,7 @@ internal static class V3HeldInstalledFixtureTests
         File.WriteAllText(manifest, "manifest");
         File.WriteAllText(coordinator, "coordinator");
         File.WriteAllText(worker, "worker");
+        VerifyRootObservationRefusalReleasesHandle(root);
         var generationDeleteAccessError = 0;
         var imageDeleteAccessError = 0;
         using (var held = V3HeldInstalledFiles.OpenFixture(root, generationId))
@@ -104,6 +105,24 @@ internal static class V3HeldInstalledFixtureTests
         // here would reopen a same-user mutable namespace after releasing the
         // held handles. Removal needs its own reviewed custody transition.
         return (true, root);
+    }
+
+    private static void VerifyRootObservationRefusalReleasesHandle(string root)
+    {
+        Microsoft.Win32.SafeHandles.SafeFileHandle? observed = null;
+        var refused = false;
+        V3HeldInstalledFiles.FixtureBeforeRootObserve = handle => observed = handle;
+        try
+        {
+            // A dot alias opens the same directory but fails the exact final-path check.
+            using var unexpected = V3HeldInstalledFiles.OpenFixtureChain(
+                root + Path.DirectorySeparatorChar + ".", ["service"]);
+        }
+        catch (V3HeldPathException error) when (
+            error.Reason == "generation_path_unavailable") { refused = true; }
+        finally { V3HeldInstalledFiles.FixtureBeforeRootObserve = null; }
+        if (!refused || observed is null || !observed.IsClosed)
+            throw new InvalidOperationException("root_observation_refusal_handle_not_released");
     }
 
     private static void VerifyDisposeRaceAndRefusal(V3HeldInstalledFiles held)
