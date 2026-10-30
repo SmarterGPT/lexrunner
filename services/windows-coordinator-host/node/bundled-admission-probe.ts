@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { SqliteWindowsCoordinatorAdmissionStore } from "../../../src/windows-coordinator/sqlite-admission-store.js";
 import { parseWindowsCoordinatorGenerationGraph } from "../../../src/workspaces/windows-coordinator-generation-graph.js";
 
+declare const __LEX_BUNDLED_SQLITE_VERSION__: string;
+
 const expectedNodeAbi = "137";
 const maxManifestBytes = 262_144;
 const maxEntryBytes = 8 * 1024 * 1024;
@@ -16,6 +18,21 @@ const runtimeRequire = createRequire(import.meta.url);
 export function requireBundledNodeAbi(observed: string): "137" {
   if (observed !== expectedNodeAbi) throw new Error("bundled_node_abi_unavailable");
   return expectedNodeAbi;
+}
+
+/** Node-API capability is separate from the narrowly selected Node module ABI. */
+export function requireBundledNodeApi(
+  observed: string | undefined,
+  sqliteVersion: string
+): string | null {
+  if (sqliteVersion !== "12.11.1" && sqliteVersion !== "13.0.3")
+    throw new Error("bundled_sqlite_version_unavailable");
+  if (
+    sqliteVersion === "13.0.3" &&
+    (observed === undefined || !/^[0-9]{1,3}$/u.test(observed) || Number(observed) < 10)
+  )
+    throw new Error("bundled_node_api_unavailable");
+  return observed ?? null;
 }
 
 function exactLocalPath(value: string): boolean {
@@ -69,10 +86,18 @@ export async function probeBundledAdmission(
   readonly graphDigest: string;
   readonly addonSha256: string;
   readonly nodeAbi: "137";
+  readonly nodeApiVersion: string | null;
+  readonly sqlitePackageVersion: string;
   readonly authorizesLaunch: false;
 }> {
-  if (process.platform !== "win32") throw new Error("bundled_windows_required");
+  if (process.platform !== "win32" || process.arch !== "x64")
+    throw new Error("bundled_windows_x64_required");
   const nodeAbi = requireBundledNodeAbi(process.versions.modules);
+  const sqlitePackageVersion =
+    typeof __LEX_BUNDLED_SQLITE_VERSION__ === "undefined"
+      ? "unselected"
+      : __LEX_BUNDLED_SQLITE_VERSION__;
+  const nodeApiVersion = requireBundledNodeApi(process.versions.napi, sqlitePackageVersion);
   if (!exactLocalPath(manifestPath) || !exactLocalPath(entryPath))
     throw new Error("bundled_manifest_path");
   const root = win32.dirname(manifestPath);
@@ -100,8 +125,8 @@ export async function probeBundledAdmission(
     )
       throw new Error("bundled_member_digest_mismatch");
   }
-  // An object bypasses better-sqlite3's default `bindings` search. The build
-  // additionally aliases that search to a throwing module if this path drifts.
+  // Only the explicit selected addon object reaches the bundled default wrapper.
+  // Its version-specific resolver refuses default or string-path lookup.
   const nativeBinding = runtimeRequire(selectedAddon) as object;
   if (nativeBinding === null || typeof nativeBinding !== "object")
     throw new Error("bundled_addon_invalid");
@@ -112,6 +137,8 @@ export async function probeBundledAdmission(
     graphDigest: manifest.graphDigest,
     addonSha256: addon.sha256,
     nodeAbi,
+    nodeApiVersion,
+    sqlitePackageVersion,
     authorizesLaunch: false,
   };
 }
