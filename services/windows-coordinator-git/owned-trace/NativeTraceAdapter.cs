@@ -74,6 +74,39 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
         finally { Marshal.FreeHGlobal(buffer); }
     }
 
+    internal static bool SyntheticParseFailure(string expectedFailure)
+    {
+        var buffer = Allocate(Guid.Empty);
+        try
+        {
+            var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
+            WriteString(buffer, props.LoggerNameOffset, "logger");
+            WriteString(buffer, props.LogFileNameOffset, "file");
+            var logger = expectedFailure.StartsWith("logger_", StringComparison.Ordinal);
+            var target = logger ? props.LoggerNameOffset : props.LogFileNameOffset;
+            var failure = expectedFailure[(expectedFailure.IndexOf('_') + 1)..];
+            if (expectedFailure == "capacity_low") props.Wnode.BufferSize = 119;
+            else if (expectedFailure == "capacity_high") props.Wnode.BufferSize = (uint)Capacity + 1;
+            else if (failure == "offset")
+            { if (logger) props.LoggerNameOffset = 1; else props.LogFileNameOffset = 1; }
+            else if (failure == "bounds")
+            {
+                target = (uint)Capacity - 2;
+                if (logger) props.LoggerNameOffset = target; else props.LogFileNameOffset = target;
+                Marshal.WriteInt16(buffer, (int)target, (short)'x');
+            }
+            else if (failure == "empty") Marshal.WriteInt16(buffer, (int)target, 0);
+            else if (failure == "termination")
+                for (var i = 0; i < MaximumNameChars; i++)
+                    Marshal.WriteInt16(buffer, (int)target + i * 2, (short)'x');
+            else return false;
+            Marshal.StructureToPtr(props, buffer, false);
+            return !TryReadObservation(buffer, out _, out var actual) &&
+                actual == (expectedFailure.StartsWith("capacity_", StringComparison.Ordinal) ? "capacity" : expectedFailure);
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
     public StartResult Start(TraceIdentity expected)
     {
         if (!_gate.BeginStart() || !LayoutIsExpected() ||
@@ -108,7 +141,7 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
     public QueryResult Query(ulong returnedHandle)
     {
         if (!LayoutIsExpected() || !_gate.BeginQuery(returnedHandle))
-            return new QueryResult(87, null);
+            return new QueryResult(87, null, new QueryDiagnostic(null, "precheck"));
         var buffer = Allocate(_expected.Guid);
         try
         {
@@ -116,32 +149,60 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
             try { code = ControlTraceW(returnedHandle, null, buffer, EventTraceControlQuery); }
             catch (DllNotFoundException)
             {
-                var missing = new QueryResult(127, null);
+                var missing = new QueryResult(127, null, new QueryDiagnostic(null, "import"));
                 _gate.CompleteQuery(returnedHandle, missing);
                 return missing;
             }
             catch (EntryPointNotFoundException)
             {
-                var missing = new QueryResult(127, null);
+                var missing = new QueryResult(127, null, new QueryDiagnostic(null, "import"));
                 _gate.CompleteQuery(returnedHandle, missing);
                 return missing;
             }
-            if (code != 0)
-            {
-                var failed = new QueryResult(code, null);
-                _gate.CompleteQuery(returnedHandle, failed);
-                return failed;
-            }
+            return CompleteNativeQuery(returnedHandle, code, buffer);
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
 
-            if (!TryReadObservation(buffer, out var observation))
-            {
-                var invalid = new QueryResult(13, null); // ERROR_INVALID_DATA
-                _gate.CompleteQuery(returnedHandle, invalid);
-                return invalid;
-            }
-            var result = new QueryResult(0, observation);
-            return _gate.CompleteQuery(returnedHandle, result) ?
-                result : new QueryResult(13, null);
+    private QueryResult CompleteNativeQuery(ulong returnedHandle, uint code, IntPtr buffer)
+    {
+        if (code != 0)
+        {
+            var failed = new QueryResult(code, null, new QueryDiagnostic(code, "native"));
+            _gate.CompleteQuery(returnedHandle, failed);
+            return failed;
+        }
+
+        if (!TryReadObservation(buffer, out var observation, out var parseFailure))
+        {
+            var invalid = new QueryResult(13, null, new QueryDiagnostic(0, "parse", parseFailure)); // synthetic ERROR_INVALID_DATA
+            _gate.CompleteQuery(returnedHandle, invalid);
+            return invalid;
+        }
+        var result = new QueryResult(0, observation);
+        return _gate.CompleteQuery(returnedHandle, result, out var mismatch, out var gateMatched) ?
+            result : new QueryResult(13, null, new QueryDiagnostic(0,
+                gateMatched ? "identity" : "gate", IdentityMismatchMask: mismatch,
+                ObservedMode: observation!.Mode, ObservedFlags: observation.Flags));
+    }
+
+    internal static QueryResult SyntheticQueryResult(uint code, string scenario)
+    {
+        var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
+            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02000001, 0x06000307);
+        var adapter = new NativeTraceAdapter(expected);
+        adapter._gate.BeginStart(); adapter._gate.CompleteStart(new(0,42));
+        if (scenario != "gate") adapter._gate.BeginQuery(42);
+        var buffer = Allocate(expected.Guid);
+        try
+        {
+            var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
+            props.LogFileMode = expected.Mode; props.EnableFlags = expected.Flags;
+            if (scenario == "parse") props.Wnode.BufferSize = (uint)Capacity + 1;
+            Marshal.StructureToPtr(props, buffer, false);
+            WriteString(buffer, props.LoggerNameOffset, scenario == "identity" ? "other" : expected.Name);
+            WriteString(buffer, props.LogFileNameOffset, expected.EtlPath);
+            return adapter.CompleteNativeQuery(42, code, buffer);
         }
         finally { Marshal.FreeHGlobal(buffer); }
     }
@@ -204,41 +265,51 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
             Marshal.WriteInt16(buffer, checked((int)offset + i * sizeof(char)), unchecked((short)text[i]));
     }
 
-    private static bool TryReadObservation(IntPtr buffer, out TraceObservation? observation)
+    private static bool TryReadObservation(IntPtr buffer, out TraceObservation? observation) =>
+        TryReadObservation(buffer, out observation, out _);
+
+    private static bool TryReadObservation(IntPtr buffer, out TraceObservation? observation,
+        out string? parseFailure)
     {
         observation = null;
         var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
         var capacity = Marshal.ReadInt32(buffer);
-        if (capacity < Marshal.SizeOf<EventTraceProperties>() ||
-            capacity > Capacity ||
-            !TryReadString(buffer, props.LoggerNameOffset, capacity, out var name) ||
-            !TryReadString(buffer, props.LogFileNameOffset, capacity, out var path))
-            return false;
+        parseFailure = null;
+        if (capacity < Marshal.SizeOf<EventTraceProperties>() || capacity > Capacity)
+        { parseFailure = "capacity"; return false; }
+        if (!TryReadString(buffer, props.LoggerNameOffset, capacity, out var name, out var failure))
+        { parseFailure = "logger_" + failure; return false; }
+        if (!TryReadString(buffer, props.LogFileNameOffset, capacity, out var path, out failure))
+        { parseFailure = "file_" + failure; return false; }
         observation = new TraceObservation(name!, props.Wnode.Guid, path!,
             props.LogFileMode, props.EnableFlags, props.EventsLost,
             props.LogBuffersLost, props.RealTimeBuffersLost);
         return true;
     }
 
-    private static bool TryReadString(IntPtr buffer, uint offset, int capacity, out string? text)
+    private static bool TryReadString(IntPtr buffer, uint offset, int capacity, out string? text,
+        out string? failure)
     {
         text = null;
+        failure = null;
         var min = Marshal.SizeOf<EventTraceProperties>();
         if (offset < min || offset >= capacity || (offset & 1) != 0)
-            return false;
+        { failure = "offset"; return false; }
         var chars = new char[MaximumNameChars];
         for (var i = 0; i < chars.Length; i++)
         {
             var position = checked((int)offset + i * sizeof(char));
-            if (position + sizeof(char) > capacity) return false;
+            if (position + sizeof(char) > capacity) { failure = "bounds"; return false; }
             var value = unchecked((char)Marshal.ReadInt16(buffer, position));
             if (value == '\0')
             {
                 text = new string(chars, 0, i);
+                if (i == 0) failure = "empty";
                 return i != 0;
             }
             chars[i] = value;
         }
+        failure = "termination";
         return false;
     }
 
@@ -338,17 +409,26 @@ internal sealed class OwnedHandleGate(TraceIdentity expected)
         }
     }
 
-    internal bool CompleteQuery(ulong handle, QueryResult result)
+    internal bool CompleteQuery(ulong handle, QueryResult result) =>
+        CompleteQuery(handle, result, out _, out _);
+
+    internal bool CompleteQuery(ulong handle, QueryResult result, out uint mismatch,
+        out bool gateMatched)
     {
         lock (_sync)
         {
-            if (_state != State.QueryInFlight || handle != _handle)
-                return false;
-            if (
-                result.Code != 0 || result.Observation is not { } observed ||
-                observed.Name != expected.Name || observed.Guid != expected.Guid ||
-                observed.EtlPath != expected.EtlPath || observed.Mode != expected.Mode ||
-                observed.Flags != expected.Flags)
+            mismatch = 0;
+            gateMatched = _state == State.QueryInFlight && handle == _handle;
+            if (!gateMatched) return false;
+            if (result.Observation is { } observed)
+            {
+                if (observed.Name != expected.Name) mismatch |= 1;
+                if (observed.Guid != expected.Guid) mismatch |= 2;
+                if (observed.EtlPath != expected.EtlPath) mismatch |= 4;
+                if (observed.Mode != expected.Mode) mismatch |= 8;
+                if (observed.Flags != expected.Flags) mismatch |= 16;
+            }
+            if (result.Code != 0 || result.Observation is null || mismatch != 0)
             {
                 _state = State.Uncertain;
                 return false;

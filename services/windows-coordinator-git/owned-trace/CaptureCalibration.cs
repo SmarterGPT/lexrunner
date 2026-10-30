@@ -29,6 +29,7 @@ internal static class CaptureCalibration
         string reason = "capture_unstarted";
         string? nativeFailurePhase = null;
         uint? nativeFailureCode = null;
+        QueryDiagnostic? queryDiagnostic = null;
         TraceIdentity? identity = null;
         NativeTraceAdapter? adapter = null;
         ulong ownedHandle = 0;
@@ -67,7 +68,7 @@ internal static class CaptureCalibration
                 var first = adapter.Query(ownedHandle);
                 if (!Matches(identity, first))
                 {
-                    nativeFailurePhase = "initial_query"; nativeFailureCode = first.Code;
+                    nativeFailurePhase = "initial_query"; nativeFailureCode = first.Code; queryDiagnostic = first.Diagnostic;
                     reason = "initial_ownership_uncertain";
                 }
                 else
@@ -90,7 +91,7 @@ internal static class CaptureCalibration
                             var last = adapter.Query(ownedHandle);
                             if (!Matches(identity, last))
                             {
-                                nativeFailurePhase = "final_query"; nativeFailureCode = last.Code;
+                                nativeFailurePhase = "final_query"; nativeFailureCode = last.Code; queryDiagnostic = last.Diagnostic;
                                 reason = "final_ownership_uncertain";
                             }
                             else
@@ -160,14 +161,14 @@ internal static class CaptureCalibration
             watch.Stop();
         }
 
-        if (started && !initialMatch) return Refuse("initial_ownership_uncertain", nativeFailurePhase, nativeFailureCode);
+        if (started && !initialMatch) return Refuse("initial_ownership_uncertain", nativeFailurePhase, nativeFailureCode, queryDiagnostic);
         if (started && (!stopAttempted || !stopConfirmed))
-            return Refuse("ownership_or_stop_uncertain", nativeFailurePhase, nativeFailureCode);
+            return Refuse("ownership_or_stop_uncertain", nativeFailurePhase, nativeFailureCode, queryDiagnostic);
         if (started && initialMatch && !probeTerminalCertain)
-            return Refuse("job_terminal_uncertain", nativeFailurePhase, nativeFailureCode);
+            return Refuse("job_terminal_uncertain", nativeFailurePhase, nativeFailureCode, queryDiagnostic);
         if (censusAttempted && !censusTerminalCertain)
-            return Refuse("census_terminal_uncertain", nativeFailurePhase, nativeFailureCode);
-        if (!cleanupCertain) return Refuse("cleanup_uncertain", nativeFailurePhase, nativeFailureCode);
+            return Refuse("census_terminal_uncertain", nativeFailurePhase, nativeFailureCode, queryDiagnostic);
+        if (!cleanupCertain) return Refuse("cleanup_uncertain", nativeFailurePhase, nativeFailureCode, queryDiagnostic);
         try
         {
             var summary = new
@@ -218,11 +219,11 @@ internal static class CaptureCalibration
                 productionReady = false,
             };
             var bytes = StrictUtf8.GetBytes(JsonSerializer.Serialize(summary) + "\n");
-            if (bytes.Length > MaxSummaryBytes) return Refuse("summary_bounds_refused", nativeFailurePhase, nativeFailureCode);
+            if (bytes.Length > MaxSummaryBytes) return Refuse("summary_bounds_refused", nativeFailurePhase, nativeFailureCode, queryDiagnostic);
             var output = Path.Combine(workspace!, "artifacts", "windows-owned-etw-manual",
                 $"{runId}-{runAttempt}");
             if (Directory.Exists(output) || File.Exists(output))
-                return Refuse("summary_output_occupied", nativeFailurePhase, nativeFailureCode);
+                return Refuse("summary_output_occupied", nativeFailurePhase, nativeFailureCode, queryDiagnostic);
             Directory.CreateDirectory(output);
             var summaryPath = Path.Combine(output, "summary.json");
             using (var stream = new FileStream(summaryPath, FileMode.CreateNew,
@@ -230,10 +231,10 @@ internal static class CaptureCalibration
                 stream.Write(bytes);
             ManualCaptureDiagnostic.Emit("summary", summary.result, reason,
                 Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
-                nativeFailurePhase, nativeFailureCode);
+                nativeFailurePhase, nativeFailureCode, queryDiagnostic);
             return reason == "calibration_observed" ? 0 : 3;
         }
-        catch { return Refuse("summary_write_unavailable", nativeFailurePhase, nativeFailureCode); }
+        catch { return Refuse("summary_write_unavailable", nativeFailurePhase, nativeFailureCode, queryDiagnostic); }
     }
 
     internal static bool ValidArguments(string[] args, out string? head,
@@ -537,8 +538,9 @@ internal static class CaptureCalibration
     internal static int RefuseNoTrace(string reason) =>
         ManualCaptureDiagnostic.Refuse("preflight", reason);
 
-    private static int Refuse(string reason, string? nativePhase = null, uint? nativeCode = null) =>
-        ManualCaptureDiagnostic.Refuse("capture", reason, nativePhase, nativeCode);
+    private static int Refuse(string reason, string? nativePhase = null, uint? nativeCode = null,
+        QueryDiagnostic? queryDiagnostic = null) =>
+        ManualCaptureDiagnostic.Refuse("capture", reason, nativePhase, nativeCode, queryDiagnostic);
 
     private sealed record VersionProbe(bool Observed, uint RootProcessId,
         long RootCreationFileTimeUtc, uint JobTotalProcesses,

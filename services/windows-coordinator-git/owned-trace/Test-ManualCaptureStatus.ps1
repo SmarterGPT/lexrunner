@@ -3,6 +3,54 @@ param([string]$StatusPath, [int]$NativeExitCode = 3, [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Read-QueryDiagnostic($Value, [uint32]$AdapterCode) {
+    if ($Value.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw 'query_shape' }
+    $keys = @('nativeResultCode','failureStage','parseFailure','identityMismatchMask','observedMode','observedFlags')
+    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($property in $Value.EnumerateObject()) {
+        if ($property.Name -cnotin $keys -or -not $names.Add($property.Name)) { throw 'query_keys' }
+    }
+    if ($names.Count -ne $keys.Count) { throw 'query_keys' }
+    $values = @{}
+    foreach ($key in @('nativeResultCode','observedMode','observedFlags')) {
+        $field = $Value.GetProperty($key)
+        if ($field.ValueKind -eq [Text.Json.JsonValueKind]::Null) { $values[$key] = $null }
+        elseif ($field.ValueKind -eq [Text.Json.JsonValueKind]::Number) { $values[$key] = $field.GetUInt32() }
+        else { throw 'query_number' }
+    }
+    $maskField = $Value.GetProperty('identityMismatchMask')
+    if ($maskField.ValueKind -ne [Text.Json.JsonValueKind]::Number) { throw 'query_mask' }
+    $mask = $maskField.GetUInt32()
+    $stageField = $Value.GetProperty('failureStage')
+    if ($stageField.ValueKind -ne [Text.Json.JsonValueKind]::String) { throw 'query_stage' }
+    $stage = $stageField.GetString()
+    $parseField = $Value.GetProperty('parseFailure')
+    if ($parseField.ValueKind -eq [Text.Json.JsonValueKind]::Null) { $parse = $null }
+    elseif ($parseField.ValueKind -eq [Text.Json.JsonValueKind]::String) { $parse = $parseField.GetString() }
+    else { throw 'query_parse' }
+    $raw = $values.nativeResultCode; $mode = $values.observedMode; $flags = $values.observedFlags
+    $empty = $null -eq $parse -and $mask -eq 0 -and $null -eq $mode -and $null -eq $flags
+    $valid = switch -CaseSensitive ($stage) {
+        'precheck' { $AdapterCode -eq 87 -and $null -eq $raw -and $empty }
+        'import' { $AdapterCode -eq 127 -and $null -eq $raw -and $empty }
+        'native' { $null -ne $raw -and $raw -gt 0 -and $AdapterCode -eq $raw -and $empty }
+        'parse' { $AdapterCode -eq 13 -and $null -ne $raw -and $raw -eq 0 -and
+            $parse -cin @('capacity','logger_offset','logger_bounds','logger_empty','logger_termination',
+                'file_offset','file_bounds','file_empty','file_termination') -and $mask -eq 0 -and
+            $null -eq $mode -and $null -eq $flags }
+        'identity' { $AdapterCode -eq 13 -and $null -ne $raw -and $raw -eq 0 -and $null -eq $parse -and
+            $mask -ge 1 -and $mask -le 31 -and $null -ne $mode -and $null -ne $flags -and
+            ((($mask -band 8) -ne 0) -eq ($mode -ne 0x02000001)) -and
+            ((($mask -band 16) -ne 0) -eq ($flags -ne 0x06000307)) }
+        'gate' { $AdapterCode -eq 13 -and $null -ne $raw -and $raw -eq 0 -and $null -eq $parse -and
+            $mask -eq 0 -and $null -ne $mode -and $null -ne $flags }
+        default { $false }
+    }
+    if (-not $valid) { throw 'query_consistency' }
+    [pscustomobject]@{nativeResultCode=$raw;failureStage=$stage;parseFailure=$parse;
+        identityMismatchMask=$mask;observedMode=$mode;observedFlags=$flags}
+}
+
 function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
     if ($Bytes.Length -lt 1 -or $Bytes.Length -gt 2048) { throw 'manual_status_bounds' }
     try { $text = [Text.UTF8Encoding]::new($false, $true).GetString($Bytes) }
@@ -15,7 +63,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
         $root = $document.RootElement
         if ($root.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw 'manual_status_shape' }
         $expected = @('schemaVersion','phase','result','reasonCode','summarySha256',
-            'rawEtlDeleted','authorizesLoaderClosure','authorizesExecution','nativePhase','nativeCode')
+            'rawEtlDeleted','authorizesLoaderClosure','authorizesExecution','nativePhase','nativeCode','queryDiagnostic')
         $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($property in $root.EnumerateObject()) {
             if ($property.Name -cnotin $expected -or -not $names.Add($property.Name)) {
@@ -33,7 +81,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
                 throw 'manual_status_authority'
             }
         }
-        if ($root.GetProperty('schemaVersion').GetString() -cne 'lexrunner-owned-etw-manual-status/2') {
+        if ($root.GetProperty('schemaVersion').GetString() -cne 'lexrunner-owned-etw-manual-status/3') {
             throw 'manual_status_schema'
         }
         $phase = $root.GetProperty('phase').GetString()
@@ -79,6 +127,15 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
             }
             if (-not $nativeAllowed -or $result -cne 'refused') { throw 'manual_status_native_consistency' }
         } elseif ($reason -ceq 'start_failed_or_occupied') { throw 'manual_status_start_code_required' }
+        $queryDiagnostic = $null
+        $queryField = $root.GetProperty('queryDiagnostic')
+        if ($queryField.ValueKind -ne [Text.Json.JsonValueKind]::Null) {
+            if ($phase -cne 'capture' -or $result -cne 'refused' -or
+                $nativePhase -cnotin @('initial_query','final_query') -or $null -eq $nativeCode) {
+                throw 'query_phase'
+            }
+            $queryDiagnostic = Read-QueryDiagnostic $queryField $nativeCode
+        }
         $summaryAvailable = $phase -ceq 'summary'
         if ($phase -ceq 'preflight') { $allowed = $preflight }
         elseif ($phase -ceq 'capture') { $allowed = $capture }
@@ -109,6 +166,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
             reasonCode = $reason
             nativePhase = $nativePhase
             nativeCode = $nativeCode
+            queryDiagnostic = $queryDiagnostic
             summaryAvailable = $summaryAvailable
             authorizesExecution = $false
         }
@@ -117,7 +175,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
 }
 
 if ($SelfTest) {
-    $base = '{"schemaVersion":"lexrunner-owned-etw-manual-status/2","phase":"preflight","result":"refused","reasonCode":"preflight_elevation","summarySha256":null,"rawEtlDeleted":false,"authorizesLoaderClosure":false,"authorizesExecution":false,"nativePhase":null,"nativeCode":null}' + "`n"
+    $base = '{"schemaVersion":"lexrunner-owned-etw-manual-status/3","phase":"preflight","result":"refused","reasonCode":"preflight_elevation","summarySha256":null,"rawEtlDeleted":false,"authorizesLoaderClosure":false,"authorizesExecution":false,"nativePhase":null,"nativeCode":null,"queryDiagnostic":null}' + "`n"
     $encode = [Text.UTF8Encoding]::new($false, $true)
     $cases = [Collections.Generic.List[object]]::new()
     $valid = Read-ManualStatus ($encode.GetBytes($base)) 3
@@ -154,7 +212,8 @@ if ($SelfTest) {
         @{name='bom';text=([char]0xFEFF+$base);exit=3},
         @{name='noise';text=('noise'+$base);exit=3},
         @{name='two_objects';text=($base+$base);exit=3},
-        @{name='schema1';text=$base.Replace('manual-status/2','manual-status/1');exit=3},
+        @{name='schema1';text=$base.Replace('manual-status/3','manual-status/1');exit=3},
+        @{name='schema2';text=$base.Replace('manual-status/3','manual-status/2');exit=3},
         @{name='deletion_claim';text=$base.Replace('"rawEtlDeleted":false','"rawEtlDeleted":true');exit=3},
         @{name='exit_mismatch';text=$base;exit=0},
         @{name='summary_missing_digest';text=$base.Replace('"phase":"preflight"','"phase":"summary"').Replace('preflight_elevation','probe_refused');exit=3}
@@ -180,10 +239,68 @@ if ($SelfTest) {
     $cases.Add(@{name='valid_start_failure_summary';passed=$true})
     $bad += @{name='summary_start_missing_code';text=$startFailure.Replace('"nativePhase":"start"','"nativePhase":null').Replace('"nativeCode":5','"nativeCode":null');exit=3}
     $bad += @{name='summary_start_zero_code';text=$startFailure.Replace('"nativeCode":5','"nativeCode":0');exit=3}
+    $queryBase = $base.Replace('"phase":"preflight"','"phase":"capture"').Replace('preflight_elevation','initial_ownership_uncertain').Replace('"nativePhase":null','"nativePhase":"initial_query"').Replace('"nativeCode":null','"nativeCode":13')
+    $query = '{"nativeResultCode":0,"failureStage":"parse","parseFailure":"capacity","identityMismatchMask":0,"observedMode":null,"observedFlags":null}'
+    function Check-Query([string]$Name, [string]$Json, [int]$Code = 13) {
+        $wire = $queryBase.Replace('"queryDiagnostic":null',('"queryDiagnostic":' + $Json)).Replace('"nativeCode":13',('"nativeCode":' + $Code))
+        $read = Read-ManualStatus ($encode.GetBytes($wire)) 3
+        if ($null -eq $read.queryDiagnostic -or $read.summaryAvailable) { throw 'query_selftest' }
+        $cases.Add(@{name=$Name;passed=$true})
+    }
+    foreach ($failure in @('capacity','logger_offset','logger_bounds','logger_empty','logger_termination','file_offset','file_bounds','file_empty','file_termination')) {
+        Check-Query ('query_' + $failure) ($query.Replace('capacity',$failure))
+    }
+    $rawNative = $query.Replace('"nativeResultCode":0','"nativeResultCode":13').Replace('"failureStage":"parse"','"failureStage":"native"').Replace('"parseFailure":"capacity"','"parseFailure":null')
+    Check-Query 'query_native13' $rawNative
+    foreach ($stage in @('precheck','import')) {
+        $code = if ($stage -ceq 'precheck') {87} else {127}
+        Check-Query ('query_' + $stage) ($rawNative.Replace('"nativeResultCode":13','"nativeResultCode":null').Replace('native"',($stage + '"'))) $code
+    }
+    $identity = $query.Replace('"failureStage":"parse"','"failureStage":"identity"').Replace('"parseFailure":"capacity"','"parseFailure":null').Replace('"identityMismatchMask":0','"identityMismatchMask":1').Replace('"observedMode":null','"observedMode":33554433').Replace('"observedFlags":null','"observedFlags":100664071')
+    for ($mask = 1; $mask -le 31; $mask++) {
+        $wire = $identity.Replace('"identityMismatchMask":1',('"identityMismatchMask":' + $mask))
+        if ($mask -band 8) { $wire = $wire.Replace('"observedMode":33554433','"observedMode":0') }
+        if ($mask -band 16) { $wire = $wire.Replace('"observedFlags":100664071','"observedFlags":0') }
+        Check-Query ('query_mask_' + $mask) $wire
+    }
+    Check-Query 'query_gate' ($identity.Replace('identity"','gate"').Replace('"identityMismatchMask":1','"identityMismatchMask":0'))
+    $mutations = @(
+        $query.Replace('"failureStage":"parse"','"failureStage":"Parse"'),
+        $query.Replace('"failureStage":"parse"','"failureStage":"unknown"'),
+        $query.Replace('"nativeResultCode":0','"nativeResultCode":null'),
+        $query.Replace('"nativeResultCode":0','"nativeResultCode":13'),
+        $query.Replace('"nativeResultCode":0','"nativeResultCode":-1'),
+        $query.Replace('"nativeResultCode":0','"nativeResultCode":4294967296'),
+        $query.Replace('"nativeResultCode":0','"nativeResultCode":"0"'),
+        $query.Replace('"parseFailure":"capacity"','"parseFailure":null'),
+        $query.Replace('capacity','C:\not_logged.etl'),
+        $query.Replace('"identityMismatchMask":0','"identityMismatchMask":1'),
+        $query.Replace('"identityMismatchMask":0','"identityMismatchMask":null'),
+        $query.Replace('"observedMode":null','"observedMode":0'),
+        $query.Replace('"observedFlags":null','"observedFlags":true'),
+        $query.Replace('"failureStage":"parse"','"failureStage":"parse","failureStage":"native"'),
+        $query.Replace('"failureStage":"parse"','"extra":"hidden","failureStage":"parse"'),
+        $query.Replace(',"parseFailure":"capacity"',''),
+        $rawNative.Replace('"nativeResultCode":13','"nativeResultCode":0'),
+        $rawNative.Replace('"nativeResultCode":13','"nativeResultCode":5'),
+        $identity.Replace('"identityMismatchMask":1','"identityMismatchMask":32'),
+        $identity.Replace('"identityMismatchMask":1','"identityMismatchMask":0'),
+        $identity.Replace('"observedMode":33554433','"observedMode":null'),
+        $identity.Replace('"observedMode":33554433','"observedMode":0'),
+        $identity.Replace('"observedFlags":100664071','"observedFlags":0'),
+        $identity.Replace('identity"','gate"'),
+        '[]', '"opaque"', 'true'
+    )
+    for ($i = 0; $i -lt $mutations.Count; $i++) {
+        $bad += @{name=('query_bad_' + $i);text=$queryBase.Replace('"queryDiagnostic":null',('"queryDiagnostic":' + $mutations[$i]));exit=3}
+    }
+    foreach ($template in @($base,$observed,$withNative,$startFailure)) {
+        $bad += @{name='query_wrong_phase';text=$template.Replace('"queryDiagnostic":null',('"queryDiagnostic":' + $query));exit=3}
+    }
     foreach ($row in $bad) {
         $refused = $false
         try { $null = Read-ManualStatus ($encode.GetBytes($row.text)) $row.exit } catch { $refused = $true }
-        if (-not $refused) { throw 'manual_status_selftest_accepted_bad_record' }
+        if (-not $refused) { throw ('manual_status_selftest_accepted_bad_record:' + $row.name) }
         $cases.Add(@{name=$row.name;passed=$true})
     }
     $refused = $false
