@@ -34,7 +34,7 @@ internal static class SchemaCensus
     private const int PropertyInfoBytes = 24;
     private const int PropertyNameOffset = 4;
     private const uint EventRecordMode = 0x10000000;
-    private const uint ExpectedCaptureMode = 0x02000001;
+    private const uint ExpectedCaptureMode = 0x02400001;
     private const ushort ClassicHeader = 0x0100;
     private const uint ErrorInsufficientBuffer = 122;
     private const uint ErrorNotFound = 1168;
@@ -46,6 +46,9 @@ internal static class SchemaCensus
     private const int MaxProperties = 64;
     private const int MaxPropertyNameChars = 96;
     private const int MaxTotalNameChars = 4096;
+
+    // Fixed profile equality only; no masking or tolerated extra flags.
+    internal static bool CaptureModeIsExpected(uint mode) => mode == ExpectedCaptureMode;
 
     internal static bool AbiIsExpected() => OperatingSystem.IsWindows() &&
         RuntimeInformation.ProcessArchitecture == Architecture.X64 &&
@@ -191,7 +194,7 @@ internal static class SchemaCensus
         if (processCode != 0) return Refuse("processtrace_failed");
         if (closeCode != 0) return Refuse("closetrace_failed");
         if (headerStart <= 0 || headerEnd <= headerStart ||
-            headerMode != ExpectedCaptureMode || headerMaxFileSize != 128 ||
+            !CaptureModeIsExpected(headerMode) || headerMaxFileSize != 128 ||
             headerPointerSize is not (8 or 64))
             return Refuse("etl_header_invalid");
         if (headerEventsLost != 0 || headerBuffersLost != 0)

@@ -40,7 +40,7 @@ function Read-QueryDiagnostic($Value, [uint32]$AdapterCode) {
             $null -eq $mode -and $null -eq $flags }
         'identity' { $AdapterCode -eq 13 -and $null -ne $raw -and $raw -eq 0 -and $null -eq $parse -and
             $mask -ge 1 -and $mask -le 31 -and $null -ne $mode -and $null -ne $flags -and
-            ((($mask -band 8) -ne 0) -eq ($mode -ne 0x02000001)) -and
+            ((($mask -band 8) -ne 0) -eq ($mode -ne 0x02400001)) -and
             ((($mask -band 16) -ne 0) -eq ($flags -ne 0x06000307)) }
         'gate' { $AdapterCode -eq 13 -and $null -ne $raw -and $raw -eq 0 -and $null -eq $parse -and
             $mask -eq 0 -and $null -ne $mode -and $null -ne $flags }
@@ -256,14 +256,19 @@ if ($SelfTest) {
         $code = if ($stage -ceq 'precheck') {87} else {127}
         Check-Query ('query_' + $stage) ($rawNative.Replace('"nativeResultCode":13','"nativeResultCode":null').Replace('native"',($stage + '"'))) $code
     }
-    $identity = $query.Replace('"failureStage":"parse"','"failureStage":"identity"').Replace('"parseFailure":"capacity"','"parseFailure":null').Replace('"identityMismatchMask":0','"identityMismatchMask":1').Replace('"observedMode":null','"observedMode":33554433').Replace('"observedFlags":null','"observedFlags":100664071')
+    $identity = $query.Replace('"failureStage":"parse"','"failureStage":"identity"').Replace('"parseFailure":"capacity"','"parseFailure":null').Replace('"identityMismatchMask":0','"identityMismatchMask":1').Replace('"observedMode":null','"observedMode":37748737').Replace('"observedFlags":null','"observedFlags":100664071')
     for ($mask = 1; $mask -le 31; $mask++) {
         $wire = $identity.Replace('"identityMismatchMask":1',('"identityMismatchMask":' + $mask))
-        if ($mask -band 8) { $wire = $wire.Replace('"observedMode":33554433','"observedMode":0') }
+        if ($mask -band 8) { $wire = $wire.Replace('"observedMode":37748737','"observedMode":0') }
         if ($mask -band 16) { $wire = $wire.Replace('"observedFlags":100664071','"observedFlags":0') }
         Check-Query ('query_mask_' + $mask) $wire
     }
     Check-Query 'query_gate' ($identity.Replace('identity"','gate"').Replace('"identityMismatchMask":1','"identityMismatchMask":0'))
+    foreach ($mode in @(33554433,41943041,46137345,2185232385,37748736,37748739)) {
+        $modeWire = $identity.Replace('"identityMismatchMask":1','"identityMismatchMask":8').Replace('"observedMode":37748737',('"observedMode":' + $mode))
+        Check-Query ('fixed_mode_mismatch_report_' + $mode) $modeWire
+        $bad += @{name=('fixed_mode_missing_bit_' + $mode);text=$queryBase.Replace('"queryDiagnostic":null',('"queryDiagnostic":' + $modeWire.Replace('"identityMismatchMask":8','"identityMismatchMask":1')));exit=3}
+    }
     $mutations = @(
         $query.Replace('"failureStage":"parse"','"failureStage":"Parse"'),
         $query.Replace('"failureStage":"parse"','"failureStage":"unknown"'),
@@ -285,8 +290,8 @@ if ($SelfTest) {
         $rawNative.Replace('"nativeResultCode":13','"nativeResultCode":5'),
         $identity.Replace('"identityMismatchMask":1','"identityMismatchMask":32'),
         $identity.Replace('"identityMismatchMask":1','"identityMismatchMask":0'),
-        $identity.Replace('"observedMode":33554433','"observedMode":null'),
-        $identity.Replace('"observedMode":33554433','"observedMode":0'),
+        $identity.Replace('"observedMode":37748737','"observedMode":null'),
+        $identity.Replace('"observedMode":37748737','"observedMode":0'),
         $identity.Replace('"observedFlags":100664071','"observedFlags":0'),
         $identity.Replace('identity"','gate"'),
         '[]', '"opaque"', 'true'

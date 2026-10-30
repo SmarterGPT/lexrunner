@@ -20,7 +20,7 @@ internal sealed record QueryDiagnostic(uint? NativeResultCode, string FailureSta
                 ObservedMode is null && ObservedFlags is null,
             "identity" => adapterCode == 13 && NativeResultCode == 0 && ParseFailure is null &&
                 IdentityMismatchMask is >= 1 and <= 31 && ObservedMode is not null && ObservedFlags is not null &&
-                ((IdentityMismatchMask & 8) != 0) == (ObservedMode != 0x02000001) &&
+                ((IdentityMismatchMask & 8) != 0) == (ObservedMode != 0x02400001) &&
                 ((IdentityMismatchMask & 16) != 0) == (ObservedFlags != 0x06000307),
             "gate" => adapterCode == 13 && NativeResultCode == 0 && ParseFailure is null &&
                 IdentityMismatchMask == 0 && ObservedMode is not null && ObservedFlags is not null,
@@ -34,7 +34,7 @@ internal sealed record QueryDiagnostic(uint? NativeResultCode, string FailureSta
 
     internal static object[] WireSamples() => new[] {
         new QueryDiagnostic(13, "native"), new QueryDiagnostic(0, "parse", "capacity"),
-        new QueryDiagnostic(0, "identity", IdentityMismatchMask:1, ObservedMode:0x02000001, ObservedFlags:0x06000307)
+        new QueryDiagnostic(0, "identity", IdentityMismatchMask:1, ObservedMode:0x02400001, ObservedFlags:0x06000307)
     }.Select(diagnostic => ManualCaptureDiagnostic.Status("capture", "refused",
         "initial_ownership_uncertain", null, "initial_query", 13, diagnostic)).ToArray();
 
@@ -46,7 +46,34 @@ internal sealed record QueryDiagnostic(uint? NativeResultCode, string FailureSta
             "logger_empty", "logger_termination", "file_offset", "file_bounds", "file_empty", "file_termination" })
             Check(failure, NativeTraceAdapter.SyntheticParseFailure(failure));
         var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
-            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02000001, 0x06000307);
+            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02400001, 0x06000307);
+        Check("fixed_mode_accepted", NativeTraceAdapter.IdentityIsBounded(expected) &&
+            SchemaCensus.CaptureModeIsExpected(expected.Mode));
+        foreach (var mode in new uint[] { 0x02000001, 0x02800001, 0x02c00001,
+            0x82400001, 0x02400000, 0x02400003 })
+        {
+            var gate = new OwnedHandleGate(expected); gate.BeginStart(); gate.CompleteStart(new(0,42));
+            var began = gate.BeginQuery(42);
+            var observed = new TraceObservation(expected.Name, expected.Guid, expected.EtlPath,
+                mode, expected.Flags, 0, 0, 0);
+            var accepted = gate.CompleteQuery(42, new(0, observed), out var mismatch, out var stateMatched);
+            var diagnostic = new QueryDiagnostic(0, "identity", IdentityMismatchMask:8,
+                ObservedMode:mode, ObservedFlags:expected.Flags);
+            Check("fixed_mode_refused_" + mode, began && !accepted && stateMatched && mismatch == 8 &&
+                !gate.BeginStop(42) && !gate.BeginQuery(42) &&
+                !NativeTraceAdapter.IdentityIsBounded(expected with { Mode = mode }) &&
+                !SchemaCensus.CaptureModeIsExpected(mode) && diagnostic.Valid(13) &&
+                !(diagnostic with { IdentityMismatchMask = 1 }).Valid(13));
+        }
+        {
+            var flags = expected.Flags | 0x80000000;
+            var gate = new OwnedHandleGate(expected); gate.BeginStart(); gate.CompleteStart(new(0,42)); gate.BeginQuery(42);
+            var observed = new TraceObservation(expected.Name, expected.Guid, expected.EtlPath,
+                expected.Mode, flags, 0, 0, 0);
+            Check("fixed_flags_unknown_refused", !NativeTraceAdapter.IdentityIsBounded(expected with { Flags = flags }) &&
+                !gate.CompleteQuery(42, new(0, observed), out var mismatch, out var stateMatched) && stateMatched &&
+                mismatch == 16 && !gate.BeginStop(42));
+        }
         for (uint mask = 0; mask < 32; mask++)
         {
             var seen = new TraceObservation((mask & 1) == 0 ? expected.Name : "other",
@@ -93,7 +120,7 @@ internal sealed record QueryDiagnostic(uint? NativeResultCode, string FailureSta
             native with { NativeResultCode = 5 }, native with { ObservedFlags = 0 },
             new QueryDiagnostic(null,"unknown"), new QueryDiagnostic(0,"identity", IdentityMismatchMask:32,ObservedMode:0,ObservedFlags:0),
             new QueryDiagnostic(0,"identity", IdentityMismatchMask:1,ObservedMode:0,ObservedFlags:0),
-            new QueryDiagnostic(0,"identity", IdentityMismatchMask:0,ObservedMode:0x02000001,ObservedFlags:0x06000307),
+            new QueryDiagnostic(0,"identity", IdentityMismatchMask:0,ObservedMode:0x02400001,ObservedFlags:0x06000307),
             new QueryDiagnostic(0,"gate",IdentityMismatchMask:1,ObservedMode:0,ObservedFlags:0),
             new QueryDiagnostic(0,"gate"),
         };

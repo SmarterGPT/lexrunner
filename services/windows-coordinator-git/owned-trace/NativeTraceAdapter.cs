@@ -30,7 +30,7 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
         expected.EtlPath.Length < MaximumNameChars &&
         !expected.EtlPath.Contains('\0') &&
         Path.IsPathFullyQualified(expected.EtlPath) &&
-        expected.Mode == 0x02000001 && expected.Flags == 0x06000307;
+        expected.Mode == 0x02400001 && expected.Flags == 0x06000307;
 
     internal static bool LayoutIsExpected() =>
         OperatingSystem.IsWindows() &&
@@ -47,7 +47,7 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
     {
         var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
             Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"),
-            @"C:\private\fresh\git-loader.etl", 0x02000001, 0x06000307);
+            @"C:\private\fresh\git-loader.etl", 0x02400001, 0x06000307);
         var buffer = Allocate(expected.Guid);
         try
         {
@@ -189,7 +189,7 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
     internal static QueryResult SyntheticQueryResult(uint code, string scenario)
     {
         var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
-            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02000001, 0x06000307);
+            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02400001, 0x06000307);
         var adapter = new NativeTraceAdapter(expected);
         adapter._gate.BeginStart(); adapter._gate.CompleteStart(new(0,42));
         if (scenario != "gate") adapter._gate.BeginQuery(42);

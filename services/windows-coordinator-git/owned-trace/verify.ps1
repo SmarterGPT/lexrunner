@@ -112,7 +112,7 @@ if ($selfResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
 $query = Invoke-Bounded 'query-diagnostic-selftest' @($dll, '--query-diagnostic-selftest') 8192 10000
 if ($query.exitCode -ne 0 -or $query.stderrBytes -ne 0) { throw 'query_diagnostic_selftest_failed' }
 $queryResult = Get-Content -LiteralPath (Join-Path $stage 'query-diagnostic-selftest.stdout') -Raw | ConvertFrom-Json
-if ($queryResult.result -cne 'pass' -or @($queryResult.cases).Count -ne 91 -or
+if ($queryResult.result -cne 'pass' -or @($queryResult.cases).Count -ne 99 -or
     @($queryResult.cases | Where-Object { $_.Passed -ne $true }).Count -ne 0 -or
     $queryResult.authorizesExecution -ne $false) { throw 'query_diagnostic_readback_invalid' }
 
@@ -124,7 +124,7 @@ if ($preflightResult.schemaVersion -cne 'lexrunner-etw-preflight-source/1' -or
     @($preflightResult.cases | Where-Object { $_.passed -ne $true }).Count -ne 0 -or
     $preflightResult.authorizesExecution -ne $false) { throw 'owned_etw_preflight_selftest_invalid' }
 $statusTest = & (Join-Path $PSScriptRoot 'Test-ManualCaptureStatus.ps1') -SelfTest
-if ($statusTest.result -cne 'source_status_pass' -or $statusTest.caseCount -ne 125 -or
+if ($statusTest.result -cne 'source_status_pass' -or $statusTest.caseCount -ne 137 -or
     $statusTest.authorizesExecution -ne $false) { throw 'owned_etw_status_selftest_failed' }
 
 $refusal = Invoke-Bounded 'capture-refusal' @($dll, '--capture') 1024 10000
@@ -179,10 +179,10 @@ $receipt = [ordered]@{
     sourceCwd = $PSScriptRoot
     durationMs = $clock.ElapsedMilliseconds
     imageSha256 = $imageHash
-    queryDiagnosticCaseCount = 91
+    queryDiagnosticCaseCount = 99
     caseCount = 42
     preflightCaseCount = 39
-    statusSanitizerCaseCount = 125
+    statusSanitizerCaseCount = 137
     commands = @($commands.ToArray())
     sourceSha256 = $sourceHashes
     nativeTraceStarted = $false

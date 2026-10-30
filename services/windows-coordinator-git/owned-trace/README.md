@@ -22,7 +22,7 @@ uncertain and is never reused or stopped by this run. Do not implement an
 automatic orphan cleanup; it would turn stale/foreign state into authority.
 
 The proposed native fields are `EVENT_TRACE_FILE_MODE_SEQUENTIAL |
-EVENT_TRACE_SYSTEM_LOGGER_MODE` (`0x02000001`), 64 KiB buffers, 64 minimum and
+EVENT_TRACE_SYSTEM_LOGGER_MODE | EVENT_TRACE_STOP_ON_HYBRID_SHUTDOWN` (`0x02400001`), 64 KiB buffers, 64 minimum and
 128 maximum buffers, and a 128 MiB file cap. `EnableFlags=0x06000307` selects
 process, thread, image load, file IO, file IO init, disk IO and file-name
 events. The `DISK_FILE_IO` file-name flag requires `DISK_IO`; the extra disk
