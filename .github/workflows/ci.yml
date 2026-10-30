@@ -388,6 +388,44 @@ jobs:
             artifacts/windows-git-etw-tool-preflight/NEGATIVE_CONTROL_RECEIPT.json
           if-no-files-found: warn
 
+  # The selected Git fixture uses a separately inventoried fixed PE on this
+  # exact hosted image. It does not qualify Git helpers or installed execution.
+  windows-git-selected-transition:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.level != 'minimal')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: "proofs/windows-workspace-boundary/global.json"
+      - name: Qualify pinned hosted Git source fixture and lost removal reply
+        shell: pwsh
+        run: ./services/windows-coordinator-git/verify-selected-transition.ps1 -CrashAfterRemoval
+      - name: Check selected Git receipt guard negative controls
+        if: always()
+        shell: pwsh
+        run: ./services/windows-coordinator-git/Test-SelectedTransitionReceipt.ps1 -SelfTest
+      - name: Check bounded selected Git fixture receipt
+        id: selected_git_bounds
+        if: always()
+        shell: pwsh
+        run: ./services/windows-coordinator-git/Test-SelectedTransitionReceipt.ps1
+      - name: Retain bounded selected Git source receipt
+        if: always() && steps.selected_git_bounds.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-git-selected-transition-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/windows-coordinator-git-selected-transition/receipt-*.json
+          if-no-files-found: error
+          retention-days: 1
+
   # Full manual-only determinism and license gate.
   determinism-and-license:
     runs-on: ubuntu-latest
@@ -427,7 +465,16 @@ jobs:
   ci-complete:
     name: CI Complete
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, build-and-test, git-backed-tests, package-artifacts, windows-bootstrap]
+    needs:
+      [
+        lint,
+        typecheck,
+        build-and-test,
+        git-backed-tests,
+        package-artifacts,
+        windows-bootstrap,
+        windows-git-selected-transition,
+      ]
     if: >-
       always() &&
       (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
@@ -451,5 +498,8 @@ jobs:
           fi
           if [[ "${{ needs.windows-bootstrap.result }}" != "success" && "${{ needs.windows-bootstrap.result }}" != "skipped" ]]; then
             echo "❌ windows-bootstrap did not pass"; exit 1
+          fi
+          if [[ "${{ needs.windows-git-selected-transition.result }}" != "success" && "${{ needs.windows-git-selected-transition.result }}" != "skipped" ]]; then
+            echo "❌ windows-git-selected-transition did not pass"; exit 1
           fi
           echo "✅ CI Complete (level: ${{ inputs.level || 'pull-request' }})"

@@ -5,6 +5,10 @@ using System.Text.RegularExpressions;
 
 namespace LexRunner.WindowsCoordinator.Git;
 
+#if GIT_HOSTED_2022_FIXTURE && !GIT_IMPORT_FIXTURE
+#error The hosted Git candidate is only permitted in the non-authorizing fixture image.
+#endif
+
 // Non-authorizing source contract. The fixed child is Job-bound, but no
 // protected slot, installed image graph or service token is connected.
 internal sealed record ImportSlot(string Root, string Bundle, string Mirror,
@@ -37,9 +41,19 @@ internal static class GitBundleImport
 {
     // Fixed candidate image; independent installed-image and loader protection
     // remain required before any service-token use.
+#if GIT_HOSTED_2022_FIXTURE
+    // The hosted inventory read back these exact PE bytes on windows-2022.
+    // This pins the root image for a source-only fixture. The Git helper and
+    // loader graph remain unknown and cannot authorize installed execution.
+    internal const string GitImage = @"C:\Program Files\Git\bin\git.exe";
+    internal const string GitBin = @"C:\Program Files\Git\bin";
+    internal const string HostedGitImageSha256 =
+        "3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3";
+#else
     internal const string GitImage = @"C:\Program Files\Git\mingw64\bin\git.exe";
     internal const string GitBin = @"C:\Program Files\Git\mingw64\bin";
     internal const string GitExecPath = @"C:\Program Files\Git\mingw64\libexec\git-core";
+#endif
     private static readonly Regex Commit = new("^[0-9a-f]{40}([0-9a-f]{24})?$", RegexOptions.CultureInvariant);
     private static readonly Regex Digest = new("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
 
@@ -211,21 +225,24 @@ internal static class GitBundleImport
             !File.Exists(Path.Combine(system, "cmd.exe")))
             throw new InvalidOperationException("os_windows_root_unusable");
         var gitBin = GitBin;
+#if !GIT_HOSTED_2022_FIXTURE
         var gitExecPath = GitExecPath;
+#endif
 #if GIT_IMPORT_FIXTURE
         if (graphProfile is not null)
         {
             gitBin = graphProfile.GitBin;
+#if !GIT_HOSTED_2022_FIXTURE
             gitExecPath = graphProfile.GitExecPath;
+#endif
         }
 #endif
-        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["SystemRoot"] = windows, ["WINDIR"] = windows,
             ["COMSPEC"] = Path.Combine(system, "cmd.exe"),
             ["PATH"] = gitBin + ";" + system + ";" + windows,
             ["PATHEXT"] = ".COM;.EXE;.BAT;.CMD",
-            ["GIT_EXEC_PATH"] = gitExecPath,
             ["HOME"] = slot.Home, ["USERPROFILE"] = slot.Home,
             ["APPDATA"] = slot.Home, ["LOCALAPPDATA"] = slot.Home,
             ["TEMP"] = slot.Temp, ["TMP"] = slot.Temp,
@@ -235,6 +252,10 @@ internal static class GitBundleImport
             ["GIT_TERMINAL_PROMPT"] = "0", ["GCM_INTERACTIVE"] = "Never",
             ["GIT_OPTIONAL_LOCKS"] = "0", ["GIT_LFS_SKIP_SMUDGE"] = "1"
         };
+#if !GIT_HOSTED_2022_FIXTURE
+        environment["GIT_EXEC_PATH"] = gitExecPath;
+#endif
+        return environment;
     }
 
     private delegate uint WindowsPathApi(StringBuilder buffer, uint capacity);
@@ -264,9 +285,16 @@ internal static class GitBundleImport
 #endif
         )
     {
+#if GIT_HOSTED_2022_FIXTURE
+        var manualProfile = ManualEtwGitProfile.CreateHostedFixture(env, HostedGitImageSha256);
+        env = manualProfile.Environment;
+#endif
         var record = await BoundedGitChild.RunAsync(phase, cwd, argv, env, token
 #if GIT_IMPORT_FIXTURE
             , graphProfile
+#if GIT_HOSTED_2022_FIXTURE
+            , manualProfile
+#endif
 #endif
             );
         records.Add(record);

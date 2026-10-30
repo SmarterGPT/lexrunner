@@ -77,6 +77,8 @@ $sourcePaths = @(
     'services/windows-coordinator-git/GitWorktreePublish.cs',
     'services/windows-coordinator-git/GitWorktreeStage.cs',
     'services/windows-coordinator-git/GraphSelectedGitProfile.cs',
+    'services/windows-coordinator-git/HeldSelectedGitRoots.cs',
+    'services/windows-coordinator-git/FixtureBoundGitViewTransition.cs',
     'services/windows-coordinator-git/NativeWorktreePublication.cs',
     'services/windows-coordinator-git/Program.cs',
     'services/windows-coordinator-git/StaticGitImports.cs',

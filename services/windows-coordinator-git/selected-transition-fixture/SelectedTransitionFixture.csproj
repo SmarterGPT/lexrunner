@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <StartupObject>LexRunner.WindowsCoordinator.Git.GitViewProbeProgram</StartupObject>
+    <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishAot>false</PublishAot>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>GIT_IMPORT_FIXTURE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(HostedGit2022Fixture)' == 'true'">
+    <DefineConstants>$(DefineConstants);GIT_HOSTED_2022_FIXTURE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../BoundedGitChild.cs" />
+    <Compile Include="../ManualEtwGitProfile.cs" />
+    <Compile Include="../GitBundleImport.cs" />
+    <Compile Include="../GitWorktreePublish.cs" />
+    <Compile Include="../GitWorktreeStage.cs" />
+    <Compile Include="../GraphSelectedGitProfile.cs" />
+    <Compile Include="../HeldSelectedGitRoots.cs" />
+    <Compile Include="../FixtureBoundGitViewTransition.cs" />
+    <Compile Include="../NativeWorktreePublication.cs" />
+    <Compile Include="../StaticGitImports.cs" />
+    <Compile Include="../../../installers/windows-coordinator/v2/GraphV2.cs" />
+    <Compile Include="SelectedRootsFixtureProbe.cs" />
+    <Compile Include="GitViewProbeProgram.cs" />
+  </ItemGroup>
+</Project>
