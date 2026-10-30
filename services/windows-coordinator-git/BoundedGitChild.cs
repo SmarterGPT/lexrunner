@@ -37,17 +37,41 @@ internal static class BoundedGitChild
     internal static Task<CommandRecord> RunAsync(string phase, string cwd,
         string[] argv, IReadOnlyDictionary<string, string> env, CancellationToken token
 #if GIT_IMPORT_FIXTURE
-        , GraphSelectedGitProfile? graphProfile = null, string? calibrationGitSha256 = null
+        , GraphSelectedGitProfile? graphProfile = null,
+        ManualEtwGitProfile? manualProfile = null
 #endif
         ) =>
         // Always return a command record, including a pre-launch cancellation.
         Task.Run(() => Run(phase, cwd, argv, env, token
 #if GIT_IMPORT_FIXTURE
-            , null, graphProfile, calibrationGitSha256
+            , null, graphProfile, manualProfile
 #endif
             ), CancellationToken.None);
 
 #if GIT_IMPORT_FIXTURE
+    private static string SelectImagePath(GraphSelectedGitProfile? graphProfile,
+        ManualEtwGitProfile? manualProfile)
+    {
+        if (graphProfile is not null && manualProfile is not null)
+            throw new InvalidOperationException("git_profiles_conflict");
+        return manualProfile?.GitImage ?? graphProfile?.GitImage ?? GitBundleImport.GitImage;
+    }
+
+    internal static bool ManualEtwSourceSelfTest()
+    {
+        try
+        {
+            var slot = new ImportSlot(@"C:\fixture", @"C:\fixture", @"C:\fixture",
+                @"C:\fixture", @"C:\fixture", @"C:\fixture", @"C:\fixture",
+                new string('0', 40), new string('a', 64));
+            var manual = ManualEtwGitProfile.Create(slot, new string('a', 64));
+            return SelectImagePath(null, manual) ==
+                @"C:\Program Files\Git\bin\git.exe" &&
+                SelectImagePath(null, null) == GitBundleImport.GitImage;
+        }
+        catch { return false; }
+    }
+
     // Deterministically cancel while the child is still suspended. This route
     // and callback are absent from the normal NativeAOT image.
     internal static Task<CommandRecord> RunCanceledBeforeResumeFixtureAsync(string phase,
@@ -61,7 +85,7 @@ internal static class BoundedGitChild
         IReadOnlyDictionary<string, string> env, CancellationToken token
 #if GIT_IMPORT_FIXTURE
         , Action? beforeResumeFixture, GraphSelectedGitProfile? graphProfile,
-        string? calibrationGitSha256
+        ManualEtwGitProfile? manualProfile
 #endif
         )
     {
@@ -94,9 +118,10 @@ internal static class BoundedGitChild
         var configuredComSpec = env.GetValueOrDefault("COMSPEC") ?? "";
         var configuredPathSha256 = Sha(Encoding.UTF8.GetBytes(env.GetValueOrDefault("PATH") ?? ""));
         var configuredGitExecPath = env.GetValueOrDefault("GIT_EXEC_PATH") ?? "";
-        var imagePath = GitBundleImport.GitImage;
 #if GIT_IMPORT_FIXTURE
-        if (graphProfile is not null) imagePath = graphProfile.GitImage;
+        var imagePath = SelectImagePath(graphProfile, manualProfile);
+#else
+        var imagePath = GitBundleImport.GitImage;
 #endif
         void CheckStopBeforeLaunch(string boundary)
         {
@@ -121,6 +146,9 @@ internal static class BoundedGitChild
             var commandText = string.Join(' ', new[] { imagePath }.Concat(argv).Select(Quote));
             if (commandText.Length > MaxCommandCharacters)
                 throw new InvalidOperationException("git_command_too_large");
+#if GIT_IMPORT_FIXTURE
+            manualProfile?.AssertEnvironment(env);
+#endif
             var environmentText = ConstructEnvironmentBlock(env);
 
             heldImage = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -128,11 +156,10 @@ internal static class BoundedGitChild
             heldImageSha256 = Convert.ToHexString(SHA256.HashData(heldImage)).ToLowerInvariant();
             heldImage.Position = 0;
 #if GIT_IMPORT_FIXTURE
-            if (calibrationGitSha256 is not null)
+            if (manualProfile is not null)
             {
-                if (calibrationGitSha256.Length != 64 ||
-                    !calibrationGitSha256.All(Uri.IsHexDigit) ||
-                    !StringComparer.Ordinal.Equals(calibrationGitSha256, heldImageSha256))
+                if (!StringComparer.Ordinal.Equals(
+                        manualProfile.ExpectedSha256, heldImageSha256))
                     throw new InvalidOperationException("calibration_git_image_pin_mismatch");
             }
             else if (graphProfile is null)
@@ -274,7 +301,7 @@ internal static class BoundedGitChild
             if (Convert.ToHexString(SHA256.HashData(heldImage)).ToLowerInvariant() != heldImageSha256)
                 throw new IOException("held_git_image_changed");
 #if GIT_IMPORT_FIXTURE
-            if (calibrationGitSha256 is null)
+            if (manualProfile is null)
             {
                 if (graphProfile is null) heldStaticImports!.AssertUnchanged();
                 else graphProfile.AssertUnchanged();

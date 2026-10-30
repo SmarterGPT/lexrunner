@@ -23,6 +23,7 @@
   </ItemGroup>
   <ItemGroup Condition="'$(CheckoutFixture)' == 'true'">
     <Compile Include="../windows-coordinator-git/BoundedGitChild.cs" Link="BoundedGitChild.cs" />
+    <Compile Include="../windows-coordinator-git/ManualEtwGitProfile.cs" Link="ManualEtwGitProfile.cs" />
     <Compile Include="../windows-coordinator-git/GitBundleImport.cs" Link="GitBundleImport.cs" />
     <Compile Include="../windows-coordinator-git/GitWorktreeStage.cs" Link="GitWorktreeStage.cs" />
     <Compile Include="../windows-coordinator-git/GraphSelectedGitProfile.cs" Link="GraphSelectedGitProfile.cs" />

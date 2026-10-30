@@ -8,6 +8,14 @@ internal static class Program
     private static int Main(string[] args)
     {
 #if GIT_IMPORT_FIXTURE
+        if (args is ["--fixture-etw-profile-selftest"])
+        {
+            var passed = ManualEtwGitProfile.SourceSelfTest() &&
+                BoundedGitChild.ManualEtwSourceSelfTest();
+            Console.WriteLine(passed ? "manual_etw_profile_selftest_pass" :
+                "manual_etw_profile_selftest_failed");
+            return passed ? 0 : 3;
+        }
         if (args.Length == 3 && args[0] == "--fixture-etw-version")
         {
             try
@@ -30,9 +38,10 @@ internal static class Program
                 Directory.CreateDirectory(template);
                 var slot = new ImportSlot(scratch, scratch, scratch, template,
                     template, home, scratch, new string('0', 40), expectedGitSha);
-                var env = GitBundleImport.ConstructEnvironment(slot);
+                var manualProfile = ManualEtwGitProfile.Create(slot, expectedGitSha);
                 var record = BoundedGitChild.RunAsync("etw-version", scratch,
-                    ["--version"], env, CancellationToken.None, null, expectedGitSha)
+                    ["--version"], manualProfile.Environment, CancellationToken.None,
+                    null, manualProfile)
                     .GetAwaiter().GetResult();
                 var root = record.ObservedJobProcesses.SingleOrDefault(value =>
                     value.ProcessId == record.RootProcessId);

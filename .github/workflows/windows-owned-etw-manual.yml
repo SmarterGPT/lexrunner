@@ -52,7 +52,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $head -cne $env:EXPECTED_HEAD) {
             throw 'manual_etw_checkout_head_refused'
           }
-          $gitImage = 'C:\Program Files\Git\mingw64\bin\git.exe'
+          $gitImage = 'C:\Program Files\Git\bin\git.exe'
           if (-not [IO.File]::Exists($gitImage) -or
               (Get-FileHash -LiteralPath $gitImage -Algorithm SHA256).Hash.ToLowerInvariant() -cne
                   $env:EXPECTED_GIT_SHA256) {

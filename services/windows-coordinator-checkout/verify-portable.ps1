@@ -90,6 +90,7 @@ $sourcePaths = @(
     'services/windows-coordinator-checkout/CheckoutPopulation.cs',
     'services/windows-coordinator-checkout/HeldCheckout.cs',
     'services/windows-coordinator-git/BoundedGitChild.cs',
+    'services/windows-coordinator-git/ManualEtwGitProfile.cs',
     'services/windows-coordinator-git/GitBundleImport.cs',
     'services/windows-coordinator-git/GitWorktreeStage.cs',
     'services/windows-coordinator-git/GraphSelectedGitProfile.cs',
@@ -131,6 +132,7 @@ try {
     Require (($expectedLocalCSharp -join '|') -ceq ($actualLocalCSharp -join '|')) 'Portable checkout C# inventory changed'
     $expectedLinks = @(
         '../windows-coordinator-git/BoundedGitChild.cs',
+        '../windows-coordinator-git/ManualEtwGitProfile.cs',
         '../windows-coordinator-git/GitBundleImport.cs',
         '../windows-coordinator-git/GitWorktreeStage.cs',
         '../windows-coordinator-git/GraphSelectedGitProfile.cs',

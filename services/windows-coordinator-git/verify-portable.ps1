@@ -72,6 +72,7 @@ $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $dotnet = (Get-Command dotnet.exe -ErrorAction Stop).Source
 $sourcePaths = @(
     'services/windows-coordinator-git/BoundedGitChild.cs',
+    'services/windows-coordinator-git/ManualEtwGitProfile.cs',
     'services/windows-coordinator-git/GitBundleImport.cs',
     'services/windows-coordinator-git/GitWorktreePublish.cs',
     'services/windows-coordinator-git/GitWorktreeStage.cs',
@@ -107,7 +108,7 @@ $startedAt = [DateTimeOffset]::UtcNow.ToString('o')
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $result = 'failed'; $failure = $null; $cleaned = $false
 $normalImageSha256 = $null; $fixtureImageSha256 = $null
-$normalDenied = $false; $fixtureDenied = $false
+$normalDenied = $false; $fixtureDenied = $false; $manualProfilePassed = $false
 $copyPaths = @()
 try {
     $copyRoot = Join-Path $root 'source-copy'
@@ -147,12 +148,17 @@ try {
     $normalGraph = Run-Bounded 'normal-refuses-graph-flag' $repo $normalImage $graphFlag @(2) 10000
     $normalLegacy = Run-Bounded 'normal-refuses-legacy-flag' $repo $normalImage $legacyFlag @(2) 10000
     $normalParser = Run-Bounded 'normal-refuses-parser-selftest' $repo $normalImage @('--fixture-graph-parser-selftest') @(2) 10000
+    $normalEtw = Run-Bounded 'normal-refuses-manual-etw-profile' $repo $normalImage @('--fixture-etw-profile-selftest') @(2) 10000
     $normalDenied = $normalGraph.stderr.Trim() -ceq 'no_production_git_entrypoint' -and
         $normalLegacy.stderr.Trim() -ceq 'no_production_git_entrypoint' -and
-        $normalParser.stderr.Trim() -ceq 'no_production_git_entrypoint'
+        $normalParser.stderr.Trim() -ceq 'no_production_git_entrypoint' -and
+        $normalEtw.stderr.Trim() -ceq 'no_production_git_entrypoint'
     Require $normalDenied 'Normal Git image accepted a fixture flag'
     $parser = Run-Bounded 'fixture-native-parser-selftest' $repo $fixtureImage @('--fixture-graph-parser-selftest') @(0) 10000
     Require ($parser.stdout.Trim() -ceq 'graph_parser_selftest_pass') 'Native graph parser accepted newline alias'
+    $manualEtw = Run-Bounded 'fixture-manual-etw-profile-selftest' $repo $fixtureImage @('--fixture-etw-profile-selftest') @(0) 10000
+    $manualProfilePassed = $manualEtw.stdout.Trim() -ceq 'manual_etw_profile_selftest_pass'
+    Require $manualProfilePassed 'Manual ETW fixture did not select the fixed image and strict environment'
     $fixtureGraph = Run-Bounded 'fixture-refuses-absent-graph' $repo $fixtureImage $graphFlag @(3) 10000
     $parsed = $fixtureGraph.stdout | ConvertFrom-Json
     $fixtureDenied = -not $parsed.ProfileAccepted -and -not $parsed.AuthorizesLaunch -and
@@ -188,6 +194,7 @@ finally {
         fixtureImageSha256 = $fixtureImageSha256
         normalFixtureFlagsRefused = $normalDenied
         fixtureAbsentGraphRefused = $fixtureDenied
+        manualEtwProfileSourcePassed = $manualProfilePassed
         commands = $commands
         sourceHashScope = 'complete first-party C# compile inputs, linked GraphV2 parser, bounded harness, and portable verifier; external .NET toolchain/packages not attested'
         sourceSha256Before = $before
