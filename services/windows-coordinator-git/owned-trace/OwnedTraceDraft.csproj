@@ -11,6 +11,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="NativeTraceAdapter.cs" />
     <Compile Include="CaptureCalibration.cs" />
+    <Compile Include="ManualCaptureDiagnostic.cs" />
     <Compile Include="OfflineEtlParser.cs" />
   </ItemGroup>
 </Project>

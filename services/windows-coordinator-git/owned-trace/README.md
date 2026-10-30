@@ -90,10 +90,11 @@ The `windows-bootstrap` CI step invokes `verify.ps1` on the hosted Windows
 x64 runner. It builds the .NET project, runs `--selftest`, invokes bare
 `--capture` and `--capture-calibrate` only to require exit-3 refusals, and
 records command, cwd, duration, exit code and bounded output hashes. The verifier checks all 42
-individual selftest results. `Test-ReceiptBounds.ps1` checks the exact
-source-only schema, case count, four expected command results, false
+individual selftest results, plus 13 pure ordered-preflight cases and 26
+status sanitizer controls. No extra selftest starts ETW. `Test-ReceiptBounds.ps1` checks the exact
+source-only schema, case counts, five expected command results, false
 trace/authority fields, strict UTF-8
-with LF and a receipt at most 4 KiB. The upload action receives only the
+with LF and a receipt at most 8 KiB. The upload action receives only the
 verified `verification-receipt.json` for one day **only when both the source
 gate and receipt-bounds gate pass**; it never uploads raw stdout, ETL or
 host-wide paths. It uses the existing .NET SDK setup; no helper, service,
@@ -118,3 +119,9 @@ remain required for this candidate.
 - [EVENT_TRACE_PROPERTIES and fixed descriptive names](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties)
 - [StartTraceW and system logger limits](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew)
 - [ControlTraceW STOP semantics](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew)
+
+The first active manual hosted calibration run40985948951 produced no uploadable
+summary. Its unsurfaced status cannot identify the failing component. The current
+status/2 controller logs only finite validated reason and phase codes, then keeps
+the workflow failed. No summary or raw ETL is uploaded for preflight or uncertain
+capture outcomes. See `MANUAL_CALIBRATION.md` for the exact diagnostic boundary.

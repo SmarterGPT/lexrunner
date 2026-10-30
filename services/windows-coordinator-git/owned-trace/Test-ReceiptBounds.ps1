@@ -9,7 +9,7 @@ $stage = [IO.Path]::GetFullPath($ArtifactDirectory)
 $path = Join-Path $stage 'verification-receipt.json'
 if (-not [IO.File]::Exists($path)) { throw 'owned_etw_receipt_missing' }
 $file = [IO.FileInfo]::new($path)
-if ($file.Length -le 0 -or $file.Length -gt 4096 -or
+if ($file.Length -le 0 -or $file.Length -gt 8192 -or
     ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw 'owned_etw_receipt_size_or_type_invalid'
 }
@@ -26,9 +26,10 @@ if ($receipt.schemaVersion -cne 'lexrunner-windows-owned-etw-source-gate/1' -or
     ($env:GITHUB_SHA -and $receipt.sourceHead -cne $env:GITHUB_SHA) -or
     $receipt.processArchitecture -cne 'X64' -or
     $receipt.caseCount -ne 42 -or
+    $receipt.preflightCaseCount -ne 13 -or $receipt.statusSanitizerCaseCount -ne 26 -or
     $receipt.imageSha256 -notmatch '^[0-9a-f]{64}$' -or
-    @($receipt.commands).Count -ne 4 -or
-    @($receipt.sourceSha256.PSObject.Properties).Count -ne 10 -or
+    @($receipt.commands).Count -ne 5 -or
+    @($receipt.sourceSha256.PSObject.Properties).Count -ne 12 -or
     $receipt.nativeTraceStarted -ne $false -or
     $receipt.nativeTraceStopped -ne $false -or
     $receipt.etlCaptured -ne $false -or
@@ -36,10 +37,10 @@ if ($receipt.schemaVersion -cne 'lexrunner-windows-owned-etw-source-gate/1' -or
     $receipt.authorizesExecution -ne $false) {
     throw 'owned_etw_receipt_readback_invalid'
 }
-$labels = @('build', 'selftest', 'capture-refusal', 'calibration-refusal')
-$exits = @(0, 0, 3, 3)
-$caps = @(65536, 8192, 1024, 1024)
-for ($i = 0; $i -lt 4; $i++) {
+$labels = @('build', 'selftest', 'preflight-selftest', 'capture-refusal', 'calibration-refusal')
+$exits = @(0, 0, 0, 3, 3)
+$caps = @(65536, 8192, 4096, 1024, 1024)
+for ($i = 0; $i -lt 5; $i++) {
     $command = $receipt.commands[$i]
     if ($command.label -cne $labels[$i] -or
         $command.exitCode -ne $exits[$i] -or

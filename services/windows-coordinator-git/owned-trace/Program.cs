@@ -11,6 +11,19 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args is ["--preflight-selftest"])
+        {
+            var preflightCases = ManualCaptureDiagnostic.SelfTest();
+            var wire = JsonSerializer.Serialize(preflightCases);
+            using var parsed = JsonDocument.Parse(wire);
+            var preflightPassed = parsed.RootElement.EnumerateArray().All(value =>
+                value.GetProperty("passed").GetBoolean());
+            Console.WriteLine(JsonSerializer.Serialize(new {
+                schemaVersion = "lexrunner-etw-preflight-source/1", cases = preflightCases,
+                result = preflightPassed ? "pass" : "refused", authorizesExecution = false,
+            }));
+            return preflightPassed ? 0 : 3;
+        }
         if (args.Length == 2 && args[0] == "--census-offline")
         {
             var temp = Environment.GetEnvironmentVariable("RUNNER_TEMP");

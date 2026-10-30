@@ -101,3 +101,32 @@ governed Attempt/CLI/MCP dogfood attempt remain separate gates. Every
 summary sets `authorizesLoaderClosure=false`,
 `authorizesExecution=false`, `helperMissingCleared=false` and
 `productionReady=false`.
+
+## Sanitized refusal diagnostics
+
+The first active hosted run40985948951 at reviewed main d61 refused before a
+summary became available. Its captured status was not logged, so its exact cause
+is unknown; `manual_summary_missing` is not evidence of a particular ETW failure.
+The controller now logs only a validated status/2 reason and phase. Preflight
+checks run in fixed order and report the first failed OS/x64/event/head/runner/
+ID/elevation/layout/root/digest/fixture component. Exceptions map to that same
+finite component code; no environment values, paths or exception text are copied.
+
+Preflight or capture-uncertain statuses contain no trace-start/stop assertion,
+no deletion proof and no summary digest. They cannot upload an artifact. Only a
+status naming an existing bounded summary proceeds to the independent summary
+and ETL-deletion checker; that checker still controls uploads. Status parsing
+requires strict UTF-8/LF,2048bytes, exact keys/types, no duplicates, a finite phase
+and reason pair, matching exit status and false authority fields. The watchdog
+logs only a constant controller refusal code with unknown capture disposition.
+Every refusal still fails the workflow. No diagnostic retries Start/Stop, sweeps
+logger names, or repairs uncertain cleanup. Raw ETL never uploads.
+
+When Start/Query/Stop returns a failing observation, the status also carries only
+its observed unsigned32-bit native code and one fixed phase (`start`,
+`initial_query`, `final_query`, or `stop`). An exception does not manufacture a code; the fields stay null unless a
+failed native observation was already recorded.
+The controller logs those values only after exact type/range/phase validation;
+preflight cannot claim a native operation. Code0 does not prove ownership,
+STOP, deletion or successful capture. No system error message is copied. The
+source sanitizer includes26 positive and forged/noisy/encoding controls.

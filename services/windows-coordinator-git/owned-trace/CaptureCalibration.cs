@@ -18,14 +18,17 @@ internal static class CaptureCalibration
 
     internal static int Run(string[] args)
     {
-        if (!ValidArguments(args, out var expectedHead, out var expectedGitSha) ||
-            !TryPreflight(expectedHead, expectedGitSha, out var runnerTemp, out var workspace,
-                out var runId, out var runAttempt))
-            return Refuse("manual_disposable_preflight_required");
+        if (!ValidArguments(args, out var expectedHead, out var expectedGitSha))
+            return ManualCaptureDiagnostic.Refuse("preflight", "arguments_invalid");
+        var preflight = Preflight(expectedHead, expectedGitSha, out var runnerTemp,
+            out var workspace, out var runId, out var runAttempt);
+        if (preflight is not null) return ManualCaptureDiagnostic.Refuse("preflight", preflight);
 
         string? scratch = null;
         string? etlPath = null;
         string reason = "capture_unstarted";
+        string? nativeFailurePhase = null;
+        uint? nativeFailureCode = null;
         TraceIdentity? identity = null;
         NativeTraceAdapter? adapter = null;
         ulong ownedHandle = 0;
@@ -55,6 +58,7 @@ internal static class CaptureCalibration
             started = start.Code == 0;
             if (start.Code != 0 || start.Handle is 0 or ulong.MaxValue)
             {
+                nativeFailurePhase = "start"; nativeFailureCode = start.Code;
                 reason = "start_failed_or_occupied";
             }
             else
@@ -63,6 +67,7 @@ internal static class CaptureCalibration
                 var first = adapter.Query(ownedHandle);
                 if (!Matches(identity, first))
                 {
+                    nativeFailurePhase = "initial_query"; nativeFailureCode = first.Code;
                     reason = "initial_ownership_uncertain";
                 }
                 else
@@ -85,6 +90,7 @@ internal static class CaptureCalibration
                             var last = adapter.Query(ownedHandle);
                             if (!Matches(identity, last))
                             {
+                                nativeFailurePhase = "final_query"; nativeFailureCode = last.Code;
                                 reason = "final_ownership_uncertain";
                             }
                             else
@@ -93,7 +99,10 @@ internal static class CaptureCalibration
                                 stopAttempted = true;
                                 var stop = adapter.Stop(ownedHandle);
                                 if (stop.Code != 0 || stop.Observation is null)
+                                {
+                                    nativeFailurePhase = "stop"; nativeFailureCode = stop.Code;
                                     reason = "stop_disposition_uncertain";
+                                }
                                 else
                                 {
                                     stopped = stop.Observation;
@@ -151,79 +160,80 @@ internal static class CaptureCalibration
             watch.Stop();
         }
 
-        if (!cleanupCertain || (started && (!stopAttempted || !stopConfirmed)) ||
-            (started && initialMatch && !probeTerminalCertain) ||
-            (censusAttempted && !censusTerminalCertain))
-            return Refuse("ownership_or_cleanup_uncertain");
-        var summary = new
+        if (started && !initialMatch) return Refuse("initial_ownership_uncertain", nativeFailurePhase, nativeFailureCode);
+        if (started && (!stopAttempted || !stopConfirmed))
+            return Refuse("ownership_or_stop_uncertain", nativeFailurePhase, nativeFailureCode);
+        if (started && initialMatch && !probeTerminalCertain)
+            return Refuse("job_terminal_uncertain", nativeFailurePhase, nativeFailureCode);
+        if (censusAttempted && !censusTerminalCertain)
+            return Refuse("census_terminal_uncertain", nativeFailurePhase, nativeFailureCode);
+        if (!cleanupCertain) return Refuse("cleanup_uncertain", nativeFailurePhase, nativeFailureCode);
+        try
         {
-            schemaVersion = "lexrunner-windows-owned-etw-manual/1",
-            result = reason == "calibration_observed" ? "calibration_observed" : "refused",
-            reasonCode = reason,
-            sourceHead = expectedHead,
-            runId,
-            runAttempt,
-            runnerImage = Environment.GetEnvironmentVariable("ImageOS") ?? "",
-            runnerImageVersion = Environment.GetEnvironmentVariable("ImageVersion") ?? "",
-            hostOS = Environment.OSVersion.VersionString,
-            diagnosticImageSha256 = ShaFile(Environment.ProcessPath!),
-            expectedGitSha256 = expectedGitSha,
-            sessionGuid = identity?.Guid,
-            traceStarted = started,
-            traceStopAttempted = stopAttempted,
-            traceStopped = stopConfirmed,
-            fixedCommand = "git.exe --version",
-            commandCwd = "RUNNER_TEMP/" + Path.GetFileName(scratch),
-            gitFixtureImageSha256 = ShaFile(Path.Combine(AppContext.BaseDirectory,
-                "git-fixture", "LexRunner.WindowsCoordinator.Git.exe")),
-            rootProcessId = probe?.RootProcessId,
-            rootCreationFileTimeUtc = probe?.RootCreationFileTimeUtc,
-            gitDurationMs = probe?.DurationMs,
-            jobTotalProcesses = probe?.JobTotalProcesses,
-            jobAssignedAtCreation = probe?.JobAssignedAtCreation,
-            jobTerminalDrained = probe?.TerminalJobDrained,
-            gitExitCode = probe?.ExitCode,
-            etlBytes,
-            etlSha256 = etlSha,
-            liveLoss = Loss(initial),
-            finalLiveLoss = Loss(final),
-            stoppedLoss = Loss(stopped),
-            headerEventsLost = census?.HeaderEventsLost,
-            headerBuffersLost = census?.HeaderBuffersLost,
-            headerEndTimeValid = census?.HeaderEndTimeValid,
-            censusReasonCode = census?.ReasonCode,
-            censusEventCount = census?.EventCount,
-            schemas = census?.Schemas,
-            durationMs = watch.ElapsedMilliseconds,
-            rawEtlDeleted = true,
-            cleanupCertain = true,
-            authorizesLoaderClosure = false,
-            authorizesExecution = false,
-            helperMissingCleared = false,
-            productionReady = false,
-        };
-        var bytes = StrictUtf8.GetBytes(JsonSerializer.Serialize(summary) + "\n");
-        if (bytes.Length > MaxSummaryBytes) return Refuse("summary_bounds_refused");
-        var output = Path.Combine(workspace!, "artifacts", "windows-owned-etw-manual",
-            $"{runId}-{runAttempt}");
-        if (Directory.Exists(output) || File.Exists(output))
-            return Refuse("summary_output_occupied");
-        Directory.CreateDirectory(output);
-        var summaryPath = Path.Combine(output, "summary.json");
-        using (var stream = new FileStream(summaryPath, FileMode.CreateNew,
-            FileAccess.Write, FileShare.None))
-            stream.Write(bytes);
-        Console.WriteLine(JsonSerializer.Serialize(new
-        {
-            schemaVersion = "lexrunner-owned-etw-manual-status/1",
-            result = summary.result,
-            reasonCode = reason,
-            summarySha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
-            rawEtlDeleted = true,
-            authorizesLoaderClosure = false,
-            authorizesExecution = false,
-        }));
-        return reason == "calibration_observed" ? 0 : 3;
+            var summary = new
+            {
+                schemaVersion = "lexrunner-windows-owned-etw-manual/1",
+                result = reason == "calibration_observed" ? "calibration_observed" : "refused",
+                reasonCode = reason,
+                sourceHead = expectedHead,
+                runId,
+                runAttempt,
+                runnerImage = Environment.GetEnvironmentVariable("ImageOS") ?? "",
+                runnerImageVersion = Environment.GetEnvironmentVariable("ImageVersion") ?? "",
+                hostOS = Environment.OSVersion.VersionString,
+                diagnosticImageSha256 = ShaFile(Environment.ProcessPath!),
+                expectedGitSha256 = expectedGitSha,
+                sessionGuid = identity?.Guid,
+                traceStarted = started,
+                traceStopAttempted = stopAttempted,
+                traceStopped = stopConfirmed,
+                fixedCommand = "git.exe --version",
+                commandCwd = "RUNNER_TEMP/" + Path.GetFileName(scratch),
+                gitFixtureImageSha256 = ShaFile(Path.Combine(AppContext.BaseDirectory,
+                    "git-fixture", "LexRunner.WindowsCoordinator.Git.exe")),
+                rootProcessId = probe?.RootProcessId,
+                rootCreationFileTimeUtc = probe?.RootCreationFileTimeUtc,
+                gitDurationMs = probe?.DurationMs,
+                jobTotalProcesses = probe?.JobTotalProcesses,
+                jobAssignedAtCreation = probe?.JobAssignedAtCreation,
+                jobTerminalDrained = probe?.TerminalJobDrained,
+                gitExitCode = probe?.ExitCode,
+                etlBytes,
+                etlSha256 = etlSha,
+                liveLoss = Loss(initial),
+                finalLiveLoss = Loss(final),
+                stoppedLoss = Loss(stopped),
+                headerEventsLost = census?.HeaderEventsLost,
+                headerBuffersLost = census?.HeaderBuffersLost,
+                headerEndTimeValid = census?.HeaderEndTimeValid,
+                censusReasonCode = census?.ReasonCode,
+                censusEventCount = census?.EventCount,
+                schemas = census?.Schemas,
+                durationMs = watch.ElapsedMilliseconds,
+                rawEtlDeleted = true,
+                cleanupCertain = true,
+                authorizesLoaderClosure = false,
+                authorizesExecution = false,
+                helperMissingCleared = false,
+                productionReady = false,
+            };
+            var bytes = StrictUtf8.GetBytes(JsonSerializer.Serialize(summary) + "\n");
+            if (bytes.Length > MaxSummaryBytes) return Refuse("summary_bounds_refused", nativeFailurePhase, nativeFailureCode);
+            var output = Path.Combine(workspace!, "artifacts", "windows-owned-etw-manual",
+                $"{runId}-{runAttempt}");
+            if (Directory.Exists(output) || File.Exists(output))
+                return Refuse("summary_output_occupied", nativeFailurePhase, nativeFailureCode);
+            Directory.CreateDirectory(output);
+            var summaryPath = Path.Combine(output, "summary.json");
+            using (var stream = new FileStream(summaryPath, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None))
+                stream.Write(bytes);
+            ManualCaptureDiagnostic.Emit("summary", summary.result, reason,
+                Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+                nativeFailurePhase, nativeFailureCode);
+            return reason == "calibration_observed" ? 0 : 3;
+        }
+        catch { return Refuse("summary_write_unavailable", nativeFailurePhase, nativeFailureCode); }
     }
 
     internal static bool ValidArguments(string[] args, out string? head,
@@ -252,38 +262,43 @@ internal static class CaptureCalibration
             !read.AuthorizesLoaderClosure && !read.AuthorizesExecution;
     }
 
-    private static bool TryPreflight(string? head, string? gitSha,
-        out string? runnerTemp,
-        out string? workspace, out string? runId, out string? runAttempt)
+    private static string? Preflight(string? head, string? gitSha,
+        out string? runnerTemp, out string? workspace, out string? runId,
+        out string? runAttempt)
     {
-        runnerTemp = Environment.GetEnvironmentVariable("RUNNER_TEMP");
-        workspace = Environment.GetEnvironmentVariable("GITHUB_WORKSPACE");
-        runId = Environment.GetEnvironmentVariable("GITHUB_RUN_ID");
-        runAttempt = Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT");
-        if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess ||
-            Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
-            Environment.GetEnvironmentVariable("GITHUB_EVENT_NAME") != "workflow_dispatch" ||
-            Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "SmarterGPT/lexrunner" ||
-            Environment.GetEnvironmentVariable("GITHUB_REF") != "refs/heads/main" ||
-            Environment.GetEnvironmentVariable("GITHUB_SHA") != head ||
-            Environment.GetEnvironmentVariable("RUNNER_OS") != "Windows" ||
-            Environment.GetEnvironmentVariable("RUNNER_ARCH") != "X64" ||
-            Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") != "github-hosted" ||
-            !Path.IsPathFullyQualified(runnerTemp ?? "") ||
-            !Path.IsPathFullyQualified(workspace ?? "") ||
-            !ulong.TryParse(runId, out _) || !uint.TryParse(runAttempt, out _) ||
-            !IsElevatedAdministrator() || !NativeTraceAdapter.LayoutIsExpected())
-            return false;
-        try
+        var temp = Environment.GetEnvironmentVariable("RUNNER_TEMP");
+        var work = Environment.GetEnvironmentVariable("GITHUB_WORKSPACE");
+        var id = Environment.GetEnvironmentVariable("GITHUB_RUN_ID");
+        var attempt = Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT");
+        runnerTemp = temp; workspace = work; runId = id; runAttempt = attempt;
+        return ManualCaptureDiagnostic.FirstFailure(check => check switch
         {
-            return Directory.Exists(runnerTemp) && Directory.Exists(workspace) &&
-                NoReparseAncestors(runnerTemp) && NoReparseAncestors(workspace) &&
-                gitSha is not null &&
-                ShaFile(@"C:\Program Files\Git\bin\git.exe") == gitSha &&
-                File.Exists(Path.Combine(AppContext.BaseDirectory, "git-fixture",
-                    "LexRunner.WindowsCoordinator.Git.exe"));
-        }
-        catch { return false; }
+            "os" => OperatingSystem.IsWindows(),
+            "x64" => Environment.Is64BitProcess && IntPtr.Size == 8 &&
+                System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
+                    System.Runtime.InteropServices.Architecture.X64,
+            "event" => Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true" &&
+                Environment.GetEnvironmentVariable("GITHUB_EVENT_NAME") == "workflow_dispatch" &&
+                Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") == "SmarterGPT/lexrunner" &&
+                Environment.GetEnvironmentVariable("GITHUB_REF") == "refs/heads/main",
+            "source_head" => Environment.GetEnvironmentVariable("GITHUB_SHA") == head,
+            "runner_identity" => Environment.GetEnvironmentVariable("RUNNER_OS") == "Windows" &&
+                Environment.GetEnvironmentVariable("RUNNER_ARCH") == "X64" &&
+                Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") == "github-hosted",
+            "numeric_ids" => ulong.TryParse(id, out var parsedId) && parsedId > 0 &&
+                uint.TryParse(attempt, out var parsedAttempt) && parsedAttempt > 0,
+            "elevation" => IsElevatedAdministrator(),
+            "native_layout" => NativeTraceAdapter.LayoutIsExpected(),
+            "runner_temp_root" => Path.IsPathFullyQualified(temp ?? "") &&
+                Directory.Exists(temp) && NoReparseAncestors(temp),
+            "workspace_root" => Path.IsPathFullyQualified(work ?? "") &&
+                Directory.Exists(work) && NoReparseAncestors(work),
+            "git_image_digest" => gitSha is not null &&
+                ShaFile(@"C:\Program Files\Git\bin\git.exe") == gitSha,
+            "fixture_image" => File.Exists(Path.Combine(AppContext.BaseDirectory,
+                "git-fixture", "LexRunner.WindowsCoordinator.Git.exe")),
+            _ => false,
+        });
     }
 
     private static bool IsElevatedAdministrator()
@@ -519,21 +534,11 @@ internal static class CaptureCalibration
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 
-    internal static int RefuseNoTrace(string reason) => Refuse(reason);
+    internal static int RefuseNoTrace(string reason) =>
+        ManualCaptureDiagnostic.Refuse("preflight", reason);
 
-    private static int Refuse(string reason)
-    {
-        Console.WriteLine(JsonSerializer.Serialize(new
-        {
-            schemaVersion = "lexrunner-owned-etw-manual-status/1",
-            result = "refused",
-            reasonCode = reason,
-            rawEtlDeleted = false,
-            authorizesLoaderClosure = false,
-            authorizesExecution = false,
-        }));
-        return 3;
-    }
+    private static int Refuse(string reason, string? nativePhase = null, uint? nativeCode = null) =>
+        ManualCaptureDiagnostic.Refuse("capture", reason, nativePhase, nativeCode);
 
     private sealed record VersionProbe(bool Observed, uint RootProcessId,
         long RootCreationFileTimeUtc, uint JobTotalProcesses,
