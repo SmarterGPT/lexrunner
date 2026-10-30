@@ -163,3 +163,26 @@ The declared x64 layout, allocation and exact-handle query form are unchanged.
 The diagnostics distinguish raw API failure from rejected returned properties;
 they do not establish which occurred on run40994639904. A started trace with
 an uncertain initial query still receives no STOP, summary or upload claim.
+
+### Explicit hybrid-shutdown behavior
+
+Run40998465985/job123877038320 at15a827c returned native success and a sole
+mode mismatch: observed0x02400001 versus requested0x02000001; the flags and
+other identity checks matched. The fixed diagnostic profile now explicitly
+requests sequential file + system logger + STOP_ON_HYBRID_SHUTDOWN, exactly
+0x02400001. Microsoft documents that when neither STOP nor PERSIST is supplied,
+ETW chooses a hybrid-shutdown default according to Session0. The installed
+Windows SDK10.0.26100 evntrace.h defines STOP as0x00400000. See:
+https://learn.microsoft.com/en-us/windows/win32/etw/logging-mode-constants
+
+The capture request, native preflight, ownership observations, diagnostic
+consistency grammar and offline ETL-header profile all require the same fixed
+mode. No mode mask, normalization or alternative-mode allowlist is used.
+Pure controls reject the old implicit mode, PERSIST instead, both hybrid bits,
+an unknown mode bit, missing sequential mode, conflicting file-mode bits,
+and an unknown EnableFlags bit. The status may report mismatching numeric mode
+values only with the corresponding identity mismatch bit; that remains refusal.
+Exact handle/name/GUID/path/mode/flags comparisons and STOP eligibility are
+unchanged. This source correction does not prove new host calibration or cleanup
+of the older uncertain trace; summary, loss, deletion, upload and capture bounds
+remain unchanged. No local trace was started for these pure controls.

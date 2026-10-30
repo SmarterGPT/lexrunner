@@ -10,7 +10,7 @@ using System.Text.Json;
 internal static class CaptureCalibration
 {
     private const string SessionName = "LexRunner Windows Git Loader Qualification";
-    private const uint Mode = 0x02000001;
+    private const uint Mode = 0x02400001;
     private const uint Flags = 0x06000307;
     private const long MaxEtlBytes = 128L * 1024 * 1024;
     private const int MaxSummaryBytes = 8192;
