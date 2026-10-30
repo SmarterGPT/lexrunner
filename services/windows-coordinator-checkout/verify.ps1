@@ -87,6 +87,7 @@ $sourceFiles = @(
     'services/windows-coordinator-checkout/HeldCheckout.cs',
     'services/windows-coordinator-checkout/verify.ps1',
     'services/windows-coordinator-git/BoundedGitChild.cs',
+    'services/windows-coordinator-git/ManualEtwGitProfile.cs',
     'services/windows-coordinator-git/GitBundleImport.cs',
     'services/windows-coordinator-git/GitWorktreeStage.cs',
     'services/windows-coordinator-git/GraphSelectedGitProfile.cs',

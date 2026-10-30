@@ -72,6 +72,7 @@ $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $dotnet = (Get-Command dotnet.exe -ErrorAction Stop).Source
 $sourcePaths = @(
     'services/windows-coordinator-git/BoundedGitChild.cs',
+    'services/windows-coordinator-git/ManualEtwGitProfile.cs',
     'services/windows-coordinator-git/GitBundleImport.cs',
     'services/windows-coordinator-git/GitWorktreePublish.cs',
     'services/windows-coordinator-git/GitWorktreeStage.cs',
