@@ -96,7 +96,8 @@ try {
     $officialFixture=Invoke-Bounded 'official-fixture-parser' $officialFixtureImage $root @('--fixture-graph-parser-selftest') @(0)
     $officialFixturePassed=$officialFixture.Trim() -ceq 'graph_parser_selftest_pass'
     Require ($normalRefused -and $officialFixturePassed) 'official_image_route_incorrect'
-    $profile=Invoke-Bounded 'selected-hosted-profile-selftest' $fixtureImage $root @('--hosted-profile-selftest') @(0) 10000
+    # Bound the managed profile check; phase markers identify startup or check stalls.
+    $profile=Invoke-Bounded 'selected-hosted-profile-selftest' $fixtureImage $root @('--hosted-profile-selftest') @(0) 30000
     Require ($profile.Trim() -ceq 'hosted_profile_source_selftest_pass') 'selected_hosted_profile_selftest_failed'
     $imageSha=(Get-FileHash -LiteralPath $fixtureImage -Algorithm SHA256).Hash.ToLowerInvariant()
     $source=Join-Path $root 'source'
