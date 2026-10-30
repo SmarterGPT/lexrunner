@@ -11,6 +11,14 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args is ["--query-diagnostic-selftest"])
+        {
+            var queryCases = QueryDiagnostic.SelfTest();
+            var queryPassed = queryCases.All(value => value.Passed);
+            Console.WriteLine(JsonSerializer.Serialize(new { result = queryPassed ? "pass" : "refused",
+                cases = queryCases, samples = QueryDiagnostic.WireSamples(), authorizesExecution = false }));
+            return queryPassed ? 0 : 3;
+        }
         if (args is ["--preflight-selftest"])
         {
             var preflightCases = ManualCaptureDiagnostic.SelfTest();
@@ -244,7 +252,7 @@ internal sealed record TraceIdentity(string Name, Guid Guid, string EtlPath, uin
 internal sealed record TraceObservation(string Name, Guid Guid, string EtlPath, uint Mode,
     uint Flags, uint EventsLost, uint LogBuffersLost, uint RealTimeBuffersLost);
 internal sealed record StartResult(uint Code, ulong Handle);
-internal sealed record QueryResult(uint Code, TraceObservation? Observation);
+internal sealed record QueryResult(uint Code, TraceObservation? Observation, QueryDiagnostic? Diagnostic = null);
 internal sealed record StopResult(uint Code, TraceObservation? Observation = null);
 internal sealed record TraceDisposition(string ReasonCode, bool StopAttempted,
     bool StopConfirmed, bool HasLiveLoss, bool AuthorizesLoaderClosure, bool AuthorizesExecution);

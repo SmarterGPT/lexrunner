@@ -107,7 +107,7 @@ summary sets `authorizesLoaderClosure=false`,
 The first active hosted run40985948951 at reviewed main d61 refused before a
 summary became available. Its captured status was not logged, so its exact cause
 is unknown; `manual_summary_missing` is not evidence of a particular ETW failure.
-The controller now logs only a validated status/2 reason and phase. Preflight
+The controller now logs only a validated status/3 reason and phase. Preflight
 checks run in fixed order and report the first failed OS/x64/event/head/runner/
 ID/elevation/layout/root/digest/fixture component. Exceptions map to that same
 finite component code; no environment values, paths or exception text are copied.
@@ -123,7 +123,7 @@ Every refusal still fails the workflow. No diagnostic retries Start/Stop, sweeps
 logger names, or repairs uncertain cleanup. Raw ETL never uploads.
 
 When Start/Query/Stop returns a failing observation, the status also carries only
-its observed unsigned32-bit native code and one fixed phase (`start`,
+its unsigned32-bit adapter result code (which may be synthetic) and one fixed phase (`start`,
 `initial_query`, `final_query`, or `stop`). An exception does not manufacture a code; the fields stay null unless a
 failed native observation was already recorded.
 The controller logs those values only after exact type/range/phase validation;
@@ -132,3 +132,34 @@ STOP, deletion or successful capture. No system error message is copied. The
 source sanitizer includes49 positive and forged/noisy/encoding controls.
 
 The status writer and sanitizer reject cross-field contradictions: calibration success has no native failure fields, and ownership, STOP, Job, census or cleanup uncertainty never supplies a summary. Only failed Start with an observed nonzero code can retain native failure fields in a deletion-proven refused summary. Pure controls cover every uncertainty reason, all four native phases with success, and incompatible refusal/native pairs.
+
+The manual status/3 diagnostic adds an optional `queryDiagnostic` object for
+initial/final query refusals only. Existing `nativeCode` remains the adapter
+result (which can be synthetic); `nativeResultCode` is the actual ControlTrace
+return only when the call completed. A null native result means no native
+return was observed. Fixed stages distinguish precheck, import, native, parse,
+identity and lifecycle-gate refusal. Fixed parser reasons distinguish capacity,
+logger/file offset, bounds, empty and termination failures. The identity mask
+uses name=1, GUID=2, ETL path=4, mode=8 and flags=16, computed inside the same
+ownership lock with the same exact comparisons. Only numeric mode/flags may
+accompany identity/gate failures. No names, paths, GUIDs, handles, buffers or
+exception messages cross the status boundary. This does not explain the prior
+code13 or weaken matching, STOP ownership, summary deletion or upload gates.
+
+The strict writer and sanitizer validate the same finite cross-field grammar.
+Actual native13 is distinguishable from native success followed by synthetic13.
+Pure query diagnostic controls do not invoke ETW; the same source verifier runs
+them under a separate bounded command. The capture status remains capped at
+2048 bytes, source receipt at8192 bytes, and query selftest output at8192 bytes.
+
+Primary API references used for this diagnostic contract:
+
+- https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew
+- https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties
+- https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew
+- https://learn.microsoft.com/en-us/windows/win32/etw/wnode-header
+
+The declared x64 layout, allocation and exact-handle query form are unchanged.
+The diagnostics distinguish raw API failure from rejected returned properties;
+they do not establish which occurred on run40994639904. A started trace with
+an uncertain initial query still receives no STOP, summary or upload claim.
