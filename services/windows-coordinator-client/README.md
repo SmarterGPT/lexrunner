@@ -17,11 +17,14 @@ selected catalog including both fixed service names and image digests, and compa
 two structural snapshots. After that candidate, it derives the fixed Program Files
 generation path from the native system volume. It opens and holds each directory
 from the volume root through `service` using a parent handle and fixed child
-name, then opens the manifest and both fixed service images relative to held
-parents without write/delete sharing. Each opened object must be non-reparse,
+name, then retains the manifest and every graph-selected file (including Node,
+JavaScript, addons, helper, Git and DLL/support files) relative to held parents
+without write/delete sharing. It caches shared directory prefixes with a maximum
+of 5,633 graph-directory entries. Each opened object must be non-reparse,
 have a nonzero full file ID on the same volume, and report its exact final
-path. It rechecks the ancestry before returning and compares graph and image
-bytes against the v3 roles,
+path. It compares exact member lengths/SHA256 against the parsed graph, refuses
+repeated physical leaf identities, and rechecks ancestry, manifest and all member
+bytes before returning. It
 observes both fixed SCM configurations, then rereads selection and SCM. The
 result is only a
 bounded diagnostic reason: even a structural match still reports
@@ -29,7 +32,7 @@ bounded diagnostic reason: even a structural match still reports
 The old v1 and v2 observations remain isolated as source/reference fixtures.
 The initial MSI authors no v3 selection or catalog. This v3 observation does
 not authenticate the publisher, retain an independent high-water across upgrades, close the
-full loader/support graph, bind running process images/tokens to the held files,
+loader resolution/loaded modules beyond the supplied graph, bind running process images/tokens to the held files,
 or prove cross-account access. Local NTFS and ReFS fixtures observed
 `STATUS_SHARING_VIOLATION` on read-only `DELETE`-access probes against held
 generation and image files; the promotion fixture dispatched no rename or
@@ -89,6 +92,31 @@ after releasing the handles would reenter a same-user mutable namespace. The
 ordinary image excludes this route. Local runs on this host covered ReFS on
 `D:` and NTFS on `C:`; hosted tests must report their observed filesystems
 rather than imply both.
+
+The fullgraph owner accepts one synchronous acquisition. A partial native open,
+manifest/member mismatch or physical alias faults and closes the entire owner;
+it cannot be retried. Acquisition, verification, bounded byte reads and Dispose
+serialize under the same gate. Dispose waits for an in-flight graph operation.
+No graph FileStream or SafeHandle escapes: ReadGraphMember reads at most32KiB
+into a caller buffer using the retained member, and refuses after disposal.
+The legacy structural OpenManifest/OpenCoordinator/OpenWorker streams still own
+their own leaf handles; they are not generation capabilities. Future synchronous
+WinTrust hFile/process binding must consume retained handles under this owner's
+gate/lifetime without escaping borrowed references. Byte reads do not replace
+that native custody or complete trusted launch. Share modes are not an ACL,
+publisher/history, mapped-writer exclusion or signer qualification.
+
+The separate fixture-only --v3-held-graph-fixture-selftest uses twelve tiny members
+covering every role and nested/shared directories. Its eighteen cases (nine each
+under the fixture image and process temp parents) exercise actual file/ancestor
+rename and write refusal during custody, release after disposal, late hash/size/
+missing-file partial failure, same-file hardlink alias, dot alias, an owned
+directory junction and acquisition/read versus Dispose serialization. It retains
+nonce-marked directories, including the owned junction; no path cleanup follows
+released custody. It changes no installed path, service, ACL, registry or trust
+store and executes none of the synthetic executable-named files. Host filesystems
+are reported as observed, not inferred from drive letters. Fixture APIs and
+routes are absent from normal builds, which continue to report helper_missing.
 
 On native Windows with the .NET 8 SDK and npm dependencies, run:
 

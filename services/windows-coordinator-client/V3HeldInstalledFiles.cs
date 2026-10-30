@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
 namespace LexRunner.WindowsCoordinator.Client;
@@ -37,6 +38,17 @@ internal sealed class V3HeldInstalledFiles : IDisposable
     private readonly List<HeldDirectory> _directories;
     private readonly SafeFileHandle _generation;
     private readonly SafeFileHandle _service;
+    private readonly SafeFileHandle _generationParent;
+    private readonly object _gate = new();
+    // GraphV3 permits at most512 files, each with at most11 directory components.
+    // Include the generation cache entry; shared prefixes consume one handle.
+    private const int MaxGraphDirectories = 1 + 512 * 11;
+    private readonly List<HeldMember> _heldGraphMembers = [];
+    private FileStream? _heldManifest;
+    private HeldIdentity _manifestIdentity;
+    private string? _manifestSha256;
+    private int _manifestLength;
+    private Dictionary<string, HeldMember>? _graphFiles;
     private bool _disposed;
 
     private V3HeldInstalledFiles(List<HeldDirectory> directories, string generationPath,
@@ -46,6 +58,7 @@ internal sealed class V3HeldInstalledFiles : IDisposable
         GenerationPath = generationPath;
         _generation = generation;
         _service = service;
+        _generationParent = directories[^3].Handle;
     }
 
     internal string GenerationPath { get; }
@@ -71,6 +84,9 @@ internal sealed class V3HeldInstalledFiles : IDisposable
     // Fixture-only pause after the native root handle has an owned reference.
     internal static Action? FixtureAfterParentAddRef;
     internal static Action<SafeFileHandle>? FixtureBeforeRootObserve;
+    internal static Action<SafeFileHandle>? FixtureOnOwnedHandle;
+    internal static Action<string>? FixtureBeforeGraphMemberHash;
+    internal static Action? FixtureBeforeGraphRead;
 
     // Only a separately compiled fixture image can select a disposable root.
     internal static V3HeldInstalledFiles OpenFixture(string root, string generationId)
@@ -106,6 +122,9 @@ internal sealed class V3HeldInstalledFiles : IDisposable
 #endif
                 rootIdentity = Observe(rootHandle, root, true, null);
                 directories.Add(new HeldDirectory(rootHandle, root, rootIdentity));
+#if COORDINATOR_CLIENT_FIXTURE_TESTS
+                FixtureOnOwnedHandle?.Invoke(rootHandle);
+#endif
             }
             catch { rootHandle.Dispose(); throw; }
             var path = root;
@@ -119,6 +138,9 @@ internal sealed class V3HeldInstalledFiles : IDisposable
                 {
                     var identity = Observe(handle, path, true, rootIdentity.Volume);
                     directories.Add(new HeldDirectory(handle, path, identity));
+#if COORDINATOR_CLIENT_FIXTURE_TESTS
+                    FixtureOnOwnedHandle?.Invoke(handle);
+#endif
                 }
                 catch { handle.Dispose(); throw; }
             }
@@ -164,7 +186,15 @@ internal sealed class V3HeldInstalledFiles : IDisposable
 
     internal void VerifyUnchanged()
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(V3HeldInstalledFiles));
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            VerifyAncestryCore();
+        }
+    }
+
+    private void VerifyAncestryCore()
+    {
         foreach (var row in _directories)
         {
             var current = Observe(row.Handle, row.Path, true, row.Identity.Volume);
@@ -173,12 +203,203 @@ internal sealed class V3HeldInstalledFiles : IDisposable
         }
     }
 
+    // One synchronous acquisition per owner. All selected files and their complete
+    // directory ancestry remain private to this owner until Dispose. This is
+    // supplied-graph byte/namespace comparison only, never installed authority.
+    internal void AcquireGraph(GraphV3 graph)
+    {
+        ArgumentNullException.ThrowIfNull(graph);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_graphFiles is not null) throw new InvalidOperationException("graph_already_acquired");
+            try
+            {
+                var selected = graph.Files.ToArray();
+                if (graph.GenerationId != Path.GetFileName(GenerationPath) || selected.Length is < 8 or > 512)
+                    throw new V3HeldPathException("graph_mismatch");
+                long total = 0;
+                foreach (var file in selected)
+                {
+                    if (!GraphV3.SafePath(file.Path) || !GraphV3.ValidHex(file.Sha256) || file.Bytes <= 0)
+                        throw new V3HeldPathException("graph_invalid");
+                    total = checked(total + file.Bytes);
+                    if (total > 2L * 1024 * 1024 * 1024) throw new V3HeldPathException("graph_invalid");
+                }
+                _heldManifest = OpenManifest();
+#if COORDINATOR_CLIENT_FIXTURE_TESTS
+                FixtureOnOwnedHandle?.Invoke(_heldManifest.SafeFileHandle);
+#endif
+                if (_heldManifest.Length is < 1 or > 262144) throw new V3HeldPathException("graph_invalid");
+                var manifestBytes = new byte[(int)_heldManifest.Length];
+                _heldManifest.ReadExactly(manifestBytes);
+                if (_heldManifest.Length != manifestBytes.Length) throw new V3HeldPathException("graph_changed");
+                var retainedGraph = GraphV3.Parse(manifestBytes, graph.ManifestSha256);
+                if (retainedGraph.GenerationId != graph.GenerationId || !retainedGraph.Files.SequenceEqual(selected))
+                    throw new V3HeldPathException("graph_mismatch");
+                _heldManifest.Position = 0;
+                _manifestSha256 = graph.ManifestSha256;
+                _manifestLength = manifestBytes.Length;
+                var generation = _directories.Single(row => ReferenceEquals(row.Handle, _generation));
+                var service = _directories.Single(row => ReferenceEquals(row.Handle, _service));
+                var cache = new Dictionary<string, HeldDirectory>(StringComparer.OrdinalIgnoreCase) {
+                    [""] = generation, ["service"] = service,
+                };
+                var files = new Dictionary<string, HeldMember>(StringComparer.Ordinal);
+                var manifestIdentity = Observe(_heldManifest.SafeFileHandle,
+                    Path.Combine(GenerationPath, "generation-graph.json"), false, generation.Identity.Volume);
+                _manifestIdentity = manifestIdentity;
+                var identities = new HashSet<(ulong Volume, ulong Low, ulong High)> {
+                    (manifestIdentity.Volume, manifestIdentity.Low, manifestIdentity.High),
+                };
+                foreach (var file in selected)
+                {
+                    ThrowIfDisposed();
+                    var parts = file.Path.Split('/');
+                    var parent = generation;
+                    var key = "";
+                    for (var index = 0; index < parts.Length - 1; index++)
+                    {
+                        key = key.Length == 0 ? parts[index] : key + "/" + parts[index];
+                        if (!cache.TryGetValue(key, out var directory))
+                        {
+                            if (cache.Count >= MaxGraphDirectories) throw new V3HeldPathException("graph_directory_budget");
+                            var path = Path.Combine(parent.Path, parts[index]);
+                            var handle = OpenRelative(parent.Handle, parts[index], true);
+                            try
+                            {
+                                var identity = Observe(handle, path, true, generation.Identity.Volume);
+                                directory = new HeldDirectory(handle, path, identity);
+                                _directories.Add(directory);
+#if COORDINATOR_CLIENT_FIXTURE_TESTS
+                                FixtureOnOwnedHandle?.Invoke(handle);
+#endif
+                                cache.Add(key, directory);
+                            }
+                            catch { handle.Dispose(); throw; }
+                        }
+                        parent = directory;
+                    }
+                    var expectedPath = Path.Combine(parent.Path, parts[^1]);
+                    var leaf = OpenRelative(parent.Handle, parts[^1], false);
+                    FileStream? stream = null;
+                    var owned = false;
+                    try
+                    {
+                        var identity = Observe(leaf, expectedPath, false, generation.Identity.Volume);
+                        stream = new FileStream(leaf, FileAccess.Read);
+                        var member = new HeldMember(file, expectedPath, stream, identity);
+                        _heldGraphMembers.Add(member);
+                        owned = true;
+#if COORDINATOR_CLIENT_FIXTURE_TESTS
+                        FixtureOnOwnedHandle?.Invoke(leaf);
+                        FixtureBeforeGraphMemberHash?.Invoke(file.Path);
+#endif
+                        ThrowIfDisposed();
+                        if (!identities.Add((identity.Volume, identity.Low, identity.High)))
+                            throw new V3HeldPathException("graph_file_alias");
+                        CompareMember(member);
+                        files.Add(file.Path, member);
+                    }
+                    catch
+                    {
+                        if (!owned) { if (stream is null) leaf.Dispose(); else stream.Dispose(); }
+                        throw;
+                    }
+                }
+                ThrowIfDisposed();
+                VerifyAncestryCore();
+                _graphFiles = files;
+            }
+            catch
+            {
+                // A partial graph is never reusable. Close leaves before ancestry;
+                // no fresh observation/retry can turn this owner into success.
+                CloseCore();
+                throw;
+            }
+        }
+    }
+
+    // No FileStream/SafeHandle escapes. Each bounded read keeps the whole owner
+    // alive under the same gate; a caller cannot use a borrowed handle after close.
+    // Future native verification must add scoped synchronous hFile consumption
+    // under this lifetime, not substitute these byte reads for trusted launch.
+    internal int ReadGraphMember(string relativePath, long offset, Span<byte> buffer)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_graphFiles is null) throw new InvalidOperationException("graph_not_acquired");
+            if (!_graphFiles.TryGetValue(relativePath, out var member)) throw new ArgumentException("unselected_graph_member");
+            if (offset < 0 || offset > member.Selected.Bytes || buffer.Length > 32768)
+                throw new ArgumentOutOfRangeException(nameof(offset));
+            try
+            {
+#if COORDINATOR_CLIENT_FIXTURE_TESTS
+                FixtureBeforeGraphRead?.Invoke();
+#endif
+                ThrowIfDisposed();
+                var count = (int)Math.Min(buffer.Length, member.Selected.Bytes - offset);
+                var read = RandomAccess.Read(member.Stream.SafeFileHandle, buffer[..count], offset);
+                if (read != count || member.Stream.Length != member.Selected.Bytes)
+                    throw new V3HeldPathException("graph_file_changed");
+                return read;
+            }
+            catch { CloseCore(); throw; }
+        }
+    }
+
+    internal void VerifyGraphUnchanged()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_graphFiles is null) throw new InvalidOperationException("graph_not_acquired");
+            try
+            {
+                VerifyAncestryCore();
+                if (_heldManifest is null ||
+                    Observe(_heldManifest.SafeFileHandle, Path.Combine(GenerationPath, "generation-graph.json"),
+                        false, _manifestIdentity.Volume) != _manifestIdentity || _heldManifest.Length != _manifestLength)
+                    throw new V3HeldPathException("graph_changed");
+                _heldManifest.Position = 0;
+                var manifestHash = Convert.ToHexString(SHA256.HashData(_heldManifest)).ToLowerInvariant();
+                if (_heldManifest.Length != _manifestLength || manifestHash != _manifestSha256)
+                    throw new V3HeldPathException("graph_changed");
+                _heldManifest.Position = 0;
+                foreach (var member in _heldGraphMembers)
+                {
+                    if (Observe(member.Stream.SafeFileHandle, member.Path, false, member.Identity.Volume) != member.Identity)
+                        throw new V3HeldPathException("graph_file_changed");
+                    CompareMember(member);
+                }
+            }
+            catch { CloseCore(); throw; }
+        }
+    }
+
+    private static void CompareMember(HeldMember member)
+    {
+        if (member.Stream.Length != member.Selected.Bytes) throw new V3HeldPathException("graph_file_mismatch");
+        member.Stream.Position = 0;
+        var hash = Convert.ToHexString(SHA256.HashData(member.Stream)).ToLowerInvariant();
+        if (member.Stream.Length != member.Selected.Bytes || hash != member.Selected.Sha256)
+            throw new V3HeldPathException("graph_file_mismatch");
+        member.Stream.Position = 0;
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(V3HeldInstalledFiles));
+    }
+
 #if COORDINATOR_CLIENT_FIXTURE_TESTS
     // Read-only access probes. No rename or deletion is dispatched.
     internal (int Generation, int Coordinator) ProbeDeleteAccess()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(V3HeldInstalledFiles));
-        return (ProbeDelete(_directories[^3].Handle, Path.GetFileName(GenerationPath), true),
+        return (ProbeDelete(_generationParent, Path.GetFileName(GenerationPath), true),
             ProbeDelete(_service, "LexRunner.WindowsCoordinator.Service.exe", false));
     }
 
@@ -205,10 +426,25 @@ internal sealed class V3HeldInstalledFiles : IDisposable
 
     public void Dispose()
     {
+        lock (_gate) CloseCore();
+    }
+
+    private void CloseCore()
+    {
         if (_disposed) return;
         _disposed = true;
+        Exception? failure = null;
+        void Close(IDisposable value)
+        {
+            try { value.Dispose(); }
+            catch (Exception error) { failure ??= error; }
+        }
+        for (var index = _heldGraphMembers.Count - 1; index >= 0; index--)
+            Close(_heldGraphMembers[index].Stream);
+        if (_heldManifest is not null) Close(_heldManifest);
         for (var index = _directories.Count - 1; index >= 0; index--)
-            _directories[index].Handle.Dispose();
+            Close(_directories[index].Handle);
+        if (failure is not null) throw failure;
     }
 
     private static SafeFileHandle OpenRelative(SafeFileHandle parent, string name, bool directory)
@@ -238,11 +474,12 @@ internal sealed class V3HeldInstalledFiles : IDisposable
             MaximumLength = checked((ushort)((name.Length + 1) * 2)),
             Buffer = nameBytes,
         };
-        var stringPointer = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>());
-        Marshal.StructureToPtr(stringValue, stringPointer, false);
+        var stringPointer = IntPtr.Zero;
         var parentReferenceAdded = false;
         try
         {
+            stringPointer = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>());
+            Marshal.StructureToPtr(stringValue, stringPointer, false);
             // ObjectAttributes.RootDirectory is an IntPtr, so P/Invoke cannot
             // marshal the SafeHandle for us. Own a reference across NtCreateFile
             // even if another thread disposes the containing lease.
@@ -265,7 +502,7 @@ internal sealed class V3HeldInstalledFiles : IDisposable
         finally
         {
             if (parentReferenceAdded) parent.DangerousRelease();
-            Marshal.FreeHGlobal(stringPointer);
+            if (stringPointer != IntPtr.Zero) Marshal.FreeHGlobal(stringPointer);
             Marshal.FreeHGlobal(nameBytes);
         }
     }
@@ -302,6 +539,7 @@ internal sealed class V3HeldInstalledFiles : IDisposable
     }
 
     private sealed record HeldDirectory(SafeFileHandle Handle, string Path, HeldIdentity Identity);
+    private sealed record HeldMember(GraphV3File Selected, string Path, FileStream Stream, HeldIdentity Identity);
     private readonly record struct HeldIdentity(ulong Volume, ulong Low, ulong High, uint Attributes);
 
     [StructLayout(LayoutKind.Sequential)]

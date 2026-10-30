@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using System.Security.Cryptography;
 using LexRunner.WindowsCoordinator.SelectionCustody;
 using Microsoft.Win32.SafeHandles;
 
@@ -41,22 +40,17 @@ internal static class CoordinatorV3InstalledObservation
             try { graph = GraphV3.Parse(manifestBytes, selected.ManifestDigest); }
             catch { return Stop("graph_invalid"); }
             if (!GraphMatches(selected, graph)) return Stop("graph_mismatch");
+            // Preserve the prior observer's per-service hashing bound. AcquireGraph
+            // checks actual stream lengths before hashing against these graph sizes.
+            if (graph.ServiceImage.Bytes > MaxServiceImageBytes ||
+                graph.WorkerServiceImage.Bytes > MaxServiceImageBytes)
+                return Stop("image_unavailable");
 
-            // The held ancestry and leaf handles remain open through hashing,
-            // fixed SCM observation, and the second selection read. This is
-            // namespace continuity, not signer or running-process binding.
-            using var coordinator = held.OpenCoordinator();
-            using var worker = held.OpenWorker();
-            V3HeldDigest coordinatorHash;
-            V3HeldDigest workerHash;
-            try
-            {
-                coordinatorHash = HashHeldImage(coordinator);
-                workerHash = HashHeldImage(worker);
-            }
-            catch { return Stop("image_unavailable"); }
-            if (!ImagesMatch(graph, coordinatorHash, workerHash))
-                return Stop("image_mismatch");
+            // Retain manifest, every graph member and their complete held ancestry
+            // through fixed SCM/selection readback. No file stream or hash result
+            // escapes this owner as installed authority. Signer, process, loader,
+            // publication/history and provisioning qualification remain pending.
+            held.AcquireGraph(graph);
 
             var configs = V3FixedScmReader.ReadBoth();
             if (configs is null) return Stop("scm_unavailable");
@@ -70,7 +64,7 @@ internal static class CoordinatorV3InstalledObservation
             var configsAfter = V3FixedScmReader.ReadBoth();
             if (configsAfter is null || configsAfter.Value != configs.Value)
                 return Stop("scm_config_changed");
-            held.VerifyUnchanged();
+            held.VerifyGraphUnchanged();
             return new CoordinatorObservation("observed_source_only",
                 "installed_structural_match_only");
         }
@@ -128,16 +122,6 @@ internal static class CoordinatorV3InstalledObservation
         stream.ReadExactly(bytes);
         if (stream.Length != length) throw new InvalidDataException();
         return bytes;
-    }
-
-    private static V3HeldDigest HashHeldImage(FileStream stream)
-    {
-        var length = stream.Length;
-        if (length is < 1 or > MaxServiceImageBytes)
-            throw new InvalidDataException();
-        var hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
-        if (stream.Length != length) throw new InvalidDataException();
-        return new V3HeldDigest(length, hash);
     }
 
 }

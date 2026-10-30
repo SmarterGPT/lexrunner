@@ -18,6 +18,7 @@ $steps = [Collections.Generic.List[object]]::new()
 $failure = $null
 $testCount = 0
 $heldCount = 0
+$graphCount = 0
 $clock = [Diagnostics.Stopwatch]::StartNew()
 
 function Invoke-CheckedStep([string] $name, [string] $file, [string[]] $arguments,
@@ -111,6 +112,8 @@ try {
           'scm_unavailable', 'scm_config_mismatch', 'scm_config_changed',
           'installed_file_unavailable', 'generation_path_unavailable',
           'generation_path_changed',
+          'graph_changed', 'graph_file_changed', 'graph_file_mismatch',
+          'graph_file_alias', 'graph_directory_budget',
           'installed_readback_unavailable', 'installed_structural_match_only') -or
       ((@($status.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'reason,state')) {
     throw 'Ordinary status did not retain helper_missing.'
@@ -129,6 +132,11 @@ try {
     @('--v3-held-installed-fixture-selftest') $projectRoot 3
   if (($heldExcludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
     throw 'V3 held installed fixture mode was available in the ordinary image.'
+  }
+  $graphExcludedText = Invoke-CheckedStep 'v3_graph_fixture_excluded' $normalImage `
+    @('--v3-held-graph-fixture-selftest') $projectRoot 3
+  if (($graphExcludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
+    throw 'V3 graph fixture mode was available in the ordinary image.'
   }
   $sendText = Invoke-CheckedStep 'ordinary_send_refused' $normalImage @('--execute') `
     $projectRoot 3
@@ -169,6 +177,27 @@ try {
         [StringComparison]::OrdinalIgnoreCase)) {
     throw 'V3 held installed native fixture tests did not all pass.'
   }
+  $graphText = Invoke-CheckedStep 'v3_held_graph_selftest' $fixtureImage `
+    @('--v3-held-graph-fixture-selftest') $projectRoot 0
+  $graph = $graphText.Trim() | ConvertFrom-Json
+  $graphCount = $graph.results.Count
+  if ($graph.state -ne 'pass' -or
+      $graph.profile -ne 'v3_fullgraph_custody_source_only' -or
+      $graphCount -ne 18 -or $graph.failures.Count -ne 0 -or
+      @($graph.results | Where-Object { -not $_.passed -or $_.state -notin @('NTFS', 'ReFS') }).Count -ne 0) {
+    throw 'V3 held graph native fixture tests did not all pass.'
+  }
+  foreach ($row in $graph.results) {
+    $expectedParent = if ($row.name.StartsWith('artifact_', [StringComparison]::Ordinal)) {
+      $fixtureRoot
+    } elseif ($row.name.StartsWith('temp_', [StringComparison]::Ordinal)) {
+      [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    } else { throw 'Unexpected graph fixture result name.' }
+    if (-not [string]::Equals([IO.Path]::GetDirectoryName($row.fixture_path),
+        $expectedParent, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Graph fixture result escaped its selected parent.'
+    }
+  }
   $testText = Invoke-CheckedStep 'native_selftest' $fixtureImage @('--selftest') `
     $projectRoot 0
   $test = $testText.Trim() | ConvertFrom-Json
@@ -203,6 +232,7 @@ finally {
       'CoordinatorV3RegistryObservation.cs', 'CoordinatorV3RegistryFixtureTests.cs',
       'CoordinatorV3InstalledObservation.cs', 'V3InstalledFixtureTests.cs',
       'V3HeldInstalledFiles.cs', 'V3HeldInstalledFixtureTests.cs',
+      'V3HeldGraphFixtureTests.cs',
       'README.md', 'verify.ps1')) {
     $path = Join-Path $projectRoot $name
     if (Test-Path -LiteralPath $path) {
@@ -241,6 +271,7 @@ finally {
     profile = 'synthetic_same_user_non_authorizing'
     native_test_count = $testCount
     held_test_count = $heldCount
+    graph_test_count = $graphCount
     total_duration_ms = $clock.ElapsedMilliseconds
     steps = $steps
     failure = $failure
@@ -253,6 +284,7 @@ finally {
     receipt = $receiptPath
     native_test_count = $testCount
     held_test_count = $heldCount
+    graph_test_count = $graphCount
     total_duration_ms = $clock.ElapsedMilliseconds
     failure = $failure
   } | ConvertTo-Json -Compress)
