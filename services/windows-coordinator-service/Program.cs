@@ -22,6 +22,8 @@ internal static class Program
     private static int Main(string[] args)
     {
 #if COORDINATOR_SERVICE_FIXTURE_TESTS
+        if (OperatingSystem.IsWindows() && args is ["--v3-publication-contract-selftest"])
+            return LexRunner.WindowsCoordinator.SelectionCustody.PublicationContractV3FixtureTests.Run();
         if (args.Length == 1 && args[0] == "--protocol-selftest")
         {
             var passed = CoordinatorProtocol.SelfTest();

@@ -17,5 +17,9 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="VerifierBoundedProcess.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\CustodyContract.cs" Link="SelectionCustody\CustodyContract.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\CustodyContractV3.cs" Link="SelectionCustody\CustodyContractV3.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\PublicationContractV3.cs" Link="SelectionCustody\PublicationContractV3.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\PublicationContractV3FixtureTests.cs" Link="SelectionCustody\PublicationContractV3FixtureTests.cs" />
   </ItemGroup>
 </Project>

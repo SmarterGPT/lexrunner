@@ -5,6 +5,8 @@ internal static class Program
     private static int Main(string[] args)
     {
 #if SELECTION_PUBLISHER_FIXTURE
+        if (OperatingSystem.IsWindows() && args is ["--v3-publication-contract-selftest"])
+            return LexRunner.WindowsCoordinator.SelectionCustody.PublicationContractV3FixtureTests.Run();
         if (args.Length == 1 && args[0] == "--fixture-hkcu-selftest")
         {
             try

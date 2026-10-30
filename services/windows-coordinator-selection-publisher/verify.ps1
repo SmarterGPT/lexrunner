@@ -19,6 +19,10 @@ function Source-Hashes([string]$repo) {
         Require (Test-Path -LiteralPath $path -PathType Leaf) "Missing source: $name"
         $hashes[$name] = Sha $path
     }
+    foreach ($name in @('CustodyContract.cs', 'CustodyContractV3.cs',
+            'PublicationContractV3.cs', 'PublicationContractV3FixtureTests.cs')) {
+        $hashes["selection-custody/$name"] = Sha (Join-Path $repo "services/windows-coordinator-selection-custody/$name")
+    }
     $hashes
 }
 function Step([string]$phase, [string]$cwd, [string]$image, [string[]]$argv,
@@ -161,6 +165,8 @@ try {
     $normalSha = Sha $normalImage
     $normal = Step 'normal-fixture-switch-refusal' $repo $normalImage @('--fixture-hkcu-selftest') @(2) 30000
     Require ($normal.stdout.Trim() -ceq 'no_production_publisher_entrypoint') 'Normal image exposed fixture route'
+    $pureExcluded = Step 'normal-publication-model-refusal' $repo $normalImage @('--v3-publication-contract-selftest') @(2) 30000
+    Require ($pureExcluded.stdout.Trim() -ceq 'no_production_publisher_entrypoint') 'Normal image exposed publication model'
     $fixtureBuildProps = @("-p:BaseIntermediateOutputPath=$fixtureObj\",
         "-p:MSBuildProjectExtensionsPath=$fixtureObj\", "-p:BaseOutputPath=$fixtureBin\",
         "-p:OutputPath=$fixtureBin\")
@@ -171,6 +177,9 @@ try {
         -not (Test-Path -LiteralPath (Join-Path $sourceRoot 'obj'))) 'Native build escaped nonce output'
     $fixtureImage = Join-Path $fixtureDir $imageName
     $fixtureSha = Sha $fixtureImage
+    $pure = Step 'pure-v3-publication-contract' $repo $fixtureImage @('--v3-publication-contract-selftest') @(0) 30000
+    Require ($pure.stdout.TrimEnd().EndsWith('publication_contract_pure_selftest PASS cases=74 failures=0 authorizesLaunch=false authorizesEffect=false nativeEffects=0', [StringComparison]::Ordinal) -and
+        $pure.stderr.Length -eq 0) 'Pure publication contract did not pass'
     $wrong = Step 'fixture-unknown-switch-refusal' $repo $fixtureImage @('--publish') @(2) 30000
     Require ($wrong.stdout.Trim() -ceq 'no_production_publisher_entrypoint') 'Fixture exposed arbitrary publish route'
     $live = Step 'disposable-hkcu-publication-recovery' $repo $fixtureImage @('--fixture-hkcu-selftest') @(0) 60000

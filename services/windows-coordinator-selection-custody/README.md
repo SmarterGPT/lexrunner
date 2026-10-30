@@ -1,5 +1,26 @@
 # Windows coordinator selection custody observation
 
+The shared `PublicationContractV3` is a separate pure mechanical publication-state
+model. Existing publisher, client and service projects compile-link the same source
+and gated in-memory fixture vectors. It reuses canonical V3 selection bytes, adds
+bounded exact-predecessor/intent/issued/terminal history, increasing revisions,
+retained catalog identities, explicit rollback and retirement tombstones. A pending
+or unknown operation blocks structural acquisition; persisted issued rows request
+reconciliation and never reconstruct an effect permit. All inputs, including
+persistence and drain acknowledgements, are supplied comparison data. Both launch
+and effect authority remain permanently false. Actual protected serialization,
+durability, administrator provenance, native drain and installed custody are absent.
+
+The envelope is separately versioned `windows-coordinator-publication-state/1`,
+limited to 32 operations, eight generation identities and 256 KiB, with room reserved
+for a new operation's fixed receipt suffix. Capacity exhaustion refuses without
+pruning or revision reset. No production registry layout is assigned. This does not
+widen the existing reader's one-generation shape or enable an alternate factory.
+The exact `--v3-publication-contract-selftest` route is available only in the three
+existing fixture builds; normal images continue to refuse it. The native verifiers
+hash all linked inputs and run the same 74 pure cases; their broader native fixture
+lanes retain their existing separate scope. Node retains Attempt/policy semantics.
+
 This is an inactive, read-only NativeAOT source candidate for the optional
 Windows coordinator. The normal image has one fixed `--observe` route. Every
 other argument, including `--publish`, returns `publisher_unavailable`. It
