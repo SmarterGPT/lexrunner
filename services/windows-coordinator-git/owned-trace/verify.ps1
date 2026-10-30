@@ -109,15 +109,15 @@ if ($selfResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
     throw 'owned_etw_selftest_readback_invalid'
 }
 
-$preflight = Invoke-Bounded 'preflight-selftest' @($dll, '--preflight-selftest') 4096 10000
+$preflight = Invoke-Bounded 'preflight-selftest' @($dll, '--preflight-selftest') 8192 10000
 if ($preflight.exitCode -ne 0 -or $preflight.stderrBytes -ne 0) { throw 'owned_etw_preflight_selftest_failed' }
 $preflightResult = Get-Content -LiteralPath (Join-Path $stage 'preflight-selftest.stdout') -Raw | ConvertFrom-Json
 if ($preflightResult.schemaVersion -cne 'lexrunner-etw-preflight-source/1' -or
-    $preflightResult.result -cne 'pass' -or @($preflightResult.cases).Count -ne 13 -or
+    $preflightResult.result -cne 'pass' -or @($preflightResult.cases).Count -ne 39 -or
     @($preflightResult.cases | Where-Object { $_.passed -ne $true }).Count -ne 0 -or
     $preflightResult.authorizesExecution -ne $false) { throw 'owned_etw_preflight_selftest_invalid' }
 $statusTest = & (Join-Path $PSScriptRoot 'Test-ManualCaptureStatus.ps1') -SelfTest
-if ($statusTest.result -cne 'source_status_pass' -or $statusTest.caseCount -ne 26 -or
+if ($statusTest.result -cne 'source_status_pass' -or $statusTest.caseCount -ne 49 -or
     $statusTest.authorizesExecution -ne $false) { throw 'owned_etw_status_selftest_failed' }
 
 $refusal = Invoke-Bounded 'capture-refusal' @($dll, '--capture') 1024 10000
@@ -173,8 +173,8 @@ $receipt = [ordered]@{
     durationMs = $clock.ElapsedMilliseconds
     imageSha256 = $imageHash
     caseCount = 42
-    preflightCaseCount = 13
-    statusSanitizerCaseCount = 26
+    preflightCaseCount = 39
+    statusSanitizerCaseCount = 49
     commands = @($commands.ToArray())
     sourceSha256 = $sourceHashes
     nativeTraceStarted = $false

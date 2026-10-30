@@ -48,8 +48,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
             'job_terminal_uncertain','census_terminal_uncertain','cleanup_uncertain',
             'summary_bounds_refused','summary_output_occupied','summary_write_unavailable')
         $summary = @('calibration_observed','capture_unstarted','start_failed_or_occupied',
-            'initial_ownership_uncertain','probe_observed','probe_refused','job_terminal_uncertain',
-            'final_ownership_uncertain','stop_disposition_uncertain','ownership_or_stop_exception',
+            'probe_observed','probe_refused',
             'etl_missing_or_cap_refused','owned_loss_refused','etl_census_or_loss_refused',
             'capture_deadline_refused','capture_exception')
         $nativePhase = $null
@@ -67,6 +66,19 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
             if ($nativePhase -cnotin @('start','initial_query','final_query','stop')) { throw 'manual_status_native_phase' }
             $nativeCode = $codeField.GetUInt32()
         }
+        # Match the writer's reachable native-failure combinations. A zero code
+        # can accompany invalid handle/observation readback; it is never success proof.
+        if ($null -ne $nativePhase) {
+            $nativeAllowed = switch ($reason) {
+                'initial_ownership_uncertain' { $nativePhase -ceq 'initial_query' -or ($nativePhase -ceq 'start' -and $nativeCode -eq 0) }
+                'ownership_or_stop_uncertain' { $nativePhase -cin @('final_query','stop') }
+                { $_ -cin @('cleanup_uncertain','summary_bounds_refused','summary_output_occupied','summary_write_unavailable','start_failed_or_occupied') } {
+                    $nativePhase -ceq 'start' -and $nativeCode -ne 0
+                }
+                default { $false }
+            }
+            if (-not $nativeAllowed -or $result -cne 'refused') { throw 'manual_status_native_consistency' }
+        } elseif ($reason -ceq 'start_failed_or_occupied') { throw 'manual_status_start_code_required' }
         $summaryAvailable = $phase -ceq 'summary'
         if ($phase -ceq 'preflight') { $allowed = $preflight }
         elseif ($phase -ceq 'capture') { $allowed = $capture }
@@ -119,7 +131,8 @@ if ($SelfTest) {
     $valid = Read-ManualStatus ($encode.GetBytes($uncertain)) 3
     if ($valid.summaryAvailable) { throw 'manual_status_selftest' }
     $cases.Add(@{name='valid_uncertain';passed=$true})
-    $withNative = $uncertain.Replace('"nativePhase":null','"nativePhase":"stop"').Replace('"nativeCode":null','"nativeCode":5')
+    $nativeUncertain = $uncertain.Replace('cleanup_uncertain','ownership_or_stop_uncertain')
+    $withNative = $nativeUncertain.Replace('"nativePhase":null','"nativePhase":"stop"').Replace('"nativeCode":null','"nativeCode":5')
     $valid = Read-ManualStatus ($encode.GetBytes($withNative)) 3
     if ($valid.nativePhase -cne 'stop' -or $valid.nativeCode -ne 5) { throw 'manual_status_native_selftest' }
     $cases.Add(@{name='valid_observed_native_code';passed=$true})
@@ -146,6 +159,27 @@ if ($SelfTest) {
         @{name='exit_mismatch';text=$base;exit=0},
         @{name='summary_missing_digest';text=$base.Replace('"phase":"preflight"','"phase":"summary"').Replace('preflight_elevation','probe_refused');exit=3}
     )
+    # Cross-field controls target the exact forgery rejected in independent review.
+    foreach ($reason in @('initial_ownership_uncertain','ownership_or_stop_uncertain',
+        'job_terminal_uncertain','census_terminal_uncertain','cleanup_uncertain',
+        'final_ownership_uncertain','stop_disposition_uncertain','ownership_or_stop_exception')) {
+        $bad += @{name=('uncertain_summary_'+$reason);text=$observed.Replace('"result":"calibration_observed"','"result":"refused"').Replace('"reasonCode":"calibration_observed"',('"reasonCode":"'+$reason+'"'));exit=3}
+    }
+    foreach ($phase in @('start','initial_query','final_query','stop')) {
+        foreach ($code in @(0,5)) {
+            $bad += @{name=('observed_native_'+$phase+'_'+$code);text=$observed.Replace('"nativePhase":null',('"nativePhase":"'+$phase+'"')).Replace('"nativeCode":null',('"nativeCode":'+$code));exit=0}
+        }
+    }
+    $bad += @{name='refused_probe_native_stop';text=$observed.Replace('"result":"calibration_observed"','"result":"refused"').Replace('"reasonCode":"calibration_observed"','"reasonCode":"probe_refused"').Replace('"nativePhase":null','"nativePhase":"stop"').Replace('"nativeCode":null','"nativeCode":5');exit=3}
+    $bad += @{name='cleanup_native_stop';text=$withNative.Replace('ownership_or_stop_uncertain','cleanup_uncertain');exit=3}
+    $bad += @{name='ownership_native_start';text=$withNative.Replace('"nativePhase":"stop"','"nativePhase":"start"');exit=3}
+    $bad += @{name='initial_native_stop';text=$withNative.Replace('ownership_or_stop_uncertain','initial_ownership_uncertain');exit=3}
+    $startFailure = $observed.Replace('"result":"calibration_observed"','"result":"refused"').Replace('"reasonCode":"calibration_observed"','"reasonCode":"start_failed_or_occupied"').Replace('"nativePhase":null','"nativePhase":"start"').Replace('"nativeCode":null','"nativeCode":5')
+    $valid = Read-ManualStatus ($encode.GetBytes($startFailure)) 3
+    if (-not $valid.summaryAvailable -or $valid.nativePhase -cne 'start' -or $valid.nativeCode -ne 5) { throw 'manual_status_start_selftest' }
+    $cases.Add(@{name='valid_start_failure_summary';passed=$true})
+    $bad += @{name='summary_start_missing_code';text=$startFailure.Replace('"nativePhase":"start"','"nativePhase":null').Replace('"nativeCode":5','"nativeCode":null');exit=3}
+    $bad += @{name='summary_start_zero_code';text=$startFailure.Replace('"nativeCode":5','"nativeCode":0');exit=3}
     foreach ($row in $bad) {
         $refused = $false
         try { $null = Read-ManualStatus ($encode.GetBytes($row.text)) $row.exit } catch { $refused = $true }

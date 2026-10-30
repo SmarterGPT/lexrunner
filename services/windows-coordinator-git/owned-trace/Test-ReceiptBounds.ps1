@@ -26,7 +26,7 @@ if ($receipt.schemaVersion -cne 'lexrunner-windows-owned-etw-source-gate/1' -or
     ($env:GITHUB_SHA -and $receipt.sourceHead -cne $env:GITHUB_SHA) -or
     $receipt.processArchitecture -cne 'X64' -or
     $receipt.caseCount -ne 42 -or
-    $receipt.preflightCaseCount -ne 13 -or $receipt.statusSanitizerCaseCount -ne 26 -or
+    $receipt.preflightCaseCount -ne 39 -or $receipt.statusSanitizerCaseCount -ne 49 -or
     $receipt.imageSha256 -notmatch '^[0-9a-f]{64}$' -or
     @($receipt.commands).Count -ne 5 -or
     @($receipt.sourceSha256.PSObject.Properties).Count -ne 12 -or
@@ -39,7 +39,7 @@ if ($receipt.schemaVersion -cne 'lexrunner-windows-owned-etw-source-gate/1' -or
 }
 $labels = @('build', 'selftest', 'preflight-selftest', 'capture-refusal', 'calibration-refusal')
 $exits = @(0, 0, 0, 3, 3)
-$caps = @(65536, 8192, 4096, 1024, 1024)
+$caps = @(65536, 8192, 8192, 1024, 1024)
 for ($i = 0; $i -lt 5; $i++) {
     $command = $receipt.commands[$i]
     if ($command.label -cne $labels[$i] -or

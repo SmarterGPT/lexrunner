@@ -129,4 +129,6 @@ failed native observation was already recorded.
 The controller logs those values only after exact type/range/phase validation;
 preflight cannot claim a native operation. Code0 does not prove ownership,
 STOP, deletion or successful capture. No system error message is copied. The
-source sanitizer includes26 positive and forged/noisy/encoding controls.
+source sanitizer includes49 positive and forged/noisy/encoding controls.
+
+The status writer and sanitizer reject cross-field contradictions: calibration success has no native failure fields, and ownership, STOP, Job, census or cleanup uncertainty never supplies a summary. Only failed Start with an observed nonzero code can retain native failure fields in a deletion-proven refused summary. Pure controls cover every uncertainty reason, all four native phases with success, and incompatible refusal/native pairs.

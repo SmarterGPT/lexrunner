@@ -90,7 +90,7 @@ The `windows-bootstrap` CI step invokes `verify.ps1` on the hosted Windows
 x64 runner. It builds the .NET project, runs `--selftest`, invokes bare
 `--capture` and `--capture-calibrate` only to require exit-3 refusals, and
 records command, cwd, duration, exit code and bounded output hashes. The verifier checks all 42
-individual selftest results, plus 13 pure ordered-preflight cases and 26
+individual selftest results, plus 39 pure ordered-preflight/status-grammar cases and49
 status sanitizer controls. No extra selftest starts ETW. `Test-ReceiptBounds.ps1` checks the exact
 source-only schema, case counts, five expected command results, false
 trace/authority fields, strict UTF-8
@@ -125,3 +125,5 @@ summary. Its unsurfaced status cannot identify the failing component. The curren
 status/2 controller logs only finite validated reason and phase codes, then keeps
 the workflow failed. No summary or raw ETL is uploaded for preflight or uncertain
 capture outcomes. See `MANUAL_CALIBRATION.md` for the exact diagnostic boundary.
+
+The status writer and sanitizer reject cross-field contradictions: calibration success has no native failure fields, and ownership, STOP, Job, census or cleanup uncertainty never supplies a summary. Only failed Start with an observed nonzero code can retain native failure fields in a deletion-proven refused summary. Pure controls cover every uncertainty reason, all four native phases with success, and incompatible refusal/native pairs.
