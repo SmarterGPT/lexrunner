@@ -97,38 +97,63 @@ jobs:
           $args = @('--capture-calibrate','--manual-disposable-runner',
             '--expected-head',$env:EXPECTED_HEAD,
             '--expected-git-sha256',$env:EXPECTED_GIT_SHA256)
-          $child = Start-Process -FilePath $image -ArgumentList $args `
-            -WorkingDirectory $outputRoot -PassThru -WindowStyle Hidden `
-            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          $clock = [Diagnostics.Stopwatch]::StartNew()
+          $child = $null
+          $captureExit = 3
+          $controllerReason = 'controller_launch_refused'
           try {
+            $child = Start-Process -FilePath $image -ArgumentList $args `
+              -WorkingDirectory $outputRoot -PassThru -WindowStyle Hidden `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $clock = [Diagnostics.Stopwatch]::StartNew()
             while (-not $child.HasExited) {
-              if ($clock.ElapsedMilliseconds -ge 90000 -or
-                  ([IO.File]::Exists($stdout) -and ([IO.FileInfo]::new($stdout)).Length -gt 2048) -or
+              if ($clock.ElapsedMilliseconds -ge 90000) {
+                $controllerReason = 'controller_deadline_refused'
+                throw 'manual_etw_controller_bound'
+              }
+              if (([IO.File]::Exists($stdout) -and ([IO.FileInfo]::new($stdout)).Length -gt 2048) -or
                   ([IO.File]::Exists($stderr) -and ([IO.FileInfo]::new($stderr)).Length -gt 1024)) {
-                throw 'manual_etw_external_deadline_or_output_limit'
+                $controllerReason = 'controller_output_refused'
+                throw 'manual_etw_controller_bound'
               }
               Start-Sleep -Milliseconds 50
             }
             $child.WaitForExit()
+            $controllerReason = 'controller_output_refused'
             if (([IO.FileInfo]::new($stdout)).Length -gt 2048 -or
                 ([IO.FileInfo]::new($stderr)).Length -ne 0) {
               throw 'manual_etw_capture_output_refused'
             }
             $captureExit = $child.ExitCode
+            $controllerReason = 'controller_status_refused'
+            $diagnostic = ./services/windows-coordinator-git/owned-trace/Test-ManualCaptureStatus.ps1 `
+              -StatusPath $stdout -NativeExitCode $captureExit
+            $diagnostic | ConvertTo-Json -Compress | Write-Output
             "terminal=normal" >> $env:GITHUB_OUTPUT
+            "summary_available=$($diagnostic.summaryAvailable.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          }
+          catch {
+            [pscustomobject]@{
+              schemaVersion='lexrunner-etw-controller-status/1'
+              result='refused'
+              reasonCode=$controllerReason
+              captureDisposition='unknown'
+              authorizesExecution=$false
+            } | ConvertTo-Json -Compress | Write-Output
+            throw 'manual_etw_capture_controller_refused'
           }
           finally {
-            if (-not $child.HasExited) {
-              try { $child.Kill($true) } catch { }
-              try { $child.WaitForExit(5000) | Out-Null } catch { }
+            if ($null -ne $child) {
+              if (-not $child.HasExited) {
+                try { $child.Kill($true) } catch { }
+                try { $child.WaitForExit(5000) | Out-Null } catch { }
+              }
+              $child.Dispose()
             }
-            $child.Dispose()
           }
           exit $captureExit
       - name: Check bounded summary and verified ETL deletion
         id: summary_bounds
-        if: always() && steps.capture.outputs.terminal == 'normal'
+        if: always() && steps.capture.outputs.terminal == 'normal' && steps.capture.outputs.summary_available == 'true'
         shell: pwsh
         run: |
           $summary = Join-Path $PWD "artifacts/windows-owned-etw-manual/$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/summary.json"

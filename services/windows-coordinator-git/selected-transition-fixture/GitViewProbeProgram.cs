@@ -37,11 +37,13 @@ internal static class GitViewProbeProgram
 #if GIT_HOSTED_2022_FIXTURE
             if (args is ["--hosted-profile-selftest"])
             {
+                Console.Error.WriteLine("hosted_profile_selftest_entered");
                 var slot = new ImportSlot(@"C:\fixture", @"C:\fixture", @"C:\fixture",
                     @"C:\fixture", @"C:\fixture", @"C:\fixture", @"C:\fixture",
                     new string('0', 40), new string('a', 64));
                 var profile = ManualEtwGitProfile.CreateHostedFixture(
                     GitBundleImport.ConstructEnvironment(slot), GitBundleImport.HostedGitImageSha256);
+                Console.Error.WriteLine("hosted_profile_environment_constructed");
                 profile.AssertEnvironment(profile.Environment);
                 if (profile.GitImage != ManualEtwGitProfile.FixedGitImage ||
                     profile.ExpectedSha256 != GitBundleImport.HostedGitImageSha256 ||
@@ -54,6 +56,7 @@ internal static class GitViewProbeProgram
                 try { profile.AssertEnvironment(changed); }
                 catch (InvalidOperationException) { refused = true; }
                 if (!refused) throw new InvalidDataException("hosted_profile_mutation_accepted");
+                Console.Error.WriteLine("hosted_profile_selftest_completed");
                 Console.WriteLine("hosted_profile_source_selftest_pass");
                 return 0;
             }
