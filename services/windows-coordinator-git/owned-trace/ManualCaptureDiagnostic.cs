@@ -52,12 +52,12 @@ internal static class ManualCaptureDiagnostic
     }
 
     internal static bool ValidStatus(string phase, string result, string reason,
-        string? digest, string? nativePhase, uint? nativeCode, QueryDiagnostic? queryDiagnostic = null)
+        string? digest, string? nativePhase, uint? nativeCode, NativeActionDiagnostic? nativeActionDiagnostic = null)
     {
         if ((nativePhase is null) != (nativeCode is null)) return false;
-        if (queryDiagnostic is not null && (phase != "capture" || result != "refused" ||
-            nativePhase is not ("initial_query" or "final_query") || nativeCode is null ||
-            !queryDiagnostic.Valid(nativeCode.Value))) return false;
+        if (nativeActionDiagnostic is not null && (phase != "capture" || result != "refused" ||
+            nativePhase is not ("initial_query" or "final_query" or "stop") || nativeCode is null ||
+            !nativeActionDiagnostic.Valid(nativeCode.Value) || (nativePhase == "stop" && nativeActionDiagnostic.FailureStage == "gate"))) return false;
         if (result is not ("refused" or "calibration_observed")) return false;
         if (result == "calibration_observed" && (phase != "summary" || reason != result)) return false;
         if (result == "refused" && reason == "calibration_observed") return false;
@@ -92,15 +92,15 @@ internal static class ManualCaptureDiagnostic
     }
 
     internal static object Status(string phase, string result, string reason,
-        string? summarySha256 = null, string? nativePhase = null, uint? nativeCode = null, QueryDiagnostic? queryDiagnostic = null)
+        string? summarySha256 = null, string? nativePhase = null, uint? nativeCode = null, NativeActionDiagnostic? nativeActionDiagnostic = null)
     {
-        if (!ValidStatus(phase, result, reason, summarySha256, nativePhase, nativeCode, queryDiagnostic))
+        if (!ValidStatus(phase, result, reason, summarySha256, nativePhase, nativeCode, nativeActionDiagnostic))
             throw new InvalidOperationException("manual_status_consistency");
         return new
         {
-            schemaVersion = "lexrunner-owned-etw-manual-status/3",
+            schemaVersion = "lexrunner-owned-etw-manual-status/4",
             phase, result, reasonCode = reason, summarySha256, nativePhase, nativeCode,
-            queryDiagnostic = queryDiagnostic?.Wire(),
+            nativeActionDiagnostic = nativeActionDiagnostic?.Wire(),
             // False is conservative absence of deletion proof, not proof of retained bytes.
             rawEtlDeleted = summarySha256 is not null,
             authorizesLoaderClosure = false,
@@ -109,13 +109,13 @@ internal static class ManualCaptureDiagnostic
     }
 
     internal static void Emit(string phase, string result, string reason, string? summarySha256 = null,
-        string? nativePhase = null, uint? nativeCode = null, QueryDiagnostic? queryDiagnostic = null) =>
+        string? nativePhase = null, uint? nativeCode = null, NativeActionDiagnostic? nativeActionDiagnostic = null) =>
         Console.Write(JsonSerializer.Serialize(Status(phase, result, reason, summarySha256,
-            nativePhase, nativeCode, queryDiagnostic)) + "\n");
+            nativePhase, nativeCode, nativeActionDiagnostic)) + "\n");
 
-    internal static int Refuse(string phase, string reason, string? nativePhase = null, uint? nativeCode = null, QueryDiagnostic? queryDiagnostic = null)
+    internal static int Refuse(string phase, string reason, string? nativePhase = null, uint? nativeCode = null, NativeActionDiagnostic? nativeActionDiagnostic = null)
     {
-        Emit(phase, "refused", reason, null, nativePhase, nativeCode, queryDiagnostic);
+        Emit(phase, "refused", reason, null, nativePhase, nativeCode, nativeActionDiagnostic);
         return 3;
     }
 }

@@ -13,10 +13,10 @@ internal static class Program
     {
         if (args is ["--query-diagnostic-selftest"])
         {
-            var queryCases = QueryDiagnostic.SelfTest();
+            var queryCases = NativeActionDiagnostic.SelfTest();
             var queryPassed = queryCases.All(value => value.Passed);
             Console.WriteLine(JsonSerializer.Serialize(new { result = queryPassed ? "pass" : "refused",
-                cases = queryCases, samples = QueryDiagnostic.WireSamples(), authorizesExecution = false }));
+                cases = queryCases, samples = NativeActionDiagnostic.WireSamples(), authorizesExecution = false }));
             return queryPassed ? 0 : 3;
         }
         if (args is ["--preflight-selftest"])
@@ -252,8 +252,8 @@ internal sealed record TraceIdentity(string Name, Guid Guid, string EtlPath, uin
 internal sealed record TraceObservation(string Name, Guid Guid, string EtlPath, uint Mode,
     uint Flags, uint EventsLost, uint LogBuffersLost, uint RealTimeBuffersLost);
 internal sealed record StartResult(uint Code, ulong Handle);
-internal sealed record QueryResult(uint Code, TraceObservation? Observation, QueryDiagnostic? Diagnostic = null);
-internal sealed record StopResult(uint Code, TraceObservation? Observation = null);
+internal sealed record QueryResult(uint Code, TraceObservation? Observation, NativeActionDiagnostic? Diagnostic = null);
+internal sealed record StopResult(uint Code, TraceObservation? Observation = null, NativeActionDiagnostic? Diagnostic = null);
 internal sealed record TraceDisposition(string ReasonCode, bool StopAttempted,
     bool StopConfirmed, bool HasLiveLoss, bool AuthorizesLoaderClosure, bool AuthorizesExecution);
 internal sealed record TestCase(string Name, bool Passed, string ReasonCode, int QueryCount, int StopCount);
