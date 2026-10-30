@@ -50,6 +50,28 @@ internal sealed class V3HeldInstalledFiles : IDisposable
     private int _manifestLength;
     private Dictionary<string, HeldMember>? _graphFiles;
     private bool _disposed;
+    private bool _closeRequested, _terminalUncertain, _nativeCallbackActive;
+    private bool _nativeChildStarted, _releaseFailed;
+    private long _activeUse;
+    private static readonly object NativeUseGate = new();
+    // Strong process-lifetime root from acquisition, not only after uncertainty.
+    // The owner does not retain its token: abandoned tokens must be finalizable.
+    private static V3HeldInstalledFiles? NativeUseOwner;
+    private static bool NativeUseQuarantined;
+    private static long NextNativeUse;
+
+    internal enum RetainedOwnerState { Open, Active, CloseRequested, Closed, TerminalUncertain }
+    internal delegate void SelectedMemberHandleCallback(nint file);
+    internal RetainedOwnerState State
+    {
+        get
+        {
+            lock (_gate)
+                return _terminalUncertain || _releaseFailed ? RetainedOwnerState.TerminalUncertain :
+                    _disposed ? RetainedOwnerState.Closed : _closeRequested ? RetainedOwnerState.CloseRequested :
+                    _activeUse != 0 ? RetainedOwnerState.Active : RetainedOwnerState.Open;
+        }
+    }
 
     private V3HeldInstalledFiles(List<HeldDirectory> directories, string generationPath,
         SafeFileHandle generation, SafeFileHandle service)
@@ -174,7 +196,9 @@ internal sealed class V3HeldInstalledFiles : IDisposable
 
     private FileStream OpenRegular(SafeFileHandle parent, string name, string expected)
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(V3HeldInstalledFiles));
+        // Legacy structural streams own independent leaf handles. They cannot
+        // consume the retained graph's shared stream position during native use.
+        ThrowIfDisposed();
         var handle = OpenRelative(parent, name, false);
         try
         {
@@ -391,7 +415,183 @@ internal sealed class V3HeldInstalledFiles : IDisposable
 
     private void ThrowIfDisposed()
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(V3HeldInstalledFiles));
+        if (_disposed || _closeRequested || _terminalUncertain || _releaseFailed)
+            throw new ObjectDisposedException(nameof(V3HeldInstalledFiles));
+        if (_activeUse != 0) throw new InvalidOperationException("retained_native_use_active");
+    }
+
+    internal RetainedUse BeginRetainedUse()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_graphFiles is null) throw new InvalidOperationException("graph_not_acquired");
+            lock (NativeUseGate)
+            {
+                if (NativeUseQuarantined) throw new InvalidOperationException("native_process_quarantined");
+                if (NativeUseOwner is not null) throw new InvalidOperationException("native_process_slot_active");
+                var id = checked(NextNativeUse + 1);
+                var use = new RetainedUse(this, id);
+                NextNativeUse = id;
+                _activeUse = id;
+                _nativeChildStarted = false;
+                NativeUseOwner = this;
+                use.Arm();
+                return use;
+            }
+        }
+    }
+
+    private void RequireUse(long id)
+    {
+        if (_disposed || _terminalUncertain || _activeUse != id || id == 0)
+            throw new ObjectDisposedException(nameof(RetainedUse));
+    }
+
+    private void WithSelectedHandle(long id, string relativePath, SelectedMemberHandleCallback callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_gate)
+        {
+            RequireUse(id);
+            if (_nativeCallbackActive || _nativeChildStarted)
+                throw new InvalidOperationException("retained_handle_scope_unavailable");
+            if (_graphFiles is null || !_graphFiles.TryGetValue(relativePath, out var member))
+                throw new ArgumentException("unselected_graph_member");
+            var handle = member.Stream.SafeFileHandle;
+            var added = false;
+            _nativeCallbackActive = true;
+            try
+            {
+                member.Stream.Position = 0;
+                handle.DangerousAddRef(ref added);
+                // Synchronous borrow only. Never close, retain or return this
+                // value. Inheritable duplicates for a future fixed child remain
+                // covered by this use until explicit terminal completion.
+                callback(handle.DangerousGetHandle());
+            }
+            finally
+            {
+                try { if (added) handle.DangerousRelease(); }
+                finally { _nativeCallbackActive = false; }
+            }
+        }
+    }
+
+    private void MarkChildStarted(long id)
+    {
+        lock (_gate)
+        {
+            RequireUse(id);
+            if (_nativeChildStarted) throw new InvalidOperationException("retained_child_already_started");
+            _nativeChildStarted = true;
+        }
+    }
+
+    private enum UseCompletion { NoChild, Drained }
+    private void CompleteUse(long id, UseCompletion completion)
+    {
+        lock (_gate)
+        {
+            RequireUse(id);
+            if (_nativeCallbackActive || (completion == UseCompletion.NoChild && _nativeChildStarted) ||
+                (completion == UseCompletion.Drained && !_nativeChildStarted))
+                throw new InvalidOperationException("retained_terminal_report_invalid");
+            lock (NativeUseGate)
+            {
+                if (!ReferenceEquals(NativeUseOwner, this) || NativeUseQuarantined)
+                    throw new InvalidOperationException("retained_process_root_unavailable");
+                _activeUse = 0;
+                _nativeChildStarted = false;
+                try { if (_closeRequested) CloseCore(); }
+                catch
+                {
+                    _terminalUncertain = true;
+                    NativeUseQuarantined = true;
+                    throw;
+                }
+                // Clear only after the explicit terminal report and any requested
+                // managed close completed. This is not an OS child-drain proof.
+                NativeUseOwner = null;
+            }
+        }
+    }
+
+    private void QuarantineUse(long id)
+    {
+        lock (_gate)
+        {
+            if (_activeUse != id || id == 0) return; // Already explicitly completed.
+            _terminalUncertain = true;
+            _closeRequested = true;
+            _activeUse = 0;
+            lock (NativeUseGate)
+            {
+                NativeUseQuarantined = true;
+                // Never remove this root or close any held handle. Process exit
+                // is residual cleanup, not child drain or permission to retry.
+                NativeUseOwner = this;
+            }
+        }
+    }
+
+    internal sealed class RetainedUse : IDisposable
+    {
+        private readonly V3HeldInstalledFiles _owner;
+        private readonly long _id;
+        private int _armed, _completion;
+        internal RetainedUse(V3HeldInstalledFiles owner, long id) { _owner = owner; _id = id; }
+        internal void Arm() => Volatile.Write(ref _armed, 1);
+        private void RequireLive()
+        {
+            if (Volatile.Read(ref _completion) != 0 || Volatile.Read(ref _armed) == 0)
+                throw new ObjectDisposedException(nameof(RetainedUse));
+        }
+        internal void WithMemberHandle(string selectedPath, SelectedMemberHandleCallback callback)
+        {
+            RequireLive();
+            try { _owner.WithSelectedHandle(_id, selectedPath, callback); }
+            finally { GC.KeepAlive(this); }
+        }
+        internal void MarkChildStarted()
+        {
+            RequireLive();
+            try { _owner.MarkChildStarted(_id); }
+            finally { GC.KeepAlive(this); }
+        }
+        // Trusted native caller reports these facts only after its own observed
+        // terminal cleanup. These methods do not infer or prove OS completion.
+        internal void ConfirmNoChild() => Complete(UseCompletion.NoChild);
+        internal void ConfirmDrained() => Complete(UseCompletion.Drained);
+        private void Complete(UseCompletion completion)
+        {
+            if (Interlocked.CompareExchange(ref _completion, 1, 0) != 0)
+                throw new ObjectDisposedException(nameof(RetainedUse));
+            try
+            {
+                _owner.CompleteUse(_id, completion);
+                Volatile.Write(ref _completion, 2);
+                GC.SuppressFinalize(this);
+            }
+            catch { Interlocked.CompareExchange(ref _completion, 0, 1); throw; }
+            finally { GC.KeepAlive(this); }
+        }
+        internal void ReportUncertain() => Dispose();
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _completion, 2) == 2) return;
+            try { if (Volatile.Read(ref _armed) != 0) _owner.QuarantineUse(_id); }
+            finally { GC.SuppressFinalize(this); }
+        }
+        ~RetainedUse()
+        {
+            try
+            {
+                if (Volatile.Read(ref _armed) != 0 && Interlocked.Exchange(ref _completion, 2) != 2)
+                    _owner.QuarantineUse(_id);
+            }
+            catch { /* The process root already retains the owner; never release. */ }
+        }
     }
 
 #if COORDINATOR_CLIENT_FIXTURE_TESTS
@@ -426,7 +626,12 @@ internal sealed class V3HeldInstalledFiles : IDisposable
 
     public void Dispose()
     {
-        lock (_gate) CloseCore();
+        lock (_gate)
+        {
+            _closeRequested = true;
+            if (_activeUse != 0 || _terminalUncertain) return;
+            CloseCore();
+        }
     }
 
     private void CloseCore()
@@ -444,7 +649,7 @@ internal sealed class V3HeldInstalledFiles : IDisposable
         if (_heldManifest is not null) Close(_heldManifest);
         for (var index = _directories.Count - 1; index >= 0; index--)
             Close(_directories[index].Handle);
-        if (failure is not null) throw failure;
+        if (failure is not null) { _releaseFailed = true; throw failure; }
     }
 
     private static SafeFileHandle OpenRelative(SafeFileHandle parent, string name, bool directory)

@@ -118,6 +118,45 @@ store and executes none of the synthetic executable-named files. Host filesystem
 are reported as observed, not inferred from drive letters. Fixture APIs and
 routes are absent from normal builds, which continue to report helper_missing.
 
+The internal retained-use slice adds one process-wide exclusive native-use slot.
+BeginRetainedUse requires an acquired full graph and strongly roots its owner
+before exposing a token. The owner does not root the token. Its states distinguish
+Open, Active, CloseRequested, Closed and TerminalUncertain; these are managed
+lifetime states, never installed authority or OS child-drain evidence.
+
+WithMemberHandle is a synchronous selected-member hFile borrow under the owner
+gate and a SafeHandle reference. Trusted callers must not close or escape the raw
+handle. Future child duplicates remain covered by the exclusive use until terminal
+cleanup. Shared-position graph reads, hashing and another use refuse while active.
+Dispose requests close and retains every leaf/ancestor during active use; an
+in-flight synchronous gate operation can delay that call. ConfirmNoChild and
+ConfirmDrained are explicit trusted-caller reports, not native completion probes.
+No-child completion refuses after MarkChildStarted; drained completion refuses
+without that marker. Completion cannot occur inside an active handle callback.
+
+Unfinished token Dispose/finalization and ReportUncertain quarantine the owner,
+retain its process root and all handles, and permanently refuse new native uses
+in that process. Repeated owner disposal cannot release quarantined custody. An
+abandoned token is finalized into quarantine, not a release; the strong root was
+already present before abandonment. Explicit successful terminal reporting alone
+frees the process slot, then honors any requested close. A managed close exception
+is also reported as uncertainty; no managed Closed state establishes OS release.
+
+The gated retained-use fixture has twelve host cases, six on each selected parent:
+deferred disposal/all-member replacement denial, second/global use refusal,
+callback setup failure with explicit no-child report, shared I/O and inconsistent
+terminal-report refusal, and explicit-uncertain/abandoned-token subprocesses.
+Those fixed subprocesses never launch operation children. They drop strong local
+owner/token references, force GC and prove the owner remains rooted and the files
+remain blocked; only their actual process exit permits the parent to reopen files.
+This residual OS boundary is not proof of operation child drain or permission to
+replay effects. Future protected recovery must preserve unknown effects across a
+restart. No positive ConfirmDrained native conformance is claimed by these tests.
+
+The slice adds no production dispatch, helper selection, trust result or lease
+factory. A future same-service private GUI verifier mode and installed NativeAOT
+qualification remain separate; TryOpenInstalled stays false.
+
 On native Windows with the .NET 8 SDK and npm dependencies, run:
 
 ```powershell
