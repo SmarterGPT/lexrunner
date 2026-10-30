@@ -186,3 +186,27 @@ Exact handle/name/GUID/path/mode/flags comparisons and STOP eligibility are
 unchanged. This source correction does not prove new host calibration or cleanup
 of the older uncertain trace; summary, loss, deletion, upload and capture bounds
 remain unchanged. No local trace was started for these pure controls.
+
+### STOP result origin diagnostic
+
+Run41001651151/job123887205608 on9bf86cb2 passed initial and final query
+matching, then refused STOP adapter code13. That code alone cannot distinguish
+a raw ControlTrace return from rejected final properties. The private status/4
+contract replaces queryDiagnostic with nativeActionDiagnostic for initial query,
+final query and STOP refusals. The same finite fields distinguish actual native
+return, parser failure and exact identity mismatch; a lifecycle-gate diagnostic
+is query-only. STOP precheck/import/native/parse/identity failures remain refusals.
+No names, paths, GUIDs, handles or raw returned buffers are logged.
+
+Microsoft documents that STOP returns final properties/statistics, invalidates
+the handle, and can return ERROR_MORE_DATA after stopping. These facts do not
+prove this run's cause or justify accepting changed fields. The one-shot STOP
+gate, exact field equality, query count, mode, flags, allocation, terminal drain,
+summary/deletion/upload controls and capture/status/receipt caps are unchanged.
+No STOP retry or cleanup claim is inferred from native success plus decode
+failure. The versioned strict writer/parser rejects legacy query-only fields,
+impossible STOP gate-stage combinations and uncertain summary claims.
+
+Primary references:
+https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew
+https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-stoptracew

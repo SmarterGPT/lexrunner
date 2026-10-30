@@ -10,7 +10,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="NativeTraceAdapter.cs" />
-    <Compile Include="QueryDiagnostic.cs" />
+    <Compile Include="NativeActionDiagnostic.cs" />
     <Compile Include="CaptureCalibration.cs" />
     <Compile Include="ManualCaptureDiagnostic.cs" />
     <Compile Include="OfflineEtlParser.cs" />

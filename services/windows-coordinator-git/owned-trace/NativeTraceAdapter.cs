@@ -141,7 +141,7 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
     public QueryResult Query(ulong returnedHandle)
     {
         if (!LayoutIsExpected() || !_gate.BeginQuery(returnedHandle))
-            return new QueryResult(87, null, new QueryDiagnostic(null, "precheck"));
+            return new QueryResult(87, null, new NativeActionDiagnostic(null, "precheck"));
         var buffer = Allocate(_expected.Guid);
         try
         {
@@ -149,13 +149,13 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
             try { code = ControlTraceW(returnedHandle, null, buffer, EventTraceControlQuery); }
             catch (DllNotFoundException)
             {
-                var missing = new QueryResult(127, null, new QueryDiagnostic(null, "import"));
+                var missing = new QueryResult(127, null, new NativeActionDiagnostic(null, "import"));
                 _gate.CompleteQuery(returnedHandle, missing);
                 return missing;
             }
             catch (EntryPointNotFoundException)
             {
-                var missing = new QueryResult(127, null, new QueryDiagnostic(null, "import"));
+                var missing = new QueryResult(127, null, new NativeActionDiagnostic(null, "import"));
                 _gate.CompleteQuery(returnedHandle, missing);
                 return missing;
             }
@@ -168,20 +168,20 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
     {
         if (code != 0)
         {
-            var failed = new QueryResult(code, null, new QueryDiagnostic(code, "native"));
+            var failed = new QueryResult(code, null, new NativeActionDiagnostic(code, "native"));
             _gate.CompleteQuery(returnedHandle, failed);
             return failed;
         }
 
         if (!TryReadObservation(buffer, out var observation, out var parseFailure))
         {
-            var invalid = new QueryResult(13, null, new QueryDiagnostic(0, "parse", parseFailure)); // synthetic ERROR_INVALID_DATA
+            var invalid = new QueryResult(13, null, new NativeActionDiagnostic(0, "parse", parseFailure)); // synthetic ERROR_INVALID_DATA
             _gate.CompleteQuery(returnedHandle, invalid);
             return invalid;
         }
         var result = new QueryResult(0, observation);
         return _gate.CompleteQuery(returnedHandle, result, out var mismatch, out var gateMatched) ?
-            result : new QueryResult(13, null, new QueryDiagnostic(0,
+            result : new QueryResult(13, null, new NativeActionDiagnostic(0,
                 gateMatched ? "identity" : "gate", IdentityMismatchMask: mismatch,
                 ObservedMode: observation!.Mode, ObservedFlags: observation.Flags));
     }
@@ -210,7 +210,7 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
     public StopResult Stop(ulong returnedHandle)
     {
         if (!LayoutIsExpected() || !_gate.BeginStop(returnedHandle))
-            return new StopResult(87);
+            return new StopResult(87, Diagnostic: new NativeActionDiagnostic(null, "precheck"));
         var buffer = Allocate(_expected.Guid);
         try
         {
@@ -219,19 +219,76 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
             try
             {
                 var code = ControlTraceW(returnedHandle, null, buffer, EventTraceControlStop);
-                if (code != 0) return new StopResult(code);
-                if (!TryReadObservation(buffer, out var observation) ||
-                    observation is null ||
-                    observation.Name != _expected.Name ||
-                    observation.Guid != _expected.Guid ||
-                    observation.EtlPath != _expected.EtlPath ||
-                    observation.Mode != _expected.Mode ||
-                    observation.Flags != _expected.Flags)
-                    return new StopResult(13); // STOP may have succeeded; no retry.
-                return new StopResult(0, observation);
+                return CompleteNativeStop(code, buffer);
             }
-            catch (DllNotFoundException) { return new StopResult(127); }
-            catch (EntryPointNotFoundException) { return new StopResult(127); }
+            catch (DllNotFoundException) { return new StopResult(127, Diagnostic: new NativeActionDiagnostic(null, "import")); }
+            catch (EntryPointNotFoundException) { return new StopResult(127, Diagnostic: new NativeActionDiagnostic(null, "import")); }
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    // STOP may have taken effect even if its returned properties are rejected.
+    // These are the original exact comparisons; diagnostics never relax them.
+    private StopResult CompleteNativeStop(uint code, IntPtr buffer)
+    {
+        if (code != 0) return new StopResult(code, Diagnostic: new NativeActionDiagnostic(code, "native"));
+        if (!TryReadObservation(buffer, out var observation, out var parseFailure))
+            return new StopResult(13, Diagnostic: new NativeActionDiagnostic(0, "parse", parseFailure));
+        uint mismatch = 0;
+        if (observation!.Name != _expected.Name) mismatch |= 1;
+        if (observation.Guid != _expected.Guid) mismatch |= 2;
+        if (observation.EtlPath != _expected.EtlPath) mismatch |= 4;
+        if (observation.Mode != _expected.Mode) mismatch |= 8;
+        if (observation.Flags != _expected.Flags) mismatch |= 16;
+        return mismatch == 0 ? new StopResult(0, observation) : new StopResult(13,
+            Diagnostic: new NativeActionDiagnostic(0, "identity", IdentityMismatchMask: mismatch,
+                ObservedMode: observation.Mode, ObservedFlags: observation.Flags));
+    }
+
+    internal static (StopResult Result, bool OneShot, int MatchedQueries) SyntheticStopResult(
+        uint code, uint mask = 0, string? parseFailure = null)
+    {
+        var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
+            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02400001, 0x06000307);
+        var adapter = new NativeTraceAdapter(expected);
+        var observation = new TraceObservation(expected.Name, expected.Guid, expected.EtlPath,
+            expected.Mode, expected.Flags, 0, 0, 0);
+        adapter._gate.BeginStart(); adapter._gate.CompleteStart(new(0,42));
+        var queries = 0;
+        for (var i = 0; i < 2; i++)
+            if (adapter._gate.BeginQuery(42) && adapter._gate.CompleteQuery(42, new(0, observation))) queries++;
+        if (!adapter._gate.BeginStop(42)) throw new InvalidOperationException("synthetic_stop_gate");
+        var buffer = Allocate((mask & 2) == 0 ? expected.Guid : Guid.Empty);
+        try
+        {
+            var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
+            props.LogFileMode = (mask & 8) == 0 ? expected.Mode : 0;
+            props.EnableFlags = (mask & 16) == 0 ? expected.Flags : 0;
+            Marshal.StructureToPtr(props, buffer, false);
+            WriteString(buffer, props.LoggerNameOffset, (mask & 1) == 0 ? expected.Name : "other");
+            WriteString(buffer, props.LogFileNameOffset, (mask & 4) == 0 ? expected.EtlPath : "other");
+            if (parseFailure is not null)
+            {
+                var logger = parseFailure.StartsWith("logger_", StringComparison.Ordinal);
+                var target = logger ? props.LoggerNameOffset : props.LogFileNameOffset;
+                var failure = parseFailure[(parseFailure.IndexOf('_') + 1)..];
+                if (parseFailure == "capacity") props.Wnode.BufferSize = (uint)Capacity + 1;
+                else if (failure == "offset")
+                { if (logger) props.LoggerNameOffset = 1; else props.LogFileNameOffset = 1; }
+                else if (failure == "bounds")
+                {
+                    target = (uint)Capacity - 2;
+                    if (logger) props.LoggerNameOffset = target; else props.LogFileNameOffset = target;
+                    Marshal.WriteInt16(buffer, (int)target, (short)'x');
+                }
+                else if (failure == "empty") Marshal.WriteInt16(buffer, (int)target, 0);
+                else if (failure == "termination")
+                    for (var i = 0; i < MaximumNameChars; i++) Marshal.WriteInt16(buffer, (int)target + i * 2, (short)'x');
+                else throw new InvalidOperationException("synthetic_stop_parse_case");
+                Marshal.StructureToPtr(props, buffer, false);
+            }
+            var result = adapter.CompleteNativeStop(code, buffer);
+            return (result, !adapter._gate.BeginStop(42) && !adapter._gate.BeginQuery(42), queries);
         }
         finally { Marshal.FreeHGlobal(buffer); }
     }
