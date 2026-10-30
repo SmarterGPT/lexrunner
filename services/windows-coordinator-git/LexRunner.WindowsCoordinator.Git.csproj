@@ -23,6 +23,8 @@
     <Compile Include="GitWorktreePublish.cs" />
     <Compile Include="GitWorktreeStage.cs" />
     <Compile Include="GraphSelectedGitProfile.cs" />
+    <Compile Include="HeldSelectedGitRoots.cs" />
+    <Compile Include="FixtureBoundGitViewTransition.cs" />
     <Compile Include="NativeWorktreePublication.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="StaticGitImports.cs" />

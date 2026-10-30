@@ -2,7 +2,8 @@
 namespace LexRunner.WindowsCoordinator.Git;
 
 // This profile exists only in the fixture image used by the one-command manual
-// ETW diagnostic. It does not change production Git import selection.
+// ETW diagnostic and compile-gated hosted transition test. It does not change
+// production Git import selection.
 internal sealed class ManualEtwGitProfile
 {
     internal const string FixedGitImage = @"C:\Program Files\Git\bin\git.exe";
@@ -22,10 +23,24 @@ internal sealed class ManualEtwGitProfile
 
     internal static ManualEtwGitProfile Create(ImportSlot slot, string digest)
     {
+        return CreateFixedEnvironment(GitBundleImport.ConstructEnvironment(slot), digest);
+    }
+
+#if GIT_HOSTED_2022_FIXTURE
+    // Reuse the strict fixed-image fixture profile for hosted transition tests.
+    // The caller's environment was built from a validated disposable slot.
+    internal static ManualEtwGitProfile CreateHostedFixture(
+        IReadOnlyDictionary<string, string> environment, string digest) =>
+        CreateFixedEnvironment(new Dictionary<string, string>(environment,
+            StringComparer.OrdinalIgnoreCase), digest);
+#endif
+
+    private static ManualEtwGitProfile CreateFixedEnvironment(
+        Dictionary<string, string> environment, string digest)
+    {
         if (digest.Length != 64 || !digest.All(value =>
                 value is >= '0' and <= '9' or >= 'a' and <= 'f'))
             throw new InvalidOperationException("manual_etw_digest_invalid");
-        var environment = GitBundleImport.ConstructEnvironment(slot);
         var windows = environment["WINDIR"];
         var system = Path.GetDirectoryName(environment["COMSPEC"]);
         if (system is null || !StringComparer.OrdinalIgnoreCase.Equals(
