@@ -127,3 +127,10 @@ the workflow failed. No summary or raw ETL is uploaded for preflight or uncertai
 capture outcomes. See `MANUAL_CALIBRATION.md` for the exact diagnostic boundary.
 
 The status writer and sanitizer reject cross-field contradictions: calibration success has no native failure fields, and ownership, STOP, Job, census or cleanup uncertainty never supplies a summary. Only failed Start with an observed nonzero code can retain native failure fields in a deletion-proven refused summary. Pure controls cover every uncertainty reason, all four native phases with success, and incompatible refusal/native pairs.
+
+The hosted terminal profile requires exactly flags0 after successful owned-handle
+STOP; both active queries still require exactly0x06000307. Name, GUID, path and
+mode stay exact. Zero terminal flags were observed on the qualified disposable
+host and are not a universal ControlTrace API guarantee. Other terminal values
+refuse; no active-or-zero allowlist or ignored flag bits are used. See
+MANUAL_CALIBRATION.md for the exact observed run and status/5 phase grammar.

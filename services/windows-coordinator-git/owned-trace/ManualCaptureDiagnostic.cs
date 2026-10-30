@@ -57,7 +57,7 @@ internal static class ManualCaptureDiagnostic
         if ((nativePhase is null) != (nativeCode is null)) return false;
         if (nativeActionDiagnostic is not null && (phase != "capture" || result != "refused" ||
             nativePhase is not ("initial_query" or "final_query" or "stop") || nativeCode is null ||
-            !nativeActionDiagnostic.Valid(nativeCode.Value) || (nativePhase == "stop" && nativeActionDiagnostic.FailureStage == "gate"))) return false;
+            !nativeActionDiagnostic.Valid(nativeCode.Value, nativePhase!) || (nativePhase == "stop" && nativeActionDiagnostic.FailureStage == "gate"))) return false;
         if (result is not ("refused" or "calibration_observed")) return false;
         if (result == "calibration_observed" && (phase != "summary" || reason != result)) return false;
         if (result == "refused" && reason == "calibration_observed") return false;
@@ -98,7 +98,7 @@ internal static class ManualCaptureDiagnostic
             throw new InvalidOperationException("manual_status_consistency");
         return new
         {
-            schemaVersion = "lexrunner-owned-etw-manual-status/4",
+            schemaVersion = "lexrunner-owned-etw-manual-status/5",
             phase, result, reasonCode = reason, summarySha256, nativePhase, nativeCode,
             nativeActionDiagnostic = nativeActionDiagnostic?.Wire(),
             // False is conservative absence of deletion proof, not proof of retained bytes.

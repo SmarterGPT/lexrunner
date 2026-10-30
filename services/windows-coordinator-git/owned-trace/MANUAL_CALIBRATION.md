@@ -210,3 +210,30 @@ impossible STOP gate-stage combinations and uncertain summary claims.
 Primary references:
 https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew
 https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-stoptracew
+
+### Hosted terminal observation profile
+
+Run41005438193/job123899165230 at4f9bad13 observed successful native STOP,
+exact name/GUID/path/mode, and flags0 after both active queries matched
+0x06000307. For this explicit hosted profile the post-STOP decoder now requires
+exactly flags0. Active initial/final queries still require exactly0x06000307.
+Retained active flags, partial flags, unknown bits and all other nonzero
+terminal flags refuse; there is no active-or-zero allowlist and no masking.
+
+Microsoft documents EnableFlags as provider configuration and successful STOP
+as invalidating the handle. It does not promise flags0 on every Windows host.
+Zero is the observed hosted terminal profile, not a universal API guarantee.
+Future differing terminal states remain explicit refusals. The original owned
+handle, fresh final active query, one-shot STOP, exact name/GUID/path/mode,
+nonzero-native-result refusal, loss counters, deadlines, deletion, summary and
+upload guards remain in force. Earlier uncertain-run cleanup is not inferred.
+
+Private status/5 validates mismatch bits against the action's expected flags:
+active for initial/final query and zero for STOP. Status/4 is rejected so its
+old STOP flags grammar cannot be silently reinterpreted. Pure32-mask STOP
+controls use nonzero terminal mismatches and retain both matched active queries.
+No new ETW or worker child was run for this source qualification.
+
+Primary source:
+https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew
+https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties

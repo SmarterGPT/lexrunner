@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 // Ordinary capture and all product execution authority remain disabled.
 internal sealed class NativeTraceAdapter : ITraceAdapter
 {
+    // Observed hosted terminal profile only, not a universal ETW guarantee.
+    internal const uint ExpectedTerminalFlags = 0;
     private const uint EventTraceControlQuery = 0;
     private const uint EventTraceControlStop = 1;
     private const uint WnodeFlagTracedGuid = 0x00020000;
@@ -228,7 +230,7 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
     }
 
     // STOP may have taken effect even if its returned properties are rejected.
-    // These are the original exact comparisons; diagnostics never relax them.
+    // Name/GUID/path/mode remain exact; this hosted terminal profile requires exactly flags0.
     private StopResult CompleteNativeStop(uint code, IntPtr buffer)
     {
         if (code != 0) return new StopResult(code, Diagnostic: new NativeActionDiagnostic(code, "native"));
@@ -239,14 +241,14 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
         if (observation.Guid != _expected.Guid) mismatch |= 2;
         if (observation.EtlPath != _expected.EtlPath) mismatch |= 4;
         if (observation.Mode != _expected.Mode) mismatch |= 8;
-        if (observation.Flags != _expected.Flags) mismatch |= 16;
+        if (observation.Flags != ExpectedTerminalFlags) mismatch |= 16;
         return mismatch == 0 ? new StopResult(0, observation) : new StopResult(13,
             Diagnostic: new NativeActionDiagnostic(0, "identity", IdentityMismatchMask: mismatch,
                 ObservedMode: observation.Mode, ObservedFlags: observation.Flags));
     }
 
     internal static (StopResult Result, bool OneShot, int MatchedQueries) SyntheticStopResult(
-        uint code, uint mask = 0, string? parseFailure = null)
+        uint code, uint mask = 0, string? parseFailure = null, uint? terminalFlags = null)
     {
         var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
             Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02400001, 0x06000307);
@@ -263,7 +265,7 @@ internal sealed class NativeTraceAdapter : ITraceAdapter
         {
             var props = Marshal.PtrToStructure<EventTraceProperties>(buffer);
             props.LogFileMode = (mask & 8) == 0 ? expected.Mode : 0;
-            props.EnableFlags = (mask & 16) == 0 ? expected.Flags : 0;
+            props.EnableFlags = terminalFlags ?? ((mask & 16) == 0 ? ExpectedTerminalFlags : 1u);
             Marshal.StructureToPtr(props, buffer, false);
             WriteString(buffer, props.LoggerNameOffset, (mask & 1) == 0 ? expected.Name : "other");
             WriteString(buffer, props.LogFileNameOffset, (mask & 4) == 0 ? expected.EtlPath : "other");
