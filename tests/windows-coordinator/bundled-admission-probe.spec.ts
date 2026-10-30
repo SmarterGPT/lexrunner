@@ -16,16 +16,23 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildWindowsCoordinatorAdmissionBundle } from "../../scripts/build-windows-coordinator-admission-bundle.js";
-import { requireBundledNodeAbi } from "../../services/windows-coordinator-host/node/bundled-admission-probe.js";
+import {
+  buildWindowsCoordinatorAdmissionBundle,
+  inspectBundledSqliteSource,
+} from "../../scripts/build-windows-coordinator-admission-bundle.js";
+import {
+  requireBundledNodeAbi,
+  requireBundledNodeApi,
+} from "../../services/windows-coordinator-host/node/bundled-admission-probe.js";
 import { createWindowsCoordinatorGenerationGraph } from "../../src/workspaces/windows-coordinator-generation-graph.js";
 import { WINDOWS_BOUNDARY_PROTOCOL_VERSION } from "../../src/workspaces/windows-boundary-protocol.js";
 import { WINDOWS_REMOVAL_VERSION } from "../../src/workspaces/windows-removal-protocol.js";
 
 const fixturePrefix = "lexrunner-bundled-admission-";
-const nativeAddon = path.resolve(
-  "node_modules/better-sqlite3-multiple-ciphers/build/Release/better_sqlite3.node"
+const sqliteSource = inspectBundledSqliteSource(
+  path.resolve("node_modules/better-sqlite3-multiple-ciphers")
 );
+const nativeAddon = sqliteSource.nativeAddonPath;
 const roots: string[] = [];
 
 function sha256(bytes: Uint8Array): string {
@@ -68,7 +75,9 @@ async function fixture() {
     ["node/admission.mjs", "admission-entry"],
     ["node/node.exe", "node-image"],
   ] as const;
-  const bundle = await buildWindowsCoordinatorAdmissionBundle();
+  const bundle = await buildWindowsCoordinatorAdmissionBundle({
+    sqlitePackageRoot: sqliteSource.root,
+  });
   const files = [];
   for (const [relative, role] of memberPaths) {
     const absolute = path.join(root, ...relative.split("/"));
@@ -125,6 +134,40 @@ describe.skipIf(process.platform !== "win32")("isolated bundled admission source
     expect(() => requireBundledNodeAbi("138")).toThrow("bundled_node_abi_unavailable");
   });
 
+  it("requires the selected SQLite Node-API capability independently of module ABI", () => {
+    expect(requireBundledNodeApi("10", "13.0.3")).toBe("10");
+    expect(requireBundledNodeApi(undefined, "12.11.1")).toBeNull();
+    for (const observed of [undefined, "9", "invalid", "1000"]) {
+      expect(() => requireBundledNodeApi(observed, "13.0.3")).toThrow(
+        "bundled_node_api_unavailable"
+      );
+    }
+    expect(() => requireBundledNodeApi("10", "13.0.4")).toThrow(
+      "bundled_sqlite_version_unavailable"
+    );
+  });
+
+  it("refuses unknown versions and known-version labels with unselected wrapper bytes", async () => {
+    const root = await mkdtemp(path.join(await realpath(tmpdir()), fixturePrefix));
+    roots.push(root);
+    const manifest = path.join(root, "package.json");
+    await writeFile(
+      manifest,
+      JSON.stringify({ name: "better-sqlite3-multiple-ciphers", version: "13.0.4" })
+    );
+    expect(() => inspectBundledSqliteSource(root)).toThrow("sqlite_source_version_unavailable");
+    await writeFile(
+      manifest,
+      JSON.stringify({ name: "better-sqlite3-multiple-ciphers", version: "13.0.3" })
+    );
+    await mkdir(path.join(root, "lib"));
+    await writeFile(
+      path.join(root, "lib", "index.js"),
+      "throw new Error('unselected_wrapper_must_not_execute')"
+    );
+    expect(() => inspectBundledSqliteSource(root)).toThrow("sqlite_source_consistency_mismatch");
+  });
+
   it("bundles JS dependencies and opens SQLite only through the graph-selected addon object", async () => {
     const { root, graph, manifestPath, entryPath, bundle } = await fixture();
     expect(
@@ -134,6 +177,8 @@ describe.skipIf(process.platform !== "win32")("isolated bundled admission source
       )
     ).toBe(true);
     expect(bundle.sourceInputCount).toBeGreaterThan(100);
+    expect(bundle.lexPackageInputCount).toBe(0);
+    expect(bundle.sqlite.authorizesLaunch).toBe(false);
     expect(Buffer.from(bundle.bytes).toString("utf8")).toContain(
       "default_sqlite_binding_search_denied"
     );
@@ -156,6 +201,8 @@ describe.skipIf(process.platform !== "win32")("isolated bundled admission source
       graphDigest: graph.graphDigest,
       addonSha256: sha256(await readFile(path.join(root, "node", "addon.node"))),
       nodeAbi: "137",
+      nodeApiVersion: process.versions.napi ?? null,
+      sqlitePackageVersion: bundle.sqlite.version,
       authorizesLaunch: false,
     });
   });
