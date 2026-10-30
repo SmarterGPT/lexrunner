@@ -19,6 +19,10 @@ internal static class Program
                 return V3HeldInstalledFixtureTests.Run();
             if (args is ["--v3-held-graph-fixture-selftest"])
                 return V3HeldGraphFixtureTests.Run();
+            if (args is ["--v3-retained-use-fixture-selftest"])
+                return V3RetainedUseFixtureTests.Run();
+            if (args.Length == 3 && args[0] == "--v3-retained-use-quarantine-child")
+                return V3RetainedUseFixtureTests.QuarantineChild(args[1], args[2]);
             if (args.Length == 3 && args[0] == "--fixture-server")
                 return FixtureServer.Run(args[1], args[2]);
 #endif

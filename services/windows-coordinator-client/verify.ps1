@@ -19,6 +19,7 @@ $failure = $null
 $testCount = 0
 $heldCount = 0
 $graphCount = 0
+$retainedUseCount = 0
 $clock = [Diagnostics.Stopwatch]::StartNew()
 
 function Invoke-CheckedStep([string] $name, [string] $file, [string[]] $arguments,
@@ -138,6 +139,15 @@ try {
   if (($graphExcludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
     throw 'V3 graph fixture mode was available in the ordinary image.'
   }
+  foreach ($excluded in @(
+      @('--v3-retained-use-fixture-selftest'),
+      @('--v3-retained-use-quarantine-child', 'fixture-root', 'uncertain'))) {
+    $retainedExcludedText = Invoke-CheckedStep 'retained_use_fixture_excluded' $normalImage `
+      $excluded $projectRoot 3
+    if (($retainedExcludedText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
+      throw 'Retained use fixture mode was available in the ordinary image.'
+    }
+  }
   $sendText = Invoke-CheckedStep 'ordinary_send_refused' $normalImage @('--execute') `
     $projectRoot 3
   if (($sendText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
@@ -198,6 +208,27 @@ try {
       throw 'Graph fixture result escaped its selected parent.'
     }
   }
+  $retainedText = Invoke-CheckedStep 'v3_retained_use_selftest' $fixtureImage `
+    @('--v3-retained-use-fixture-selftest') $projectRoot 0
+  $retained = $retainedText.Trim() | ConvertFrom-Json
+  $retainedUseCount = $retained.results.Count
+  if ($retained.state -ne 'pass' -or
+      $retained.profile -ne 'v3_retained_use_source_only' -or
+      $retainedUseCount -ne 12 -or $retained.failures.Count -ne 0 -or
+      @($retained.results | Where-Object { -not $_.passed -or $_.state -notin @('NTFS', 'ReFS') }).Count -ne 0) {
+    throw 'V3 retained use native fixture tests did not all pass.'
+  }
+  foreach ($row in $retained.results) {
+    $expectedParent = if ($row.name.StartsWith('artifact_', [StringComparison]::Ordinal)) {
+      $fixtureRoot
+    } elseif ($row.name.StartsWith('temp_', [StringComparison]::Ordinal)) {
+      [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    } else { throw 'Unexpected retained use result name.' }
+    if (-not [string]::Equals([IO.Path]::GetDirectoryName($row.fixture_path),
+        $expectedParent, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Retained use fixture escaped its selected parent.'
+    }
+  }
   $testText = Invoke-CheckedStep 'native_selftest' $fixtureImage @('--selftest') `
     $projectRoot 0
   $test = $testText.Trim() | ConvertFrom-Json
@@ -233,6 +264,7 @@ finally {
       'CoordinatorV3InstalledObservation.cs', 'V3InstalledFixtureTests.cs',
       'V3HeldInstalledFiles.cs', 'V3HeldInstalledFixtureTests.cs',
       'V3HeldGraphFixtureTests.cs',
+      'V3RetainedUseFixtureTests.cs',
       'README.md', 'verify.ps1')) {
     $path = Join-Path $projectRoot $name
     if (Test-Path -LiteralPath $path) {
@@ -272,6 +304,7 @@ finally {
     native_test_count = $testCount
     held_test_count = $heldCount
     graph_test_count = $graphCount
+    retained_use_test_count = $retainedUseCount
     total_duration_ms = $clock.ElapsedMilliseconds
     steps = $steps
     failure = $failure
@@ -285,6 +318,7 @@ finally {
     native_test_count = $testCount
     held_test_count = $heldCount
     graph_test_count = $graphCount
+    retained_use_test_count = $retainedUseCount
     total_duration_ms = $clock.ElapsedMilliseconds
     failure = $failure
   } | ConvertTo-Json -Compress)

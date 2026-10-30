@@ -12,7 +12,7 @@ using Microsoft.Win32.SafeHandles;
 [SupportedOSPlatform("windows")]
 internal static class V3HeldGraphFixtureTests
 {
-    private static readonly (string Path, string Role)[] Members = [
+    internal static readonly (string Path, string Role)[] Members = [
         ("bin/lexrunner-windows-boundary-helper.exe", "helper-image"),
         ("client/lexrunner-windows-coordinator-client.exe", "client-image"),
         ("git/cmd/git.exe", "git-entry"),
@@ -26,7 +26,7 @@ internal static class V3HeldGraphFixtureTests
         ("service/LexRunner.WindowsCoordinator.Service.exe", "service-image"),
         ("service/LexRunner.WindowsCoordinator.WorkerSlot.exe", "worker-service-image"),
     ];
-    private sealed record Fixture(string Root, string Generation, GraphV3 Graph,
+    internal sealed record Fixture(string Root, string Generation, GraphV3 Graph,
         Dictionary<string, byte[]> Bytes, string Marker)
     {
         internal string File(string relative) => Path.Combine(Generation, relative.Replace('/', '\\'));
@@ -82,7 +82,7 @@ internal static class V3HeldGraphFixtureTests
         }
     }
 
-    private static Fixture CreateFixture(string baseDirectory, bool alias)
+    internal static Fixture CreateFixture(string baseDirectory, bool alias)
     {
         var parent = Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar);
         if (!Directory.Exists(parent) || (System.IO.File.GetAttributes(parent) & FileAttributes.ReparsePoint) != 0)
