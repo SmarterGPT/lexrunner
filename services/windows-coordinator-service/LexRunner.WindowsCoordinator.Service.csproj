@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
     <TargetFramework>net8.0</TargetFramework>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <AssemblyName>LexRunner.WindowsCoordinator.Service</AssemblyName>
@@ -21,4 +23,16 @@
     <Compile Include="..\windows-coordinator-selection-custody\PublicationContractV3.cs" Link="SelectionCustody\PublicationContractV3.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\PublicationContractV3FixtureTests.cs" Link="SelectionCustody\PublicationContractV3FixtureTests.cs" />
   </ItemGroup>
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <DirectPInvoke Include="__Internal!LexRunnerVerifySelectedTrustV2" />
+    <NativeLibrary Include="$(CoordinatorTrustNativeLibrary)" />
+    <NativeLibrary Include="bcrypt.lib" />
+    <NativeLibrary Include="crypt32.lib" />
+    <NativeLibrary Include="wintrust.lib" />
+    <LinkerArg Include="/DEPENDENTLOADFLAG:0x800" />
+  </ItemGroup>
+  <Target Name="RequireStaticTrustLibrary" BeforeTargets="IlcCompile" Condition="'$(PublishAot)' == 'true'">
+    <Error Condition="'$(CoordinatorTrustNativeLibrary)' == '' Or !Exists('$(CoordinatorTrustNativeLibrary)')"
+      Text="Build the fixed native trust core before publishing this optional application; no dynamic fallback is provided." />
+  </Target>
 </Project>

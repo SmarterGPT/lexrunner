@@ -22,6 +22,12 @@ internal static class Program
     private static int Main(string[] args)
     {
 #if COORDINATOR_SERVICE_FIXTURE_TESTS
+        if (args is ["--trust-contract-selftest"])
+        {
+            var passed = NativeTrustAbi.PureContractSelfTest();
+            Console.WriteLine(passed ? "trust_contract_pure_pass sdkTrustCalls=0 authorizesExecution=false" : "trust_contract_pure_failed");
+            return passed ? 0 : 1;
+        }
         if (OperatingSystem.IsWindows() && args is ["--v3-publication-contract-selftest"])
             return LexRunner.WindowsCoordinator.SelectionCustody.PublicationContractV3FixtureTests.Run();
         if (args.Length == 1 && args[0] == "--protocol-selftest")
@@ -51,6 +57,8 @@ internal static class Program
         if (OperatingSystem.IsWindows() && args.Length == 2 && args[0] == "--private-child-fixture")
             return PrivateLaunchFixture.Child(args[1]);
 #endif
+        if (OperatingSystem.IsWindows() && args is ["--private-trust-child"])
+            return CoordinatorTrustChild.Run();
         if (!OperatingSystem.IsWindows() || args.Length != 1 || args[0] != "--service")
         {
             Console.Error.WriteLine("scm_only");

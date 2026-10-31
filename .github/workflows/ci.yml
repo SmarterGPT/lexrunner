@@ -16,6 +16,7 @@ on:
       - "services/windows-coordinator-host/**"
       - "services/windows-coordinator-client/**"
       - "services/windows-coordinator-service/**"
+      - "services/windows-coordinator-trust-native/**"
       - "services/windows-coordinator-worker-slot/**"
       - "services/windows-coordinator-admission/**"
       - "services/windows-coordinator-git/**"
@@ -289,7 +290,7 @@ jobs:
               $result.sourceOnly -ne $true) {
             throw 'Installed-readback source contract made an unsupported authority claim'
           }
-      - name: Qualify fail-closed Windows coordinator service source
+      - name: Qualify statically linked fail-closed Windows coordinator source
         shell: pwsh
         run: ./services/windows-coordinator-service/verify.ps1
       - name: Qualify inactive Windows worker-slot source
@@ -375,7 +376,10 @@ jobs:
             artifacts/windows-helper-msi-install-ci/*.log
             artifacts/windows-coordinator-host-probe/verification-receipt.json
             artifacts/windows-coordinator-client/verification-receipt.json
-            artifacts/windows-coordinator-service-source/verification-receipt.json
+            artifacts/windows-coordinator-service-source/qualification-*/verification-receipt.json
+            artifacts/windows-coordinator-service-source/qualification-*/process-checks.json
+            artifacts/windows-coordinator-service-source/qualification-*/build-checks.json
+            artifacts/windows-coordinator-service-source/qualification-*/native/build-receipt.json
             artifacts/windows-coordinator-worker-slot-source/verification-receipt.json
             artifacts/windows-coordinator-v3-graph-source/qualification-*/verification-receipt.json
             artifacts/windows-coordinator-root-provisioner/run-*/verification-receipt.json
