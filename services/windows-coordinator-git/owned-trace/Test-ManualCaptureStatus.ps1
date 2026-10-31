@@ -3,7 +3,10 @@ param([string]$StatusPath, [int]$NativeExitCode = 3, [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function Read-NativeActionDiagnostic($Value, [uint32]$AdapterCode) {
+function Read-NativeActionDiagnostic($Value, [uint32]$AdapterCode, [string]$NativePhase) {
+    if ($NativePhase -ceq 'stop') { $expectedFlags = [uint32]0 }
+    elseif ($NativePhase -cin @('initial_query','final_query')) { $expectedFlags = [uint32]0x06000307 }
+    else { throw 'action_phase' }
     if ($Value.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw 'query_shape' }
     $keys = @('nativeResultCode','failureStage','parseFailure','identityMismatchMask','observedMode','observedFlags')
     $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -41,8 +44,8 @@ function Read-NativeActionDiagnostic($Value, [uint32]$AdapterCode) {
         'identity' { $AdapterCode -eq 13 -and $null -ne $raw -and $raw -eq 0 -and $null -eq $parse -and
             $mask -ge 1 -and $mask -le 31 -and $null -ne $mode -and $null -ne $flags -and
             ((($mask -band 8) -ne 0) -eq ($mode -ne 0x02400001)) -and
-            ((($mask -band 16) -ne 0) -eq ($flags -ne 0x06000307)) }
-        'gate' { $AdapterCode -eq 13 -and $null -ne $raw -and $raw -eq 0 -and $null -eq $parse -and
+            ((($mask -band 16) -ne 0) -eq ($flags -ne $expectedFlags)) }
+        'gate' { $NativePhase -cne 'stop' -and $AdapterCode -eq 13 -and $null -ne $raw -and $raw -eq 0 -and $null -eq $parse -and
             $mask -eq 0 -and $null -ne $mode -and $null -ne $flags }
         default { $false }
     }
@@ -81,7 +84,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
                 throw 'manual_status_authority'
             }
         }
-        if ($root.GetProperty('schemaVersion').GetString() -cne 'lexrunner-owned-etw-manual-status/4') {
+        if ($root.GetProperty('schemaVersion').GetString() -cne 'lexrunner-owned-etw-manual-status/5') {
             throw 'manual_status_schema'
         }
         $phase = $root.GetProperty('phase').GetString()
@@ -134,7 +137,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
                 $nativePhase -cnotin @('initial_query','final_query','stop') -or $null -eq $nativeCode) {
                 throw 'query_phase'
             }
-            $nativeActionDiagnostic = Read-NativeActionDiagnostic $queryField $nativeCode
+            $nativeActionDiagnostic = Read-NativeActionDiagnostic $queryField $nativeCode $nativePhase
             if ($nativePhase -ceq 'stop' -and $nativeActionDiagnostic.failureStage -ceq 'gate') { throw 'action_stop_gate' }
         }
         $summaryAvailable = $phase -ceq 'summary'
@@ -176,7 +179,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
 }
 
 if ($SelfTest) {
-    $base = '{"schemaVersion":"lexrunner-owned-etw-manual-status/4","phase":"preflight","result":"refused","reasonCode":"preflight_elevation","summarySha256":null,"rawEtlDeleted":false,"authorizesLoaderClosure":false,"authorizesExecution":false,"nativePhase":null,"nativeCode":null,"nativeActionDiagnostic":null}' + "`n"
+    $base = '{"schemaVersion":"lexrunner-owned-etw-manual-status/5","phase":"preflight","result":"refused","reasonCode":"preflight_elevation","summarySha256":null,"rawEtlDeleted":false,"authorizesLoaderClosure":false,"authorizesExecution":false,"nativePhase":null,"nativeCode":null,"nativeActionDiagnostic":null}' + "`n"
     $encode = [Text.UTF8Encoding]::new($false, $true)
     $cases = [Collections.Generic.List[object]]::new()
     $valid = Read-ManualStatus ($encode.GetBytes($base)) 3
@@ -213,8 +216,8 @@ if ($SelfTest) {
         @{name='bom';text=([char]0xFEFF+$base);exit=3},
         @{name='noise';text=('noise'+$base);exit=3},
         @{name='two_objects';text=($base+$base);exit=3},
-        @{name='schema1';text=$base.Replace('manual-status/4','manual-status/1');exit=3},
-        @{name='schema2';text=$base.Replace('manual-status/4','manual-status/2');exit=3},
+        @{name='schema1';text=$base.Replace('manual-status/5','manual-status/1');exit=3},
+        @{name='schema2';text=$base.Replace('manual-status/5','manual-status/2');exit=3},
         @{name='deletion_claim';text=$base.Replace('"rawEtlDeleted":false','"rawEtlDeleted":true');exit=3},
         @{name='exit_mismatch';text=$base;exit=0},
         @{name='summary_missing_digest';text=$base.Replace('"phase":"preflight"','"phase":"summary"').Replace('preflight_elevation','probe_refused');exit=3}
@@ -303,7 +306,7 @@ if ($SelfTest) {
     foreach ($template in @($base,$observed,$withNative,$startFailure)) {
         $bad += @{name='query_wrong_phase';text=$template.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $query));exit=3}
     }
-    $bad += @{name='schema3';text=$base.Replace('manual-status/4','manual-status/3');exit=3}
+    $bad += @{name='schema3';text=$base.Replace('manual-status/5','manual-status/3');exit=3}
     $bad += @{name='old_query_field';text=$base.Replace('"nativeActionDiagnostic":null','"queryDiagnostic":null');exit=3}
     foreach ($failure in @('capacity','logger_offset','logger_bounds','logger_empty','logger_termination','file_offset','file_bounds','file_empty','file_termination')) {
         $wire = $queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"stop"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain').Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $query.Replace('capacity',$failure)))
@@ -311,7 +314,8 @@ if ($SelfTest) {
         if ($validStop.summaryAvailable -or $validStop.nativeActionDiagnostic.parseFailure -cne $failure) { throw 'stop_parse_selftest' }
         $cases.Add(@{name=('stop_parse_' + $failure);passed=$true})
     }
-    foreach ($detail in @($rawNative,$identity)) {
+    $terminalIdentity = $identity.Replace('"observedFlags":100664071','"observedFlags":0')
+    foreach ($detail in @($rawNative,$terminalIdentity)) {
         $wire = $queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"stop"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain').Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $detail))
         $validStop = Read-ManualStatus ($encode.GetBytes($wire)) 3
         if ($validStop.summaryAvailable) { throw 'stop_native_selftest' }
@@ -321,6 +325,19 @@ if ($SelfTest) {
     }
     $stopGate = $queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"stop"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain').Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $identity.Replace('identity"','gate"').Replace('"identityMismatchMask":1','"identityMismatchMask":0')))
     $bad += @{name='stop_impossible_post_gate';text=$stopGate;exit=3}
+    $bad += @{name='schema4';text=$base.Replace('manual-status/5','manual-status/4');exit=3}
+    $stopBase = $queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"stop"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain')
+    foreach ($flags in @([uint32]100664071,[uint32]1,[uint32]100664070,[uint32]2147483648,[uint32]4294967295)) {
+        $detail = $terminalIdentity.Replace('"identityMismatchMask":1','"identityMismatchMask":16').Replace('"observedFlags":0',('"observedFlags":' + $flags))
+        $wire = $stopBase.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $detail))
+        $read = Read-ManualStatus ($encode.GetBytes($wire)) 3
+        if ($read.summaryAvailable -or $read.nativeActionDiagnostic.identityMismatchMask -ne 16) { throw 'terminal_nonzero_diagnostic' }
+        $cases.Add(@{name=('terminal_flag_refusal_' + $flags);passed=$true})
+        $bad += @{name=('terminal_flagbit_missing_' + $flags);text=$wire.Replace('"identityMismatchMask":16','"identityMismatchMask":1');exit=3}
+    }
+    $bad += @{name='active_query_zero_no_bit';text=$queryBase.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $terminalIdentity));exit=3}
+    $bad += @{name='final_query_zero_no_bit';text=$queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"final_query"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain').Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $terminalIdentity));exit=3}
+    $bad += @{name='terminal_zero_extra_bit';text=$stopBase.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $terminalIdentity.Replace('"identityMismatchMask":1','"identityMismatchMask":16')));exit=3}
     foreach ($row in $bad) {
         $refused = $false
         try { $null = Read-ManualStatus ($encode.GetBytes($row.text)) $row.exit } catch { $refused = $true }

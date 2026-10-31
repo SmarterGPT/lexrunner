@@ -112,7 +112,7 @@ if ($selfResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
 $query = Invoke-Bounded 'query-diagnostic-selftest' @($dll, '--query-diagnostic-selftest') 8192 10000
 if ($query.exitCode -ne 0 -or $query.stderrBytes -ne 0) { throw 'query_diagnostic_selftest_failed' }
 $queryResult = Get-Content -LiteralPath (Join-Path $stage 'query-diagnostic-selftest.stdout') -Raw | ConvertFrom-Json
-if ($queryResult.result -cne 'pass' -or @($queryResult.cases).Count -ne 117 -or
+if ($queryResult.result -cne 'pass' -or @($queryResult.cases).Count -ne 124 -or
     @($queryResult.cases | Where-Object { $_.Passed -ne $true }).Count -ne 0 -or
     $queryResult.authorizesExecution -ne $false) { throw 'query_diagnostic_readback_invalid' }
 
@@ -124,7 +124,7 @@ if ($preflightResult.schemaVersion -cne 'lexrunner-etw-preflight-source/1' -or
     @($preflightResult.cases | Where-Object { $_.passed -ne $true }).Count -ne 0 -or
     $preflightResult.authorizesExecution -ne $false) { throw 'owned_etw_preflight_selftest_invalid' }
 $statusTest = & (Join-Path $PSScriptRoot 'Test-ManualCaptureStatus.ps1') -SelfTest
-if ($statusTest.result -cne 'source_status_pass' -or $statusTest.caseCount -ne 155 -or
+if ($statusTest.result -cne 'source_status_pass' -or $statusTest.caseCount -ne 169 -or
     $statusTest.authorizesExecution -ne $false) { throw 'owned_etw_status_selftest_failed' }
 
 $refusal = Invoke-Bounded 'capture-refusal' @($dll, '--capture') 1024 10000
@@ -146,7 +146,7 @@ if ($calibrationRefusal.exitCode -ne 3 -or $calibrationRefusal.stderrBytes -ne 0
     throw 'owned_etw_calibration_bare_route_exposed'
 }
 $calibrationResult = Get-Content -LiteralPath (Join-Path $stage 'calibration-refusal.stdout') -Raw | ConvertFrom-Json
-if ($calibrationResult.schemaVersion -cne 'lexrunner-owned-etw-manual-status/4' -or
+if ($calibrationResult.schemaVersion -cne 'lexrunner-owned-etw-manual-status/5' -or
     $calibrationResult.result -cne 'refused' -or
     $calibrationResult.reasonCode -cne 'arguments_invalid' -or
     $calibrationResult.phase -cne 'preflight' -or $null -ne $calibrationResult.summarySha256 -or
@@ -179,10 +179,10 @@ $receipt = [ordered]@{
     sourceCwd = $PSScriptRoot
     durationMs = $clock.ElapsedMilliseconds
     imageSha256 = $imageHash
-    nativeActionDiagnosticCaseCount = 117
+    nativeActionDiagnosticCaseCount = 124
     caseCount = 42
     preflightCaseCount = 39
-    statusSanitizerCaseCount = 155
+    statusSanitizerCaseCount = 169
     commands = @($commands.ToArray())
     sourceSha256 = $sourceHashes
     nativeTraceStarted = $false
