@@ -98,7 +98,7 @@ internal static class ManualCaptureDiagnostic
             throw new InvalidOperationException("manual_status_consistency");
         return new
         {
-            schemaVersion = "lexrunner-owned-etw-manual-status/5",
+            schemaVersion = "lexrunner-owned-etw-manual-status/6",
             phase, result, reasonCode = reason, summarySha256, nativePhase, nativeCode,
             nativeActionDiagnostic = nativeActionDiagnostic?.Wire(),
             // False is conservative absence of deletion proof, not proof of retained bytes.

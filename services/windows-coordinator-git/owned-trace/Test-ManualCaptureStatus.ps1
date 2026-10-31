@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 
 function Read-NativeActionDiagnostic($Value, [uint32]$AdapterCode, [string]$NativePhase) {
     if ($NativePhase -ceq 'stop') { $expectedFlags = [uint32]0 }
-    elseif ($NativePhase -cin @('initial_query','final_query')) { $expectedFlags = [uint32]0x06000307 }
+    elseif ($NativePhase -cin @('initial_query','final_query')) { $expectedFlags = [uint32]0x16000307 }
     else { throw 'action_phase' }
     if ($Value.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw 'query_shape' }
     $keys = @('nativeResultCode','failureStage','parseFailure','identityMismatchMask','observedMode','observedFlags')
@@ -84,7 +84,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
                 throw 'manual_status_authority'
             }
         }
-        if ($root.GetProperty('schemaVersion').GetString() -cne 'lexrunner-owned-etw-manual-status/5') {
+        if ($root.GetProperty('schemaVersion').GetString() -cne 'lexrunner-owned-etw-manual-status/6') {
             throw 'manual_status_schema'
         }
         $phase = $root.GetProperty('phase').GetString()
@@ -179,7 +179,7 @@ function Read-ManualStatus([byte[]]$Bytes, [int]$ExitCode) {
 }
 
 if ($SelfTest) {
-    $base = '{"schemaVersion":"lexrunner-owned-etw-manual-status/5","phase":"preflight","result":"refused","reasonCode":"preflight_elevation","summarySha256":null,"rawEtlDeleted":false,"authorizesLoaderClosure":false,"authorizesExecution":false,"nativePhase":null,"nativeCode":null,"nativeActionDiagnostic":null}' + "`n"
+    $base = '{"schemaVersion":"lexrunner-owned-etw-manual-status/6","phase":"preflight","result":"refused","reasonCode":"preflight_elevation","summarySha256":null,"rawEtlDeleted":false,"authorizesLoaderClosure":false,"authorizesExecution":false,"nativePhase":null,"nativeCode":null,"nativeActionDiagnostic":null}' + "`n"
     $encode = [Text.UTF8Encoding]::new($false, $true)
     $cases = [Collections.Generic.List[object]]::new()
     $valid = Read-ManualStatus ($encode.GetBytes($base)) 3
@@ -216,8 +216,8 @@ if ($SelfTest) {
         @{name='bom';text=([char]0xFEFF+$base);exit=3},
         @{name='noise';text=('noise'+$base);exit=3},
         @{name='two_objects';text=($base+$base);exit=3},
-        @{name='schema1';text=$base.Replace('manual-status/5','manual-status/1');exit=3},
-        @{name='schema2';text=$base.Replace('manual-status/5','manual-status/2');exit=3},
+        @{name='schema1';text=$base.Replace('manual-status/6','manual-status/1');exit=3},
+        @{name='schema2';text=$base.Replace('manual-status/6','manual-status/2');exit=3},
         @{name='deletion_claim';text=$base.Replace('"rawEtlDeleted":false','"rawEtlDeleted":true');exit=3},
         @{name='exit_mismatch';text=$base;exit=0},
         @{name='summary_missing_digest';text=$base.Replace('"phase":"preflight"','"phase":"summary"').Replace('preflight_elevation','probe_refused');exit=3}
@@ -260,11 +260,11 @@ if ($SelfTest) {
         $code = if ($stage -ceq 'precheck') {87} else {127}
         Check-Query ('query_' + $stage) ($rawNative.Replace('"nativeResultCode":13','"nativeResultCode":null').Replace('native"',($stage + '"'))) $code
     }
-    $identity = $query.Replace('"failureStage":"parse"','"failureStage":"identity"').Replace('"parseFailure":"capacity"','"parseFailure":null').Replace('"identityMismatchMask":0','"identityMismatchMask":1').Replace('"observedMode":null','"observedMode":37748737').Replace('"observedFlags":null','"observedFlags":100664071')
+    $identity = $query.Replace('"failureStage":"parse"','"failureStage":"identity"').Replace('"parseFailure":"capacity"','"parseFailure":null').Replace('"identityMismatchMask":0','"identityMismatchMask":1').Replace('"observedMode":null','"observedMode":37748737').Replace('"observedFlags":null','"observedFlags":369099527')
     for ($mask = 1; $mask -le 31; $mask++) {
         $wire = $identity.Replace('"identityMismatchMask":1',('"identityMismatchMask":' + $mask))
         if ($mask -band 8) { $wire = $wire.Replace('"observedMode":37748737','"observedMode":0') }
-        if ($mask -band 16) { $wire = $wire.Replace('"observedFlags":100664071','"observedFlags":0') }
+        if ($mask -band 16) { $wire = $wire.Replace('"observedFlags":369099527','"observedFlags":0') }
         Check-Query ('query_mask_' + $mask) $wire
     }
     Check-Query 'query_gate' ($identity.Replace('identity"','gate"').Replace('"identityMismatchMask":1','"identityMismatchMask":0'))
@@ -296,7 +296,7 @@ if ($SelfTest) {
         $identity.Replace('"identityMismatchMask":1','"identityMismatchMask":0'),
         $identity.Replace('"observedMode":37748737','"observedMode":null'),
         $identity.Replace('"observedMode":37748737','"observedMode":0'),
-        $identity.Replace('"observedFlags":100664071','"observedFlags":0'),
+        $identity.Replace('"observedFlags":369099527','"observedFlags":0'),
         $identity.Replace('identity"','gate"'),
         '[]', '"opaque"', 'true'
     )
@@ -306,7 +306,7 @@ if ($SelfTest) {
     foreach ($template in @($base,$observed,$withNative,$startFailure)) {
         $bad += @{name='query_wrong_phase';text=$template.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $query));exit=3}
     }
-    $bad += @{name='schema3';text=$base.Replace('manual-status/5','manual-status/3');exit=3}
+    $bad += @{name='schema3';text=$base.Replace('manual-status/6','manual-status/3');exit=3}
     $bad += @{name='old_query_field';text=$base.Replace('"nativeActionDiagnostic":null','"queryDiagnostic":null');exit=3}
     foreach ($failure in @('capacity','logger_offset','logger_bounds','logger_empty','logger_termination','file_offset','file_bounds','file_empty','file_termination')) {
         $wire = $queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"stop"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain').Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $query.Replace('capacity',$failure)))
@@ -314,7 +314,7 @@ if ($SelfTest) {
         if ($validStop.summaryAvailable -or $validStop.nativeActionDiagnostic.parseFailure -cne $failure) { throw 'stop_parse_selftest' }
         $cases.Add(@{name=('stop_parse_' + $failure);passed=$true})
     }
-    $terminalIdentity = $identity.Replace('"observedFlags":100664071','"observedFlags":0')
+    $terminalIdentity = $identity.Replace('"observedFlags":369099527','"observedFlags":0')
     foreach ($detail in @($rawNative,$terminalIdentity)) {
         $wire = $queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"stop"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain').Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $detail))
         $validStop = Read-ManualStatus ($encode.GetBytes($wire)) 3
@@ -325,9 +325,10 @@ if ($SelfTest) {
     }
     $stopGate = $queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"stop"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain').Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $identity.Replace('identity"','gate"').Replace('"identityMismatchMask":1','"identityMismatchMask":0')))
     $bad += @{name='stop_impossible_post_gate';text=$stopGate;exit=3}
-    $bad += @{name='schema4';text=$base.Replace('manual-status/5','manual-status/4');exit=3}
+    $bad += @{name='schema4';text=$base.Replace('manual-status/6','manual-status/4');exit=3}
+    $bad += @{name='schema5';text=$base.Replace('manual-status/6','manual-status/5');exit=3}
     $stopBase = $queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"stop"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain')
-    foreach ($flags in @([uint32]100664071,[uint32]1,[uint32]100664070,[uint32]2147483648,[uint32]4294967295)) {
+    foreach ($flags in @([uint32]369099527,[uint32]1,[uint32]369099526,[uint32]2147483648,[uint32]4294967295)) {
         $detail = $terminalIdentity.Replace('"identityMismatchMask":1','"identityMismatchMask":16').Replace('"observedFlags":0',('"observedFlags":' + $flags))
         $wire = $stopBase.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $detail))
         $read = Read-ManualStatus ($encode.GetBytes($wire)) 3
@@ -338,6 +339,32 @@ if ($SelfTest) {
     $bad += @{name='active_query_zero_no_bit';text=$queryBase.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $terminalIdentity));exit=3}
     $bad += @{name='final_query_zero_no_bit';text=$queryBase.Replace('"nativePhase":"initial_query"','"nativePhase":"final_query"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain').Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $terminalIdentity));exit=3}
     $bad += @{name='terminal_zero_extra_bit';text=$stopBase.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $terminalIdentity.Replace('"identityMismatchMask":1','"identityMismatchMask":16')));exit=3}
+    # The old profile and every single-bit deviation are valid observations of
+    # refusal only when the active-query flags mismatch bit is present.
+    $variants = [Collections.Generic.List[uint32]]::new()
+    $variants.Add([uint32]0x06000307)
+    $profile = [uint32]0x16000307
+    for ($bit = 0; $bit -lt 32; $bit++) {
+        $mask = [uint32]([uint64]1 -shl $bit)
+        if (($profile -band $mask) -ne 0) { $variants.Add($profile -bxor $mask) }
+        else { $variants.Add($profile -bor $mask) }
+    }
+    foreach ($flags in $variants) {
+        foreach ($phase in @('initial_query','final_query')) {
+            $detail = $identity.Replace('"identityMismatchMask":1','"identityMismatchMask":16').Replace('"observedFlags":369099527',('"observedFlags":' + $flags))
+            $wire = $queryBase.Replace('"nativeActionDiagnostic":null',('"nativeActionDiagnostic":' + $detail))
+            if ($phase -ceq 'final_query') {
+                $wire = $wire.Replace('"nativePhase":"initial_query"','"nativePhase":"final_query"').Replace('initial_ownership_uncertain','ownership_or_stop_uncertain')
+            }
+            $read = Read-ManualStatus ($encode.GetBytes($wire)) 3
+            if ($read.summaryAvailable -or $read.nativeActionDiagnostic.identityMismatchMask -ne 16 -or $read.nativeActionDiagnostic.observedFlags -ne $flags) { throw 'active_profile_mismatch_selftest' }
+            $rejected = $false
+            try { $null = Read-ManualStatus ($encode.GetBytes($wire.Replace('"identityMismatchMask":16','"identityMismatchMask":1'))) 3 } catch { $rejected = $true }
+            if (-not $rejected) { throw 'active_profile_missing_bit_selftest' }
+        }
+    }
+    $cases.Add(@{name='active_profile_variants_reported';passed=$true})
+    $cases.Add(@{name='active_profile_variants_forgery_refused';passed=$true})
     foreach ($row in $bad) {
         $refused = $false
         try { $null = Read-ManualStatus ($encode.GetBytes($row.text)) $row.exit } catch { $refused = $true }

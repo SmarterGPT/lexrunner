@@ -23,9 +23,9 @@ automatic orphan cleanup; it would turn stale/foreign state into authority.
 
 The proposed native fields are `EVENT_TRACE_FILE_MODE_SEQUENTIAL |
 EVENT_TRACE_SYSTEM_LOGGER_MODE | EVENT_TRACE_STOP_ON_HYBRID_SHUTDOWN` (`0x02400001`), 64 KiB buffers, 64 minimum and
-128 maximum buffers, and a 128 MiB file cap. `EnableFlags=0x06000307` selects
+128 maximum buffers, and a 128 MiB file cap. `EnableFlags=0x16000307` selects
 process, thread, image load, file IO, file IO init, disk IO and file-name
-events. The `DISK_FILE_IO` file-name flag requires `DISK_IO`; the extra disk
+events, plus explicit suppression of unrelated system-configuration rundown. The `DISK_FILE_IO` file-name flag requires `DISK_IO`; the extra disk
 events may make the 128 MiB limit or three lost counters fail, in which case
 the capture refuses. The exact flags and limits need an isolated-host
 calibration. Do not silently relax them to obtain a pass.
@@ -129,8 +129,45 @@ capture outcomes. See `MANUAL_CALIBRATION.md` for the exact diagnostic boundary.
 The status writer and sanitizer reject cross-field contradictions: calibration success has no native failure fields, and ownership, STOP, Job, census or cleanup uncertainty never supplies a summary. Only failed Start with an observed nonzero code can retain native failure fields in a deletion-proven refused summary. Pure controls cover every uncertainty reason, all four native phases with success, and incompatible refusal/native pairs.
 
 The hosted terminal profile requires exactly flags0 after successful owned-handle
-STOP; both active queries still require exactly0x06000307. Name, GUID, path and
+STOP; at that correction both active queries required exactly0x06000307.
+The newer no-system-configuration profile below supersedes that active value. Name, GUID, path and
 mode stay exact. Zero terminal flags were observed on the qualified disposable
 host and are not a universal ControlTrace API guarantee. Other terminal values
 refuse; no active-or-zero allowlist or ignored flag bits are used. See
 MANUAL_CALIBRATION.md for the exact observed run and status/5 phase grammar.
+
+## Explicit no-system-configuration diagnostic profile
+
+The current requested and active read-back profile is exactly0x16000307:
+the former0x06000307 required event bits plus EVENT_TRACE_FLAG_NO_SYSCONFIG
+0x10000000. It retains Process, Thread, Image, disk/file-name and FileIo events
+while explicitly omitting automatic system-configuration rundown that is outside
+this Git diagnostic's purpose. Post-STOP flags remain exactly0. Old active
+flags, missing required bits and unknown additional bits refuse; no flag mask or
+alternative profile is accepted. Private status/6 binds the mismatch grammar to
+this active value and rejects older private status versions.
+
+Run41156593717 atd45e13c6 confirmed owned STOP, terminal Job drain and deletion
+of its raw ETL, but its unfiltered schema census refused the aggregate4096
+property-name character budget. The failing provider/schema was not retained;
+system configuration is not proven to have caused that overflow. Omitting it is
+scope/privacy minimization, not a guaranteed cure. All parser/allocation/schema/
+name/output/time/loss/header/cleanup caps and gates remain unchanged. The parser
+still processes all captured schema families; it does not filter inconvenient
+events or report a partial census as complete. Required event payload grammar,
+lifetime/image/file binding and volume-map qualification remain separate work.
+
+The refused census replaces its header/count fields with defaults. Its zero
+header-loss fields and false header-end validity therefore do not establish raw
+header observations. The same run's three Job processes also fail the existing
+one-process fixed Git profile independently of census. That refusal remains;
+neither their identities nor a permitted count increase is inferred here.
+
+No ETW or Git child runs during source qualification. One new exact-main
+disposable observation may follow independent review and required CI. All
+execution/loader/helper-readiness fields remain false. Earlier uncertain runs
+gain no retroactive cleanup proof, and npm never installs the optional helper.
+
+Primary references:
+https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties_v2
+Windows SDK10.0.26100 shared/evntrace.h defines NO_SYSCONFIG as0x10000000.

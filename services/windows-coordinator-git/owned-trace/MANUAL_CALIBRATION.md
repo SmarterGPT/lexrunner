@@ -216,7 +216,8 @@ https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-stoptra
 Run41005438193/job123899165230 at4f9bad13 observed successful native STOP,
 exact name/GUID/path/mode, and flags0 after both active queries matched
 0x06000307. For this explicit hosted profile the post-STOP decoder now requires
-exactly flags0. Active initial/final queries still require exactly0x06000307.
+exactly flags0. At that terminal correction, active initial/final queries
+required exactly0x06000307; the newer profile below supersedes that active value.
 Retained active flags, partial flags, unknown bits and all other nonzero
 terminal flags refuse; there is no active-or-zero allowlist and no masking.
 
@@ -237,3 +238,39 @@ No new ETW or worker child was run for this source qualification.
 Primary source:
 https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew
 https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties
+
+## Explicit no-system-configuration diagnostic profile
+
+The current requested and active read-back profile is exactly0x16000307:
+the former0x06000307 required event bits plus EVENT_TRACE_FLAG_NO_SYSCONFIG
+0x10000000. It retains Process, Thread, Image, disk/file-name and FileIo events
+while explicitly omitting automatic system-configuration rundown that is outside
+this Git diagnostic's purpose. Post-STOP flags remain exactly0. Old active
+flags, missing required bits and unknown additional bits refuse; no flag mask or
+alternative profile is accepted. Private status/6 binds the mismatch grammar to
+this active value and rejects older private status versions.
+
+Run41156593717 atd45e13c6 confirmed owned STOP, terminal Job drain and deletion
+of its raw ETL, but its unfiltered schema census refused the aggregate4096
+property-name character budget. The failing provider/schema was not retained;
+system configuration is not proven to have caused that overflow. Omitting it is
+scope/privacy minimization, not a guaranteed cure. All parser/allocation/schema/
+name/output/time/loss/header/cleanup caps and gates remain unchanged. The parser
+still processes all captured schema families; it does not filter inconvenient
+events or report a partial census as complete. Required event payload grammar,
+lifetime/image/file binding and volume-map qualification remain separate work.
+
+The refused census replaces its header/count fields with defaults. Its zero
+header-loss fields and false header-end validity therefore do not establish raw
+header observations. The same run's three Job processes also fail the existing
+one-process fixed Git profile independently of census. That refusal remains;
+neither their identities nor a permitted count increase is inferred here.
+
+No ETW or Git child runs during source qualification. One new exact-main
+disposable observation may follow independent review and required CI. All
+execution/loader/helper-readiness fields remain false. Earlier uncertain runs
+gain no retroactive cleanup proof, and npm never installs the optional helper.
+
+Primary references:
+https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties_v2
+Windows SDK10.0.26100 shared/evntrace.h defines NO_SYSCONFIG as0x10000000.
