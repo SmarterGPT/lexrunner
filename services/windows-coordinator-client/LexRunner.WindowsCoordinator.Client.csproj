@@ -17,6 +17,8 @@
     <Compile Include="..\windows-coordinator-selection-custody\CustodyContract.cs" Link="SelectionCustody\CustodyContract.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\NativeRegistryReader.cs" Link="SelectionCustody\NativeRegistryReader.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\CustodyContractV3.cs" Link="SelectionCustody\CustodyContractV3.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\PublicationContractV3.cs" Link="SelectionCustody\PublicationContractV3.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\PublicationContractV3FixtureTests.cs" Link="SelectionCustody\PublicationContractV3FixtureTests.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\NativeRegistryReaderV3.cs" Link="SelectionCustody\NativeRegistryReaderV3.cs" />
     <Compile Include="..\..\installers\windows-coordinator\v3\GraphV3.cs" Link="GraphV3\GraphV3.cs" />
   </ItemGroup>

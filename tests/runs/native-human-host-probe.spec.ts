@@ -8,6 +8,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createNativeHumanHostProbe } from "../../scripts/probe-native-human-host.mjs";
+import Database from "better-sqlite3-multiple-ciphers";
+import { readHumanActionState } from "../../src/runs/agent-work-human-action-service.js";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -118,35 +120,99 @@ describe("non-authorizing native human host qualification probe", () => {
     }
   );
 
-  it("times out without admission or automatic redisplay, and ignores the original late reply", async () => {
-    const f = await fixture(undefined, undefined, 150);
-    let release!: () => void;
-    f.client.setRequestHandler(ElicitRequestSchema, async () => {
-      await new Promise<void>((done) => {
-        release = done;
-      });
-      return { action: "accept", content: { q0: "B" } };
-    });
-    const result = await f.call("present_sample");
-    expect(result).toMatchObject({
-      questionCount: 1,
-      holdPending: true,
-      answerAdmitted: false,
-      result: { status: "pending", reason: "expired" },
-    });
-    release();
-    await new Promise((done) => setImmediate(done));
-    const later = await f.call("status");
-    expect(later.answerAdmitted).toBe(false);
-    expect(later.inputJournal).toEqual({
-      recordedCount: 0,
-      reservedCount: 0,
-      humanQualified: false,
-    });
-    expect(later.observations.filter((v: any) => v.kind === "dispatch")).toHaveLength(1);
-    expect(later.observations.some((v: any) => v.kind === "valid_host_input_observed")).toBe(false);
-    expect((await f.call("present_sample")).result.reason).toBe("explicit_recovery_required");
-  });
+  it.each(["wall-clock expiry", "monotonic budget"] as const)(
+    "keeps %s pending without automatic redisplay, and ignores the original late reply",
+    async (ending) => {
+      // Freeze only UTC. The actual MCP request and monotonic budget timers still run.
+      // A local budget ending cannot manufacture a persisted wall-clock expiry.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      let release: (() => void) | undefined;
+      try {
+        const startedAt = Date.now();
+        const f = await fixture(undefined, undefined, 150);
+        let displays = 0;
+        f.client.setRequestHandler(ElicitRequestSchema, async () => {
+          displays++;
+          if (ending === "wall-clock expiry") vi.setSystemTime(startedAt + 150);
+          await new Promise<void>((done) => {
+            release = done;
+          });
+          return { action: "accept", content: { q0: "B" } };
+        });
+        const result = await f.call("present_sample");
+        const disposition = ending === "wall-clock expiry" ? "expired" : "failed";
+        expect(result).toMatchObject({
+          questionCount: 1,
+          holdPending: true,
+          answerAdmitted: false,
+          result: { status: "pending", reason: disposition, boundary: "transport" },
+          presentation: { presentationCount: 1, disposition },
+          inputJournal: { recordedCount: 0, reservedCount: 0, humanQualified: false },
+        });
+        expect(displays).toBe(1);
+        expect(result.observations.filter((v: any) => v.kind === "dispatch")).toHaveLength(1);
+
+        // Inspect only this newly created synthetic probe DB, without a writer or migration.
+        const retained = () => {
+          const db = new Database(join(f.root, "probe-coordination.db"), {
+            readonly: true,
+            fileMustExist: true,
+          });
+          try {
+            const row = db
+              .prepare("SELECT stateJson FROM run_coordination WHERE runId = ?")
+              .get(`ui-probe:${result.probeId}`) as { stateJson: string } | undefined;
+            if (!row) throw new Error("Synthetic probe run missing");
+            const entries = readHumanActionState(JSON.parse(row.stateJson)).entries;
+            expect(entries).toHaveLength(1);
+            return entries[0];
+          } finally {
+            db.close();
+          }
+        };
+        const beforeLateReply = retained();
+        expect(beforeLateReply.receipt).toBeNull();
+        expect(beforeLateReply.workerAnswer).toBeUndefined();
+        expect(beforeLateReply.inputEvents ?? []).toEqual([]);
+        expect(beforeLateReply.presentations).toHaveLength(1);
+        const closed = beforeLateReply.presentations![0];
+        expect(closed.presentationId).toBe(result.presentation.presentationId);
+        expect(closed.disposition).toBe(disposition);
+        expect(Date.parse(closed.challenge.expiresAt)).toBe(startedAt + 150);
+        const closedAt = Date.parse(closed.closedAt!);
+        if (ending === "wall-clock expiry") {
+          expect(closedAt).toBe(startedAt + 150);
+          expect(closedAt).toBeGreaterThanOrEqual(Date.parse(closed.challenge.expiresAt));
+        } else {
+          expect(closedAt).toBe(startedAt);
+          expect(closedAt).toBeLessThan(Date.parse(closed.challenge.expiresAt));
+        }
+
+        expect(release).toBeTypeOf("function");
+        release!();
+        await new Promise((done) => setImmediate(done));
+        const later = await f.call("status");
+        expect(later).toMatchObject({
+          requestId: result.requestId,
+          questionCount: 1,
+          holdPending: true,
+          answerAdmitted: false,
+          presentation: { presentationCount: 1, disposition },
+          inputJournal: { recordedCount: 0, reservedCount: 0, humanQualified: false },
+        });
+        expect(later.observations.filter((v: any) => v.kind === "dispatch")).toHaveLength(1);
+        expect(later.observations.some((v: any) => v.kind === "valid_host_input_observed")).toBe(
+          false
+        );
+        expect(retained()).toEqual(beforeLateReply);
+        expect((await f.call("present_sample")).result.reason).toBe("explicit_recovery_required");
+        expect(displays).toBe(1);
+      } finally {
+        release?.();
+        vi.useRealTimers();
+      }
+    }
+  );
 
   it("rejects agent-supplied answers and unknown tools before creating a question", async () => {
     const f = await fixture();

@@ -158,6 +158,16 @@ try {
     $projectRoot 0 | Out-Null
   $pureText = Invoke-CheckedStep 'v3_installed_pure_selftest' $fixtureImage `
     @('--v3-installed-fixture-selftest') $projectRoot 0
+  $publicationExcluded = Invoke-CheckedStep 'v3_publication_model_excluded' $normalImage `
+    @('--v3-publication-contract-selftest') $projectRoot 3
+  if (($publicationExcluded.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
+    throw 'Ordinary image exposed publication model.'
+  }
+  $publicationText = Invoke-CheckedStep 'v3_publication_pure_selftest' $fixtureImage `
+    @('--v3-publication-contract-selftest') $projectRoot 0
+  if (-not $publicationText.TrimEnd().EndsWith(
+      'publication_contract_pure_selftest PASS cases=74 failures=0 authorizesLaunch=false authorizesEffect=false nativeEffects=0',
+      [StringComparison]::Ordinal)) { throw 'Pure publication contract did not pass.' }
   $pure = $pureText.Trim() | ConvertFrom-Json
   if ($pure.state -ne 'pass' -or
       $pure.profile -ne 'v3_installed_source_only_pure' -or
@@ -272,7 +282,8 @@ finally {
     }
   }
   foreach ($name in @('CustodyContract.cs', 'NativeRegistryReader.cs',
-      'CustodyContractV3.cs', 'NativeRegistryReaderV3.cs')) {
+      'CustodyContractV3.cs', 'NativeRegistryReaderV3.cs',
+      'PublicationContractV3.cs', 'PublicationContractV3FixtureTests.cs')) {
     $path = Join-Path $repoRoot "services/windows-coordinator-selection-custody/$name"
     $sources["selection-custody/$name"] =
       (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -305,6 +316,7 @@ finally {
     held_test_count = $heldCount
     graph_test_count = $graphCount
     retained_use_test_count = $retainedUseCount
+    publication_pure_test_count = 74
     total_duration_ms = $clock.ElapsedMilliseconds
     steps = $steps
     failure = $failure

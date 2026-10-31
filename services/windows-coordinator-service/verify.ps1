@@ -22,6 +22,10 @@ Invoke-Publish $normal $false
 $normalImage = Join-Path $normal $image
 if (-not (Test-Path -LiteralPath $normalImage -PathType Leaf)) { throw 'normal image missing' }
 $normalHash = (Get-FileHash -LiteralPath $normalImage -Algorithm SHA256).Hash.ToLowerInvariant()
+$normalPublicationProbe = & $normalImage --v3-publication-contract-selftest 2>&1
+if ($LASTEXITCODE -ne 2 -or ($normalPublicationProbe -join '') -ne 'scm_only') {
+    throw 'normal image exposed publication model'
+}
 
 $normalProbe = & $normalImage --protocol-selftest 2>&1
 if ($LASTEXITCODE -ne 2 -or ($normalProbe -join '') -ne 'scm_only') {
@@ -52,6 +56,11 @@ Invoke-Publish $fixture $true
 $fixtureImage = Join-Path $fixture $image
 if (-not (Test-Path -LiteralPath $fixtureImage -PathType Leaf)) { throw 'fixture image missing' }
 $fixtureHash = (Get-FileHash -LiteralPath $fixtureImage -Algorithm SHA256).Hash.ToLowerInvariant()
+$publicationProbe = & $fixtureImage --v3-publication-contract-selftest 2>&1
+if ($LASTEXITCODE -ne 0 -or $publicationProbe[-1] -cne
+    'publication_contract_pure_selftest PASS cases=74 failures=0 authorizesLaunch=false authorizesEffect=false nativeEffects=0') {
+    throw 'pure publication contract did not pass'
+}
 $fixtureProbe = & $fixtureImage --protocol-selftest 2>&1
 if ($LASTEXITCODE -ne 0 -or ($fixtureProbe -join '') -ne 'protocol_selftest_pass') {
     throw 'fixture protocol selftest failed'
@@ -77,6 +86,11 @@ $sources = @('CoordinatorPipe.cs', 'CoordinatorPrivateNode.cs', 'CoordinatorProt
 $hashes = [ordered]@{}
 foreach ($source in $sources) {
     $hashes[$source] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $source) -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+foreach ($source in @('CustodyContract.cs', 'CustodyContractV3.cs',
+        'PublicationContractV3.cs', 'PublicationContractV3FixtureTests.cs')) {
+    $sharedSource = Join-Path $repo "services/windows-coordinator-selection-custody/$source"
+    $hashes["selection-custody/$source"] = (Get-FileHash -LiteralPath $sharedSource -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
 # The build tools write bin/obj even when they are ignored by Git. Remove only
@@ -120,6 +134,7 @@ $receipt = [pscustomobject]@{
     fixturePipeSelfTest = 'pipe_selftest_pass'
     fixtureLifecycleSelfTest = 'lifecycle_selftest_pass'
     fixturePrivateLaunchSelfTest = 'private_launch_selftest_pass'
+    publicationPureTestCount = 74
     normalPrivateLaunchMode = 'scm_only'
     normalPrivateChildMode = 'scm_only'
     installedServiceQualified = $false
