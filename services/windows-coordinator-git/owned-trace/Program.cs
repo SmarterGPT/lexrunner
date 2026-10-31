@@ -7,7 +7,7 @@ internal static class Program
 {
     private const string SessionName = "LexRunner Windows Git Loader Qualification";
     private const uint ExpectedMode = 0x02400001; // system logger + sequential file + stop on hybrid shutdown
-    private const uint ExpectedFlags = 0x06000307; // process/thread/image/file IO + disk/file name
+    private const uint ExpectedFlags = 0x16000307; // process/thread/image/file IO + disk/file name; suppress unrelated system-config rundown
 
     private static int Main(string[] args)
     {
