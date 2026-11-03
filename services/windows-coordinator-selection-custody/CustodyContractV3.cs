@@ -174,7 +174,9 @@ internal static class CustodyContractV3
         return number;
     }
 
-    private static void VerifySecurity(byte[] bytes)
+    // Shared exact registry policy; callers still require independently rooted
+    // expectations. Passing this structural check never enrolls an object.
+    internal static void VerifySecurity(byte[] bytes)
     {
         if (bytes.Length is < 20 or > 8192)
             throw new CustodyException("owner_or_dacl_mismatch");

@@ -10,12 +10,19 @@
     <StripSymbols>true</StripSymbols>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <PropertyGroup Condition="'$(SelectionPublisherFixture)' == 'true'">
     <DefineConstants>$(DefineConstants);SELECTION_PUBLISHER_FIXTURE</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Production administration belongs only to the existing coordinator
+         service image. Preserve this standalone publisher's fixture boundary. -->
+    <Compile Remove="NativeProtectedPublicationStore.cs" />
+    <Compile Remove="NativePublicationAdministration.cs" />
+    <Compile Remove="NativePublicationMutex.cs" />
+    <Compile Remove="PublicationAdminEntrypoint.cs" />
     <Compile Remove="VerifierBoundedProcess.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\CustodyContract.cs" Link="SelectionCustody\CustodyContract.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\CustodyContractV3.cs" Link="SelectionCustody\CustodyContractV3.cs" />

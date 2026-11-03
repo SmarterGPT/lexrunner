@@ -168,6 +168,12 @@ The verifier builds normal and gated NativeAOT images under
 tests (including v2 registry-only no-send cases), runs the npm package boundary
 validator, and records bounded command,
 cwd, duration, exit, output hash/tail, source hashes, and image hashes in
-`artifacts/windows-coordinator-client/verification-receipt.json`. These are
-uninstalled review artifacts. It removes only this project's checked `bin/`
+`artifacts/windows-coordinator-client/qualification-<nonce>/verification-receipt.json`. These are
+uninstalled review artifacts. It preserves pre-existing project `bin/`
 and `obj/` directories after the run; published review images are retained.
+
+Each client verification now retains a fresh qualification directory, separate
+normal/fixture build outputs and exact source hashes before/after. Pre-existing
+project bin/obj cause refusal and remain untouched. Builds keep security audit
+enabled. The read-only client's explicit shared-reader/model closure is unchanged;
+it gains no production installed-publication reader or administration entrypoint.

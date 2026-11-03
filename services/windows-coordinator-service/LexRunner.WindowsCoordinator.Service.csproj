@@ -18,6 +18,12 @@
     <DefineConstants>$(DefineConstants);COORDINATOR_SERVICE_FIXTURE_TESTS</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\windows-coordinator-selection-publisher\NativePublicationMutex.cs" Link="Publication\NativePublicationMutex.cs" />
+    <Compile Include="..\windows-coordinator-selection-publisher\NativePublicationAdministration.cs" Link="Publication\NativePublicationAdministration.cs" />
+    <Compile Include="..\windows-coordinator-selection-publisher\NativeProtectedPublicationStore.cs" Link="Publication\NativeProtectedPublicationStore.cs" />
+    <Compile Include="..\windows-coordinator-selection-publisher\PublicationAdminEntrypoint.cs" Link="Publication\PublicationAdminEntrypoint.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\NativeRegistryReaderV3.cs" Link="SelectionCustody\NativeRegistryReaderV3.cs" />
+    <Compile Include="..\windows-coordinator-selection-custody\NativeInstalledPublicationReader.cs" Link="SelectionCustody\NativeInstalledPublicationReader.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\CustodyContract.cs" Link="SelectionCustody\CustodyContract.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\CustodyContractV3.cs" Link="SelectionCustody\CustodyContractV3.cs" />
     <Compile Include="..\windows-coordinator-selection-custody\PublicationContractV3.cs" Link="SelectionCustody\PublicationContractV3.cs" />

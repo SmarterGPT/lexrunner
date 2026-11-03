@@ -305,6 +305,9 @@ jobs:
       - name: Qualify inactive Windows coordinator v2 and v3 selection custody source
         shell: pwsh
         run: ./services/windows-coordinator-selection-custody/verify.ps1
+      - name: Verify protected publication storage pure source
+        shell: pwsh
+        run: ./tests/Verify-PublicationStorageSource.ps1
       - name: Qualify inactive graph-selected Windows Git source build
         shell: pwsh
         run: ./services/windows-coordinator-git/verify-portable.ps1
@@ -375,7 +378,7 @@ jobs:
             artifacts/windows-helper-msi-install-ci/*.json
             artifacts/windows-helper-msi-install-ci/*.log
             artifacts/windows-coordinator-host-probe/verification-receipt.json
-            artifacts/windows-coordinator-client/verification-receipt.json
+            artifacts/windows-coordinator-client/qualification-*/verification-receipt.json
             artifacts/windows-coordinator-service-source/qualification-*/verification-receipt.json
             artifacts/windows-coordinator-service-source/qualification-*/process-checks.json
             artifacts/windows-coordinator-service-source/qualification-*/build-checks.json
@@ -385,6 +388,7 @@ jobs:
             artifacts/windows-coordinator-root-provisioner/run-*/verification-receipt.json
             artifacts/windows-selection-publisher-*/verification-receipt.json
             artifacts/windows-selection-custody-*/verification-receipt.json
+            artifacts/windows-publication-storage-source/qualification-*/verification-receipt.json
             artifacts/windows-coordinator-git-portable/receipt-*.json
             artifacts/windows-coordinator-checkout-portable/receipt-*.json
             artifacts/windows-coordinator-v2-msi-offline/source-*/verification-receipt.json

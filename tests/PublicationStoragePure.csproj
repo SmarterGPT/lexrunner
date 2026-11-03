@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>PURE_PUBLICATION_TESTS;SELECTION_PUBLISHER_FIXTURE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="PublicationStoragePure.cs" />
+    <Compile Include="../services/windows-coordinator-selection-custody/CustodyContract.cs" />
+    <Compile Include="../services/windows-coordinator-selection-custody/CustodyContractV3.cs" />
+    <Compile Include="../services/windows-coordinator-selection-custody/PublicationContractV3.cs" />
+    <Compile Include="../services/windows-coordinator-selection-custody/PublicationContractV3FixtureTests.cs" />
+    <Compile Include="../services/windows-coordinator-selection-custody/NativeRegistryReaderV3.cs" />
+    <Compile Include="../services/windows-coordinator-selection-custody/NativeInstalledPublicationReader.cs" />
+    <Compile Include="../services/windows-coordinator-selection-publisher/NativeProtectedPublicationStore.cs" />
+    <Compile Include="../services/windows-coordinator-selection-publisher/NativePublicationMutex.cs" />
+    <Compile Include="../services/windows-coordinator-selection-publisher/NativePublicationAdministration.cs" />
+    <Compile Include="../services/windows-coordinator-selection-publisher/PublicationAdminEntrypoint.cs" />
+  </ItemGroup>
+</Project>

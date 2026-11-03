@@ -4,11 +4,14 @@ using System.Text;
 
 namespace LexRunner.WindowsCoordinator.SelectionCustody;
 
-// Fixed-path read-only registry probe. No Registry.SetValue, RegCreateKeyEx,
-// RegSetValueEx, RegDeleteKey, RegFlushKey, or privilege adjustment is present.
+// The historical observer remains fixed-path read-only. Internal handle/data
+// primitives are shared with the separately gated publication owner; no create,
+// write, flush, delete or privilege-adjustment API is present in this file.
 [SupportedOSPlatform("windows")]
 internal static class NativeRegistryReaderV3
 {
+    private static int closeUncertain;
+    internal static bool CloseUncertain => Volatile.Read(ref closeUncertain) != 0;
     private const uint KeyRead = 0x00020019;
     private const uint KeyWow64_64Key = 0x00000100;
     private const uint RegOptionOpenLink = 0x00000008;
@@ -62,10 +65,14 @@ internal static class NativeRegistryReaderV3
             selection.GenerationId);
     }
 
-    private static Key Open(nint parent, string child, string missingReason)
+    internal static Key Open(nint parent, string child, string missingReason,
+        uint access = KeyRead)
     {
+        // Preserve the historical observer's bounded refusal vocabulary; the
+        // separate process latch and new owners retain close uncertainty.
+        if (CloseUncertain) throw new CustodyException("registry_unavailable");
         var result = RegOpenKeyExW(parent, child, RegOptionOpenLink,
-            KeyRead | KeyWow64_64Key, out var handle);
+            access | KeyWow64_64Key, out var handle);
         if (result == ErrorFileNotFound) throw new CustodyException(missingReason);
         if (result != 0 || handle == 0) throw new CustodyException("registry_unavailable");
         var key = new Key(handle);
@@ -73,7 +80,7 @@ internal static class NativeRegistryReaderV3
         catch { key.Dispose(); throw; }
     }
 
-    private static KeySnapshot Capture(nint key, int maxSubkeys, int maxValues)
+    internal static KeySnapshot Capture(nint key, int maxSubkeys, int maxValues)
     {
         RejectLink(key);
         var security = ReadSecurity(key);
@@ -88,7 +95,7 @@ internal static class NativeRegistryReaderV3
         return new KeySnapshot(security, subkeys, values, false);
     }
 
-    private static void RejectLink(nint key)
+    internal static void RejectLink(nint key)
     {
         // A link target can be empty or malformed. Presence alone is a
         // redirect marker, so do not parse the target as an ordinary value.
@@ -99,7 +106,7 @@ internal static class NativeRegistryReaderV3
         if (status != ErrorFileNotFound) throw new CustodyException("registry_unavailable");
     }
 
-    private static byte[] ReadSecurity(nint key)
+    internal static byte[] ReadSecurity(nint key)
     {
         uint length = 0;
         var status = RegGetKeySecurity(key, OwnerSecurityInformation | DaclSecurityInformation,
@@ -113,7 +120,7 @@ internal static class NativeRegistryReaderV3
         return bytes;
     }
 
-    private static string[] ListSubkeys(nint key, int maximum)
+    internal static string[] ListSubkeys(nint key, int maximum)
     {
         var names = new List<string>();
         for (uint index = 0; index <= maximum; index++)
@@ -130,7 +137,7 @@ internal static class NativeRegistryReaderV3
         throw new CustodyException("shape_mismatch");
     }
 
-    private static string[] ListValues(nint key, int maximum)
+    internal static string[] ListValues(nint key, int maximum)
     {
         var names = new List<string>();
         for (uint index = 0; index <= maximum; index++)
@@ -147,13 +154,14 @@ internal static class NativeRegistryReaderV3
         throw new CustodyException("shape_mismatch");
     }
 
-    private static RegistryValue? ReadRaw(nint key, string name)
+    internal static RegistryValue? ReadRaw(nint key, string name, int maximum = 8192)
     {
         uint length = 0;
         var status = RegQueryValueExW(key, name, nint.Zero, out var type, null, ref length);
         if (status == ErrorFileNotFound) return null;
         if (status != 0 && status != ErrorMoreData) throw new CustodyException("registry_unavailable");
-        if (length is < 1 or > 8192) throw new CustodyException("shape_mismatch");
+        if (maximum is < 1 or > PublicationContractV3.MaxBytes || length < 1 || length > maximum)
+            throw new CustodyException("shape_mismatch");
         var bytes = new byte[checked((int)length)];
         var readLength = length;
         if (RegQueryValueExW(key, name, nint.Zero, out type, bytes, ref readLength) != 0 ||
@@ -162,15 +170,19 @@ internal static class NativeRegistryReaderV3
         return new RegistryValue(type, bytes);
     }
 
-    private sealed class Key(nint handle) : IDisposable
+    internal sealed class Key(nint handle) : IDisposable
     {
         private nint handle = handle;
         internal nint Handle => handle != 0 ? handle : throw new ObjectDisposedException(nameof(Key));
         public void Dispose()
         {
-            if (handle == 0) return;
-            _ = RegCloseKey(handle);
-            handle = 0;
+            var owned = Interlocked.Exchange(ref handle, 0);
+            if (owned == 0) return;
+            if (RegCloseKey(owned) != 0)
+            {
+                Interlocked.Exchange(ref closeUncertain, 1);
+                throw new CustodyException("registry_unavailable");
+            }
         }
     }
 

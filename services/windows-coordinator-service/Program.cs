@@ -59,6 +59,9 @@ internal static class Program
 #endif
         if (OperatingSystem.IsWindows() && args is ["--private-trust-child"])
             return CoordinatorTrustChild.Run();
+        if (OperatingSystem.IsWindows() &&
+            LexRunner.WindowsCoordinator.SelectionPublisher.PublicationAdminEntrypoint.Classify(args) is { } publicationMode)
+            return LexRunner.WindowsCoordinator.SelectionPublisher.PublicationAdminEntrypoint.Run(publicationMode);
         if (!OperatingSystem.IsWindows() || args.Length != 1 || args[0] != "--service")
         {
             Console.Error.WriteLine("scm_only");
