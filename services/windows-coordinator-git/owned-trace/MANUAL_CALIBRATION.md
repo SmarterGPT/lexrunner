@@ -311,3 +311,34 @@ managed code. Source review also binds DLL/PDB source checksums and dependency/
 runtime configuration files. All original trace, event/schema/property/output/
 time/loss/stop/cleanup bounds remain unchanged; source qualification starts no
 trace or Git child. A new actual observation still needs exact-head review and CI.
+
+## Finalized header and detached fixture follow-up
+
+Actual hosted41780279431 at reviewed main36b1777 refused. Its retained raw header
+has valid start/end FILETIMEs,128-MiB maximum,pointer size8 and both loss fields0,
+but LogFileMode is0x02000001, not the separately observed live0x02400001.
+The new offline profile requires exact system+sequential0x02000001. Live query,
+ownership and STOP checks still require exact0x02400001; no unknown-bit masking
+or two-value fallback is added. This is a bounded Windows Server20348 observation,
+not a universal serialization guarantee or a qualified complete census. Microsoft
+documents the stop-on-hybrid flag as a session lifecycle option:
+https://learn.microsoft.com/en-us/windows/win32/etw/logging-mode-constants
+Header fields are specified separately:
+https://learn.microsoft.com/en-us/windows/win32/etw/trace-logfile-header
+
+The same run retained two exact-Job process samples: selected Git root and a
+child classified only as console_name_candidate. A basename is not System32
+provenance, a trusted image or an allowed companion. For the manual calibration
+profile only, launch uses DETACHED_PROCESS instead of CREATE_NO_WINDOW. It
+retains CREATE_SUSPENDED, creation-time Job membership, exact handle allowlist,
+bounded redirected streams and all lifetime/drain checks. The normal image and
+all other fixture profiles retain their original creation flags. One lifetime
+Job process is still required; if Git allocates its own console or starts any
+child, qualification still refuses. Microsoft distinguishes these flags and
+permits a detached child to call AllocConsole later:
+https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+
+This source change is a testable hypothesis, not a passed host run. Source CI,
+fresh independent exact-head review and a later exact-main hosted observation
+are required. No installed authority, mapped-loader custody, helper selection,
+governed Attempt or npm helper acquisition is authorized or established.

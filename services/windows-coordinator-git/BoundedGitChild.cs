@@ -26,6 +26,7 @@ internal static class BoundedGitChild
     private const uint WaitObject0 = 0;
     private const uint WaitTimeout = 258;
 #if GIT_IMPORT_FIXTURE
+    private const uint DetachedProcess = 0x00000008;
     private const uint ProcessQueryLimitedInformation = 0x1000;
     private const int MaxObservedJobProcesses = 64;
 #endif
@@ -57,6 +58,12 @@ internal static class BoundedGitChild
         return manualProfile?.GitImage ?? graphProfile?.GitImage ?? GitBundleImport.GitImage;
     }
 
+    // Manual disposable calibration only. A detached process does not request
+    // a new invisible console. Job/handle-list/suspension flags stay identical.
+    private static uint SelectManualCreationFlags(ManualEtwGitProfile? profile) =>
+        CreateSuspended | CreateUnicodeEnvironment | ExtendedStartupInfoPresent |
+        (profile is null ? CreateNoWindow : DetachedProcess);
+
     internal static bool ManualEtwSourceSelfTest()
     {
         try
@@ -67,7 +74,9 @@ internal static class BoundedGitChild
             var manual = ManualEtwGitProfile.Create(slot, ManualEtwGitProfile.SelectedSha256);
             return SelectImagePath(null, manual) ==
                 @"C:\LexRunner.Qualification.Git\ucrt64\bin\git.exe" &&
-                SelectImagePath(null, null) == GitBundleImport.GitImage;
+                SelectImagePath(null, null) == GitBundleImport.GitImage &&
+                SelectManualCreationFlags(null) == 0x08080404 &&
+                SelectManualCreationFlags(manual) == 0x0008040c;
         }
         catch { return false; }
     }
@@ -213,10 +222,14 @@ internal static class BoundedGitChild
                 },
                 Attributes = attributes
             };
+            var creationFlags = CreateSuspended | CreateUnicodeEnvironment |
+                ExtendedStartupInfoPresent | CreateNoWindow;
+#if GIT_IMPORT_FIXTURE
+            creationFlags = SelectManualCreationFlags(manualProfile);
+#endif
             CheckStopBeforeLaunch("before_create");
             if (!CreateProcessW(imagePath, new StringBuilder(commandText), IntPtr.Zero,
-                    IntPtr.Zero, true, CreateSuspended | CreateUnicodeEnvironment |
-                    ExtendedStartupInfoPresent | CreateNoWindow,
+                    IntPtr.Zero, true, creationFlags,
                     environmentBlock, cwd, ref startup, out child))
                 throw NativeFailure("git_child_create_failed");
             created = true; // JOB_LIST assigns before any child code can run.

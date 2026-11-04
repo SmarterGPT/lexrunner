@@ -101,7 +101,7 @@ $selfResult = Get-Content -LiteralPath (Join-Path $stage 'selftest.stdout') -Raw
 if ($selfResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
     $selfResult.result -cne 'source_fixture_pass' -or
     $selfResult.nativeLayoutVerified -ne $true -or
-    @($selfResult.cases).Count -ne 49 -or
+    @($selfResult.cases).Count -ne 57 -or
     @($selfResult.cases | Where-Object { $_.Passed -ne $true }).Count -ne 0 -or
     $selfResult.traceStarted -ne $false -or $selfResult.traceStopped -ne $false -or
     $selfResult.authorizesLoaderClosure -ne $false -or
@@ -112,7 +112,7 @@ if ($selfResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
 $query = Invoke-Bounded 'query-diagnostic-selftest' @($dll, '--query-diagnostic-selftest') 8192 10000
 if ($query.exitCode -ne 0 -or $query.stderrBytes -ne 0) { throw 'query_diagnostic_selftest_failed' }
 $queryResult = Get-Content -LiteralPath (Join-Path $stage 'query-diagnostic-selftest.stdout') -Raw | ConvertFrom-Json
-if ($queryResult.result -cne 'pass' -or @($queryResult.cases).Count -ne 129 -or
+if ($queryResult.result -cne 'pass' -or @($queryResult.cases).Count -ne 130 -or
     @($queryResult.cases | Where-Object { $_.Passed -ne $true }).Count -ne 0 -or
     $queryResult.authorizesExecution -ne $false) { throw 'query_diagnostic_readback_invalid' }
 
@@ -179,8 +179,8 @@ $receipt = [ordered]@{
     sourceCwd = $PSScriptRoot
     durationMs = $clock.ElapsedMilliseconds
     imageSha256 = $imageHash
-    nativeActionDiagnosticCaseCount = 129
-    caseCount = 49
+    nativeActionDiagnosticCaseCount = 130
+    caseCount = 57
     preflightCaseCount = 39
     statusSanitizerCaseCount = 172
     commands = @($commands.ToArray())

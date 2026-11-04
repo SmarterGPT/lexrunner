@@ -34,7 +34,11 @@ internal static class SchemaCensus
     private const int PropertyInfoBytes = 24;
     private const int PropertyNameOffset = 4;
     private const uint EventRecordMode = 0x10000000;
-    private const uint ExpectedCaptureMode = 0x02400001;
+    // The finalized ETL header is not the live EVENT_TRACE_PROPERTIES readback.
+    // Hosted20348 observation41780279431 retained system+sequential, without
+    // the live stop-on-hybrid-shutdown control bit. Require this exact profile;
+    // do not mask unknown bits or relax the separate live ownership checks.
+    private const uint ExpectedCaptureMode = 0x02000001;
     private const ushort ClassicHeader = 0x0100;
     private const uint ErrorInsufficientBuffer = 122;
     private const uint ErrorNotFound = 1168;
@@ -109,6 +113,10 @@ internal static class SchemaCensus
         Add("header_start_refusal_preserved", (header with { StartFileTimeUtc = 0 }).FirstFailedCheck == "start_time");
         Add("header_end_refusal_preserved", (header with { EndFileTimeUtc = 1 }).FirstFailedCheck == "end_time");
         Add("header_mode_refusal_preserved", (header with { CaptureMode = 1 }).FirstFailedCheck == "capture_mode");
+        foreach (var mode in new uint[] { 0, 1, 0x02400001, 0x02800001,
+            0x02c00001, 0x82000001, 0x02000000, 0x02000003 })
+            Add("offline_header_mode_refused_" + mode,
+                (header with { CaptureMode = mode }).FirstFailedCheck == "capture_mode");
         Add("header_size_refusal_preserved", (header with { MaximumFileSizeMiB = 0 }).FirstFailedCheck == "maximum_file_size");
         Add("header_pointer_refusal_preserved", (header with { PointerSize = 4 }).FirstFailedCheck == "pointer_size");
         var refusedHeader = Refuse("etl_header_invalid", header with { CaptureMode = 1 });

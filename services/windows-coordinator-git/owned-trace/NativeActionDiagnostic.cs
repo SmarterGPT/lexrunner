@@ -54,8 +54,10 @@ internal sealed record NativeActionDiagnostic(uint? NativeResultCode, string Fai
             Check(failure, NativeTraceAdapter.SyntheticParseFailure(failure));
         var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
             Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02400001, 0x16000307);
-        Check("fixed_mode_accepted", NativeTraceAdapter.IdentityIsBounded(expected) &&
-            SchemaCensus.CaptureModeIsExpected(expected.Mode));
+        Check("fixed_live_mode_accepted", NativeTraceAdapter.IdentityIsBounded(expected));
+        Check("offline_header_mode_is_separate", SchemaCensus.CaptureModeIsExpected(0x02000001) &&
+            !SchemaCensus.CaptureModeIsExpected(expected.Mode) &&
+            !NativeTraceAdapter.IdentityIsBounded(expected with { Mode = 0x02000001 }));
         foreach (var mode in new uint[] { 0x02000001, 0x02800001, 0x02c00001,
             0x82400001, 0x02400000, 0x02400003 })
         {
@@ -69,7 +71,7 @@ internal sealed record NativeActionDiagnostic(uint? NativeResultCode, string Fai
             Check("fixed_mode_refused_" + mode, began && !accepted && stateMatched && mismatch == 8 &&
                 !gate.BeginStop(42) && !gate.BeginQuery(42) &&
                 !NativeTraceAdapter.IdentityIsBounded(expected with { Mode = mode }) &&
-                !SchemaCensus.CaptureModeIsExpected(mode) && diagnostic.Valid(13, "initial_query") &&
+                diagnostic.Valid(13, "initial_query") &&
                 !(diagnostic with { IdentityMismatchMask = 1 }).Valid(13, "initial_query"));
         }
         {
