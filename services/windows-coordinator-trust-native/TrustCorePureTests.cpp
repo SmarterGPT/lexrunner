@@ -119,6 +119,21 @@ int main() {
         check(hashFailureCaught&&hashFailureCalls==1&&!cleanHashFailure.Uncertain()&&
             SelectedCompletion(true,false,LexTrustRequiredMask)==LexTrustCompletion::Refused,
             "hash_failure_with_clean_close_remains_refused");
+        // Header/layout vectors only: no SIP, WinTrust, process or file API.
+        check(sizeof(LexTrustRequestV2)==96&&sizeof(LexTrustResultV2)==272,"v2_layout_unchanged");
+        check(sizeof(LexTrustRequestV3)==128&&sizeof(LexTrustResultV3)==320,"v3_layout_fixed");
+        LexTrustRequestV3 header{};header.size=sizeof(header);header.version=LexTrustAbiVersion3;
+        header.fileKind=2;header.requiredFeatures=LexTrustFeaturesForKind(2);
+        check(LexTrustV3HeaderSupported(&header),"known_msi_header_supported_not_authorized");
+        auto h=header;h.fileKind=1;h.requiredFeatures=LexTrustFeaturesForKind(1);
+        check(LexTrustV3HeaderSupported(&h),"known_pe_header_supported");
+        h=header;h.fileKind=0;check(!LexTrustV3HeaderSupported(&h),"unknown_kind_refused");
+        h=header;h.version=4;check(!LexTrustV3HeaderSupported(&h),"unknown_abi_refused");
+        h=header;--h.size;check(!LexTrustV3HeaderSupported(&h),"wrong_size_refused");
+        h=header;h.requiredFeatures|=0x80000000;check(!LexTrustV3HeaderSupported(&h),"unknown_feature_refused");
+        h=header;h.requiredFeatures=0;check(!LexTrustV3HeaderSupported(&h),"missing_features_refused");
+        for(size_t i=0;i<4;++i){h=header;h.reserved[i]=1;check(!LexTrustV3HeaderSupported(&h),"reserved_field_refused");}
+        check(!LexTrustV3HeaderSupported(nullptr),"missing_header_refused");
         check(!CngCloseState.Uncertain(),"no_real_cng_operation");
         check(NativeTrustCalls==0&&CurrentRevocationCalls==0&&TimestampMathCalls==0&&PurposePolicyCalls==0,"no_sdk_trust_calls");
         std::cout<<"{\"result\":\"pure_pass\",\"cases\":"<<cases<<",\"sdkTrustCalls\":0,\"childStarted\":false,\"authorizesExecution\":false}\n";

@@ -26,21 +26,26 @@ $lib=Join-Path $out 'LexRunner.TrustSdkCore.lib'
 $sdk=Join-Path $PSScriptRoot 'HeldTrustSdkCore.cpp'
 $policy=Join-Path $PSScriptRoot 'SelectedTrustPolicy.cpp'
 $pure=Join-Path $out 'trust-core-pure.exe'
+$probe=Join-Path $out 'trust-subject-probe.exe'
 $cmd=Join-Path $out 'compile-native.cmd'
 $lines=@('@echo off',('call "'+$dev+'" -no_logo -host_arch=x64 -arch=x64'),'if errorlevel 1 exit /b %errorlevel%',
     ('cl.exe /nologo /std:c++20 /EHsc /W4 /WX /MT /O2 /guard:cf /DUNICODE /D_UNICODE /c "'+$sdk+'" /Fo:"'+(Join-Path $out 'sdk-core.obj')+'"'),
     'if errorlevel 1 exit /b %errorlevel%',
     ('cl.exe /nologo /std:c++20 /EHsc /W4 /WX /MT /O2 /guard:cf /DUNICODE /D_UNICODE /c "'+$policy+'" /Fo:"'+(Join-Path $out 'selected-policy.obj')+'"'),
     'if errorlevel 1 exit /b %errorlevel%',
-    ('lib.exe /nologo /out:"'+$lib+'" "'+(Join-Path $out 'sdk-core.obj')+'" "'+(Join-Path $out 'selected-policy.obj')+'"'),
+    ('cl.exe /nologo /std:c++20 /EHsc /W4 /WX /MT /O2 /guard:cf /DUNICODE /D_UNICODE /c "'+(Join-Path $PSScriptRoot 'MsiSubjectAdapter.cpp')+'" /Fo:"'+(Join-Path $out 'msi-subject.obj')+'"'),
+    'if errorlevel 1 exit /b %errorlevel%',
+    ('lib.exe /nologo /out:"'+$lib+'" "'+(Join-Path $out 'sdk-core.obj')+'" "'+(Join-Path $out 'selected-policy.obj')+'" "'+(Join-Path $out 'msi-subject.obj')+'"'),
     'if errorlevel 1 exit /b %errorlevel%',
     ('cl.exe /nologo /std:c++20 /EHsc /W4 /WX /MT /O2 /guard:cf /DUNICODE /D_UNICODE "'+(Join-Path $PSScriptRoot 'TrustCorePureTests.cpp')+'" "'+$lib+'" /Fe:"'+$pure+'" /Fo:"'+(Join-Path $out 'pure-tests.obj')+'" /link bcrypt.lib crypt32.lib wintrust.lib /DEPENDENTLOADFLAG:0x800 /DYNAMICBASE /NXCOMPAT /guard:cf'),
+    'if errorlevel 1 exit /b %errorlevel%',
+    ('cl.exe /nologo /std:c++20 /EHsc /W4 /WX /MT /O2 /guard:cf /DUNICODE /D_UNICODE "'+(Join-Path $PSScriptRoot 'TrustSubjectProbe.cpp')+'" "'+$lib+'" /Fe:"'+$probe+'" /Fo:"'+(Join-Path $out 'subject-probe.obj')+'" /link bcrypt.lib crypt32.lib wintrust.lib /DEPENDENTLOADFLAG:0x800 /DYNAMICBASE /NXCOMPAT /guard:cf'),
     'exit /b %errorlevel%')
 [IO.File]::WriteAllText($cmd,($lines -join "`n")+"`n",[Text.UTF8Encoding]::new($false))
 $clock=[Diagnostics.Stopwatch]::StartNew();$began=[DateTimeOffset]::UtcNow.ToString('o')
 $output=& cmd.exe /d /c $cmd 2>&1
 $code=$LASTEXITCODE;$clock.Stop()
-$source=@{};foreach($name in @('HeldTrustSdkCore.h','HeldTrustSdkCore.cpp','SelectedTrustAbi.h','SelectedTrustPolicy.h','SelectedTrustPolicy.cpp','Build-NativeTrustCore.ps1','TrustCorePureTests.cpp')) {
+$source=@{};foreach($name in @('HeldTrustSdkCore.h','HeldTrustSdkCore.cpp','SelectedTrustAbi.h','SelectedTrustPolicy.h','SelectedTrustPolicy.cpp','Build-NativeTrustCore.ps1','TrustCorePureTests.cpp','MsiSubjectAdapter.cpp','TrustSubjectProbe.cpp')) {
     $source[$name]=(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $name)).Hash.ToLowerInvariant()
 }
 $record=[ordered]@{command=@('cmd.exe','/d','/c',$cmd);cwd=$PWD.Path;startedUtc=$began;durationMs=$clock.ElapsedMilliseconds;
@@ -60,6 +65,6 @@ foreach($mode in @('normal','fixture')) {
         'exit /b %errorlevel%')
     [IO.File]::WriteAllText((Join-Path $out ('publish-'+$mode+'.cmd')),($publish -join "`n")+"`n",[Text.UTF8Encoding]::new($false))
 }
-[pscustomobject]@{pureImage=$pure;library=$lib;sha256=(Get-FileHash -LiteralPath $lib).Hash.ToLowerInvariant();
+[pscustomobject]@{pureImage=$pure;probeImage=$probe;library=$lib;sha256=(Get-FileHash -LiteralPath $lib).Hash.ToLowerInvariant();
     normalPublishScript=(Join-Path $out 'publish-normal.cmd');fixturePublishScript=(Join-Path $out 'publish-fixture.cmd');
     buildReceipt=(Join-Path $out 'build-receipt.json')}

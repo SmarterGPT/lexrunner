@@ -84,16 +84,23 @@ static std::vector<BYTE> ReadSelected(HANDLE file,uint64_t bytes) {
     }
     Need(SetFilePointerEx(file,zero,nullptr,FILE_BEGIN),"selected_rewind");return out;
 }
-extern "C" int32_t __cdecl LexRunnerVerifySelectedTrustV2(const LexTrustRequestV2* request,LexTrustResultV2* result) noexcept {
+// One global latch across both entry points, including input refusals.
+static std::atomic_flag SelectedRequestUsed=ATOMIC_FLAG_INIT;
+static void InitializeSelectedResult(LexTrustResultV2& out) noexcept {
+    out={};out.size=sizeof(out);out.version=LexTrustAbiVersion;
+    out.requiredMask=LexTrustRequiredMask;out.failedMask=LexTrustRequiredMask;out.policyRevision=1;
+    out.completion=static_cast<uint32_t>(LexTrustCompletion::Refused);out.phase=static_cast<uint32_t>(LexTrustPhase::Input);
+    out.winTrustResult=out.stateCloseResult=static_cast<int32_t>(E_UNEXPECTED);
+    out.primaryPurposeError=out.timestampPurposeError=MAXDWORD;
+}
+static int32_t VerifySelectedCore(const LexTrustRequestV2* request,LexTrustResultV2* result,
+    LexTrustFileKind kind,GUID* subject) noexcept {
     if(!result)return 1;
     *result={};auto& out=*result;out.size=sizeof(out);out.version=LexTrustAbiVersion;
     out.requiredMask=LexTrustRequiredMask;out.failedMask=LexTrustRequiredMask;out.policyRevision=1;
     out.completion=static_cast<uint32_t>(LexTrustCompletion::Refused);out.phase=static_cast<uint32_t>(LexTrustPhase::Input);
     out.winTrustResult=out.stateCloseResult=static_cast<int32_t>(E_UNEXPECTED);
     out.primaryPurposeError=out.timestampPurposeError=MAXDWORD;
-    // One verifier-child process performs at most one functional request, including refusals.
-    static std::atomic_flag used=ATOMIC_FLAG_INIT;
-    if(used.test_and_set(std::memory_order_acq_rel)){out.phase=static_cast<uint32_t>(LexTrustPhase::AlreadyUsed);return 2;}
     if(!request||request->size!=sizeof(LexTrustRequestV2)||request->version!=LexTrustAbiVersion||request->reserved||
         !request->image||request->image==reinterpret_cast<uintptr_t>(INVALID_HANDLE_VALUE)||
         !request->finalPath||!request->pathChars||request->pathChars>512||!request->bytes||request->bytes>64*1024*1024||
@@ -118,7 +125,16 @@ extern "C" int32_t __cdecl LexRunnerVerifySelectedTrustV2(const LexTrustRequestV
         Need(facts.path,"selected_path_mismatch");
         phase(LexTrustPhase::Digest);const auto bytes=ReadSelected(file,r.bytes);const auto expectedSha=Hex(r.sha256,32);
         facts.rawBefore=Sha(bytes.data(),bytes.size())==expectedSha;Need(facts.rawBefore,"selected_raw_digest");
-        DWORD certOffset=0,certLength=0;CheckPe(bytes,certOffset,certLength);cms=std::make_unique<Cms>();cms->Init(bytes,certOffset,certLength);
+        cms=std::make_unique<Cms>();
+        if(kind==LexTrustFileKind::Pe) {
+            DWORD certOffset=0,certLength=0;CheckPe(bytes,certOffset,certLength);
+            cms->Init(bytes,certOffset,certLength);
+        } else {
+            std::vector<BYTE> encoded;GUID observed{};
+            ReadMsiSubject(file,actualPath,encoded,observed);
+            if(subject)*subject=observed;
+            cms->InitEncodedMessage(encoded.data(),static_cast<DWORD>(encoded.size()));
+        }
         phase(LexTrustPhase::WinTrust);operation=std::make_unique<SharedWinTrustSession>(file,actualPath,true);
         RecordSelectedRequest(*operation,out);
         const auto observed=operation->VerifyAndObserve(*cms);out.winTrustResult=observed.result;
@@ -189,4 +205,30 @@ extern "C" int32_t __cdecl LexRunnerVerifySelectedTrustV2(const LexTrustRequestV
     out.completion=static_cast<uint32_t>(SelectedCompletion(caught,uncertain,out.observedMask));
     if(!caught&&!uncertain&&out.observedMask==LexTrustRequiredMask)phase(LexTrustPhase::Completed);
     return 0;
+}
+
+
+extern "C" int32_t __cdecl LexRunnerVerifySelectedTrustV2(const LexTrustRequestV2* request,LexTrustResultV2* result) noexcept {
+    if(!result)return 1;
+    InitializeSelectedResult(*result);
+    if(SelectedRequestUsed.test_and_set(std::memory_order_acq_rel)) {
+        result->phase=static_cast<uint32_t>(LexTrustPhase::AlreadyUsed);return 2;
+    }
+    return VerifySelectedCore(request,result,LexTrustFileKind::Pe,nullptr);
+}
+extern "C" int32_t __cdecl LexRunnerVerifySelectedTrustV3(const LexTrustRequestV3* request,LexTrustResultV3* result) noexcept {
+    if(!result)return 1;
+    *result={};result->size=sizeof(*result);result->version=LexTrustAbiVersion3;
+    InitializeSelectedResult(result->selected);
+    if(SelectedRequestUsed.test_and_set(std::memory_order_acq_rel)) {
+        result->selected.phase=static_cast<uint32_t>(LexTrustPhase::AlreadyUsed);return 2;
+    }
+    if(!LexTrustV3HeaderSupported(request))return 1;
+    result->fileKind=request->fileKind;
+    result->implementedFeatures=LexTrustFeaturesForKind(request->fileKind);
+    GUID observed{};
+    const auto status=VerifySelectedCore(&request->input,&result->selected,
+        static_cast<LexTrustFileKind>(request->fileKind),&observed);
+    std::memcpy(result->observedSubject,&observed,sizeof(observed));
+    return status;
 }
