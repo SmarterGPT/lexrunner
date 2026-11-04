@@ -275,3 +275,39 @@ gain no retroactive cleanup proof, and npm never installs the optional helper.
 Primary references:
 https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties_v2
 Windows SDK10.0.26100 shared/evntrace.h defines NO_SYSCONFIG as0x10000000.
+
+## Bounded refusal observations
+
+Pinned-release run41775000662 at5e5b2ca actually started/stopped its owned trace,
+reported zero live/final/STOP loss counters and verified raw deletion/Job drain.
+It nevertheless refused: two lifetime Job processes violate the unchanged one-
+process probe, and the parser returned etl_header_invalid. The second process is
+not identified. The census's zero event/header fields are refusal defaults, not
+observations proving an empty trace, zero header loss or an invalid raw end time.
+No acceptance or cleanup proof transfers to earlier uncertain runs.
+
+Private summary/2 and probe/2 add bounded observations for a future reviewed run.
+A header observation is present only when all seven numeric fields were read
+and the exact existing header predicate refused. It records the raw start/end,
+mode, maximum size, pointer size and loss fields plus the first failed check.
+It is separate from the still-defaulted completed-census fields. No timestamps,
+flags, file-size or pointer-size acceptance is relaxed, and a valid header cannot
+be labelled as that refusal. New pure cases retain the original acceptance rule.
+
+Job samples contain at most32 PID/parent/creation-time records and a fixed class:
+selected_git_root, console_name_candidate or other. A sampled process handle is
+checked for current membership in the exact Job and its actual creation time;
+that closes the snapshot-to-PID-reuse attribution gap for recorded samples. A
+missed short-lived member remains unknown. A console basename is only a candidate
+label, never OS identity, a permitted companion or loader provenance. The probe
+still requires one lifetime Job process and now explicitly requires no recorded
+child error; sample-handle close uncertainty refuses. No raw process paths, names
+other than the fixed console class, command lines or command output are uploaded.
+
+Summary/2 separates apphost EXE hashes from actual managed DLL hashes for both
+the diagnostic and Git fixture. These identify build-file snapshots, not loaded
+module attestation or pre-load custody. Shared apphost bytes alone do not identify
+managed code. Source review also binds DLL/PDB source checksums and dependency/
+runtime configuration files. All original trace, event/schema/property/output/
+time/loss/stop/cleanup bounds remain unchanged; source qualification starts no
+trace or Git child. A new actual observation still needs exact-head review and CI.

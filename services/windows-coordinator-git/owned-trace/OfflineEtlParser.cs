@@ -104,6 +104,19 @@ internal static class SchemaCensus
                 !TryReadPropertyName(bytes, 256, 160, out _));
         }
         finally { Marshal.FreeHGlobal(bytes); }
+        var header = new EtlHeaderObservation(1, 2, ExpectedCaptureMode, 128, 8, 0, 0);
+        Add("header_control_remains_valid", header.HeaderValid);
+        Add("header_start_refusal_preserved", (header with { StartFileTimeUtc = 0 }).FirstFailedCheck == "start_time");
+        Add("header_end_refusal_preserved", (header with { EndFileTimeUtc = 1 }).FirstFailedCheck == "end_time");
+        Add("header_mode_refusal_preserved", (header with { CaptureMode = 1 }).FirstFailedCheck == "capture_mode");
+        Add("header_size_refusal_preserved", (header with { MaximumFileSizeMiB = 0 }).FirstFailedCheck == "maximum_file_size");
+        Add("header_pointer_refusal_preserved", (header with { PointerSize = 4 }).FirstFailedCheck == "pointer_size");
+        var refusedHeader = Refuse("etl_header_invalid", header with { CaptureMode = 1 });
+        var wireHeader = JsonSerializer.Deserialize<SchemaCensusResult>(JsonSerializer.Serialize(refusedHeader));
+        Add("refused_header_wire_is_observation_not_census", wireHeader is
+            { Accepted: false, EventCount: 0, HeaderEndTimeValid: false,
+              HeaderObservation: { CaptureMode: 1, FirstFailedCheck: "capture_mode" } } &&
+            wireHeader.Schemas.Count == 0 && !wireHeader.AuthorizesExecution);
         Add("result_never_authorizes_loader_or_execution",
             !Refuse("synthetic").AuthorizesLoaderClosure &&
             !Refuse("synthetic").AuthorizesExecution);
@@ -193,10 +206,9 @@ internal static class SchemaCensus
         if (state.ReasonCode is { } reason) return Refuse(reason);
         if (processCode != 0) return Refuse("processtrace_failed");
         if (closeCode != 0) return Refuse("closetrace_failed");
-        if (headerStart <= 0 || headerEnd <= headerStart ||
-            !CaptureModeIsExpected(headerMode) || headerMaxFileSize != 128 ||
-            headerPointerSize is not (8 or 64))
-            return Refuse("etl_header_invalid");
+        var header = new EtlHeaderObservation(headerStart, headerEnd, headerMode,
+            headerMaxFileSize, headerPointerSize, headerEventsLost, headerBuffersLost);
+        if (!header.HeaderValid) return Refuse("etl_header_invalid", header);
         if (headerEventsLost != 0 || headerBuffersLost != 0)
             return Refuse("etl_header_loss_refused");
         if (state.EventCount == 0 || state.Schemas.Count == 0)
@@ -219,9 +231,9 @@ internal static class SchemaCensus
         return observed;
     }
 
-    private static SchemaCensusResult Refuse(string reason) =>
+    private static SchemaCensusResult Refuse(string reason, EtlHeaderObservation? header = null) =>
         new(reason, 0, Array.Empty<SchemaCensusItem>(), 0, 0, 0, 0,
-            false, false);
+            false, false, header);
 
     private sealed class CensusState(TimeSpan maxDuration)
     {
@@ -437,7 +449,7 @@ internal sealed record SchemaCensusResult(string ReasonCode, int EventCount,
     IReadOnlyList<SchemaCensusItem> Schemas, uint HeaderEventsLost,
     uint HeaderBuffersLost, long HeaderStartFileTimeUtc,
     long HeaderEndFileTimeUtc, bool AuthorizesLoaderClosure,
-    bool AuthorizesExecution)
+    bool AuthorizesExecution, EtlHeaderObservation? HeaderObservation = null)
 {
     internal bool Accepted => ReasonCode == "census_observed";
     internal bool HeaderEndTimeValid => HeaderStartFileTimeUtc > 0 &&

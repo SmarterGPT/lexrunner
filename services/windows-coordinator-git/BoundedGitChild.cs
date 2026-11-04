@@ -443,6 +443,11 @@ internal static class BoundedGitChild
                 if (process == IntPtr.Zero) continue; // It may have exited.
                 try
                 {
+                    // A PID list is only a locator. Bind the retained process
+                    // handle back to this Job before recording its creation time.
+                    if (!IsProcessInJob(process, job, out var inJob) || !inJob ||
+                        !GetProcessTimes(process, out var creation, out _, out _, out _) || creation <= 0)
+                        continue;
                     var path = ProcessNativePath(process);
                     if (NtQueryInformationProcess(process, 0, out var basic,
                             (uint)Marshal.SizeOf<ProcessBasicInformation>(), IntPtr.Zero) != 0 ||
@@ -451,10 +456,13 @@ internal static class BoundedGitChild
                         continue;
                     observed.Add(pid, new JobProcessObservation(pid,
                         (uint)basic.InheritedFromUniqueProcessId.ToInt64(), path,
-                        DateTimeOffset.UtcNow.ToString("O")));
+                        DateTimeOffset.UtcNow.ToString("O"), creation));
                 }
                 catch (Win32Exception) { /* Process may have exited. */ }
-                finally { CloseHandle(process); }
+                finally
+                {
+                    if (!CloseHandle(process)) throw NativeFailure("git_sample_close_uncertain");
+                }
             }
         }
         finally { Marshal.FreeHGlobal(list); }

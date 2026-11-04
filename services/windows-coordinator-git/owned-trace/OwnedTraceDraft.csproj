@@ -14,5 +14,6 @@
     <Compile Include="CaptureCalibration.cs" />
     <Compile Include="ManualCaptureDiagnostic.cs" />
     <Compile Include="OfflineEtlParser.cs" />
+    <Compile Include="EtlHeaderObservation.cs" />
   </ItemGroup>
 </Project>

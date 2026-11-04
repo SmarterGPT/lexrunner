@@ -101,7 +101,7 @@ $selfResult = Get-Content -LiteralPath (Join-Path $stage 'selftest.stdout') -Raw
 if ($selfResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
     $selfResult.result -cne 'source_fixture_pass' -or
     $selfResult.nativeLayoutVerified -ne $true -or
-    @($selfResult.cases).Count -ne 42 -or
+    @($selfResult.cases).Count -ne 49 -or
     @($selfResult.cases | Where-Object { $_.Passed -ne $true }).Count -ne 0 -or
     $selfResult.traceStarted -ne $false -or $selfResult.traceStopped -ne $false -or
     $selfResult.authorizesLoaderClosure -ne $false -or
@@ -163,7 +163,7 @@ if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$' -or
 }
 $sourceHashes = [ordered]@{}
 foreach ($name in @('OwnedTraceDraft.csproj', 'Program.cs', 'NativeTraceAdapter.cs',
-        'CaptureCalibration.cs', 'ManualCaptureDiagnostic.cs', 'NativeActionDiagnostic.cs', 'OfflineEtlParser.cs',
+        'CaptureCalibration.cs', 'ManualCaptureDiagnostic.cs', 'NativeActionDiagnostic.cs', 'OfflineEtlParser.cs', 'EtlHeaderObservation.cs',
         'README.md', 'MANUAL_CALIBRATION.md', 'verify.ps1',
         'Test-ReceiptBounds.ps1', 'Test-ManualSummary.ps1', 'Test-ManualCaptureStatus.ps1')) {
     $sourceHashes[$name] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $name) `
@@ -180,7 +180,7 @@ $receipt = [ordered]@{
     durationMs = $clock.ElapsedMilliseconds
     imageSha256 = $imageHash
     nativeActionDiagnosticCaseCount = 129
-    caseCount = 42
+    caseCount = 49
     preflightCaseCount = 39
     statusSanitizerCaseCount = 172
     commands = @($commands.ToArray())
