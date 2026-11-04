@@ -11,6 +11,8 @@ internal static class Program
         try
         {
 #if COORDINATOR_CLIENT_FIXTURE_TESTS
+            if (args is ["--v3-publication-contract-selftest"])
+                return LexRunner.WindowsCoordinator.SelectionCustody.PublicationContractV3FixtureTests.Run();
             if (args is ["--selftest"])
                 return FixtureTests.RunAll();
             if (args is ["--v3-installed-fixture-selftest"])

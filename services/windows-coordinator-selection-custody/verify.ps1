@@ -39,6 +39,7 @@ function Source-Hashes {
     foreach ($name in @('global.json', 'LexRunner.WindowsCoordinator.SelectionCustody.csproj',
             'Program.cs', 'CustodyContract.cs', 'NativeRegistryReader.cs', 'FixtureTests.cs',
             'CustodyContractV3.cs', 'NativeRegistryReaderV3.cs', 'FixtureTestsV3.cs',
+            'PublicationContractV3.cs', 'PublicationContractV3FixtureTests.cs',
             'README.md', 'verify.ps1')) {
         $path = Join-Path $sourceRoot $name
         Require (Test-Path -LiteralPath $path -PathType Leaf) "Missing source: $name"
