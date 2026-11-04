@@ -70,7 +70,8 @@ $receipt = [ordered]@{
     release = 'v2.56.0.windows.4'; url = $uri
     archiveSha256 = $archiveSha; archiveBytes = $archiveBytes
     root = $root; image = $image; imageSha256 = $imageSha; imageBytes = $imageBytes
-    gitExecutedByPreparation = $false; installedCrossAccountProof = $false
+    selectedGitExecutedByPreparation = $false; sourceHeadReadUsesHostGit = $true
+    installedCrossAccountProof = $false
     loaderGraphQualified = $false; authorizesExecution = $false; helperInstalled = $false
 }
 $receiptPath = Join-Path $stage 'provision-receipt.json'
