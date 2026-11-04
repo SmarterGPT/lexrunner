@@ -70,8 +70,10 @@ mid-header disconnect recovery; `--lifecycle-selftest` checks the state order.
 That fixture's `no_effect` response is not reachable in the normal image.
 Run `pwsh -NoLogo -NoProfile -File .\verify.ps1` from this directory to
 publish both images and run the selftest plus direct-launch refusals. It does
-not register, start, stop, or install a service. After capturing hashes it
-checks and removes only this project's `bin/` and `obj/` build directories.
+not register, start, stop, or install a service. Compiler output is isolated in
+run-owned artifacts; existing project `bin/` and `obj/` directories are preserved.
+Use `-OutputDirectory` with a fresh absolute directory under repository artifacts
+when retaining multiple runs. NuGet auditing stays enabled.
 The ordinary publish output is
 `artifacts/windows-coordinator-service-source/publish/LexRunner.WindowsCoordinator.Service.exe`;
 the bounded JSON receipt is saved at
@@ -90,3 +92,14 @@ Primary Windows API references:
 [service status](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-setservicestatus),
 [named-pipe security](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights),
 and [peer impersonation](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient).
+
+Both fixed service objects permanently refuse custom controls 128 through 255 with
+ERROR_CALL_NOT_IMPLEMENTED (120) before payload access or product-state locks.
+This is the selected staged-creation profile invariant, not a configurable verb
+range. The fixture-only `--custom-control-selftest` invokes the actual callbacks
+with poisoned payload pointers. The coordinator test also holds its registration
+lock on another thread and checks that cancellation/status remain untouched; its
+standard STOP and shutdown callbacks still follow the lifecycle path. Normal
+images reject the fixture flag. Neither callback tests nor a fresh-open denial
+qualify previously opened SCM handles: real retained-handle, creation/hardening,
+start and queue-denial-of-service controls remain pending approved installation.

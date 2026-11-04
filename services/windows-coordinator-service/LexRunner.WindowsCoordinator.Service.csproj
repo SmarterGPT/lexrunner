@@ -11,6 +11,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
   </PropertyGroup>
   <PropertyGroup Condition="'$(CoordinatorServiceFixtureTests)' == 'true'">
     <DefineConstants>$(DefineConstants);COORDINATOR_SERVICE_FIXTURE_TESTS</DefineConstants>

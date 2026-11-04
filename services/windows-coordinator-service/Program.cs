@@ -22,6 +22,12 @@ internal static class Program
     private static int Main(string[] args)
     {
 #if COORDINATOR_SERVICE_FIXTURE_TESTS
+        if (args is ["--custom-control-selftest"])
+        {
+            var passed = CustomControlSelfTest();
+            Console.WriteLine(passed ? "custom_control_selftest_pass" : "custom_control_selftest_fail");
+            return passed ? 0 : 1;
+        }
         if (args.Length == 1 && args[0] == "--protocol-selftest")
         {
             var passed = CoordinatorProtocol.SelfTest();
@@ -136,6 +142,9 @@ internal static class Program
 
     private static uint ServiceControl(uint control, uint eventType, IntPtr eventData, IntPtr context)
     {
+        // Permanent profile invariant: old UDC handles are not revoked by
+        // descriptor hardening. Reject before payload access or product locks.
+        if (control is >= 128 and <= 255) return 120;
         if (control is ServiceControlStop or ServiceControlShutdown)
         {
             // Never let an exception cross an unmanaged SCM callback. Report
@@ -160,6 +169,63 @@ internal static class Program
         }
         return 0;
     }
+
+#if COORDINATOR_SERVICE_FIXTURE_TESTS
+    private static bool CustomControlSelfTest()
+    {
+        if (_lifecycle is not null || Stop.IsCancellationRequested ||
+            Volatile.Read(ref _callbackFailed) != 0) return false;
+        var reports = 0;
+        var cancellations = 0;
+        var lifecycle = new ServiceLifecycle(_ =>
+        {
+            Interlocked.Increment(ref reports);
+            return true;
+        }, () => Interlocked.Increment(ref cancellations));
+        if (!lifecycle.ReportStartPending() || !lifecycle.ReportRunning()) return false;
+        _lifecycle = lifecycle;
+        try
+        {
+            Task<bool> probe;
+            bool completedWhileLocked;
+            // Invoke the actual callback with poisoned, unreadable payloads
+            // while another thread holds the real registration lock.
+            lock (RegistrationGate)
+            {
+                probe = Task.Run(() =>
+                {
+                    for (uint control = 128; control <= 255; ++control)
+                        if (ServiceControlCallback(control, uint.MaxValue,
+                                new IntPtr(-1), new IntPtr(-1)) != 120) return false;
+                    return true;
+                });
+                completedWhileLocked = probe.Wait(TimeSpan.FromSeconds(5));
+            }
+            if (!probe.Wait(TimeSpan.FromSeconds(5)) || !completedWhileLocked || !probe.Result ||
+                reports != 2 || cancellations != 0 || Stop.IsCancellationRequested ||
+                Volatile.Read(ref _callbackFailed) != 0 || !ReferenceEquals(_lifecycle, lifecycle))
+                return false;
+            // Standard lifecycle controls retain the actual stop/drain path.
+            foreach (var control in new[] { ServiceControlStop, ServiceControlShutdown })
+            {
+                reports = 0;
+                cancellations = 0;
+                lifecycle = new ServiceLifecycle(_ =>
+                {
+                    ++reports;
+                    return true;
+                }, () => ++cancellations);
+                if (!lifecycle.ReportStartPending() || !lifecycle.ReportRunning()) return false;
+                _lifecycle = lifecycle;
+                if (ServiceControlCallback(control, 0, IntPtr.Zero, IntPtr.Zero) != 0 ||
+                    reports != 3 || cancellations != 1) return false;
+            }
+            return !Stop.IsCancellationRequested && Volatile.Read(ref _callbackFailed) == 0;
+        }
+        catch { return false; }
+        finally { _lifecycle = null; }
+    }
+#endif
 
     private static bool PublishStatus(ServiceReport report)
     {

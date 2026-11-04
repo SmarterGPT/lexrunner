@@ -19,6 +19,12 @@ internal static class Program
     private static int Main(string[] args)
     {
 #if WORKER_SLOT_FIXTURE_TESTS
+        if (args is ["--custom-control-selftest"])
+        {
+            var passed = CustomControlSelfTest();
+            Console.WriteLine(passed ? "custom_control_selftest_pass" : "custom_control_selftest_fail");
+            return passed ? 0 : 1;
+        }
         if (args is ["--policy-selftest"])
         {
             var passed = WorkerSlotFixtureTests.PolicySelfTest();
@@ -108,7 +114,23 @@ internal static class Program
         SetServiceStatus(handle, ref stopped);
     }
 
-    private static uint ServiceControl(uint control, uint eventType, IntPtr eventData, IntPtr context) => 120;
+    private static uint ServiceControl(uint control, uint eventType, IntPtr eventData, IntPtr context)
+    {
+        // Permanent across activation, updates and recovery: never assign a
+        // custom-control verb to this object, including through old handles.
+        if (control is >= 128 and <= 255) return 120;
+        return 120;
+    }
+
+#if WORKER_SLOT_FIXTURE_TESTS
+    private static bool CustomControlSelfTest()
+    {
+        for (uint control = 128; control <= 255; ++control)
+            if (ServiceControlCallback(control, uint.MaxValue,
+                    new IntPtr(-1), new IntPtr(-1)) != 120) return false;
+        return true;
+    }
+#endif
 
     [StructLayout(LayoutKind.Sequential)]
     private struct ServiceTableEntry
