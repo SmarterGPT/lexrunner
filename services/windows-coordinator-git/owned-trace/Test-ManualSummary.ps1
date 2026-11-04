@@ -3,6 +3,28 @@ param([Parameter(Mandatory = $true)][string]$SummaryPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Is-NativeInteger($value) {
+    $value -is [byte] -or $value -is [sbyte] -or $value -is [int16] -or
+        $value -is [uint16] -or $value -is [int32] -or $value -is [uint32] -or
+        $value -is [int64] -or $value -is [uint64]
+}
+function Is-Int64Value($value) {
+    if (-not (Is-NativeInteger $value)) { return $false }
+    $number = [decimal]$value
+    $number -ge [decimal]([int64]::MinValue) -and $number -le [decimal]([int64]::MaxValue)
+}
+function Is-UInt32Value($value) {
+    if (-not (Is-NativeInteger $value)) { return $false }
+    $number = [decimal]$value
+    $number -ge 0 -and $number -le [decimal]([uint32]::MaxValue)
+}
+function Has-ExactFields($value, [string[]]$expected) {
+    if ($null -eq $value) { return $false }
+    $actual = @($value.PSObject.Properties.Name)
+    $actual.Count -eq $expected.Count -and
+        @(Compare-Object -ReferenceObject $expected -DifferenceObject $actual -CaseSensitive).Count -eq 0
+}
+
 if (-not [IO.Path]::IsPathFullyQualified($SummaryPath) -or
     -not [IO.File]::Exists($SummaryPath)) { throw 'manual_summary_missing' }
 $file = [IO.FileInfo]::new($SummaryPath)
@@ -51,7 +73,9 @@ if ($samples.Count -gt 32 -or $samples.Count -gt $summary.jobTotalProcesses) {
 }
 $sampleIds = [Collections.Generic.HashSet[uint32]]::new()
 foreach ($sample in $samples) {
-    if (@($sample.PSObject.Properties).Count -ne 4 -or
+    if (-not (Has-ExactFields $sample @('ProcessId','ParentProcessId','CreationFileTimeUtc','ImageKind')) -or
+        -not (Is-UInt32Value $sample.ProcessId) -or -not (Is-UInt32Value $sample.ParentProcessId) -or
+        -not (Is-Int64Value $sample.CreationFileTimeUtc) -or $sample.ImageKind -isnot [string] -or
         $sample.ProcessId -le 0 -or $sample.ParentProcessId -le 0 -or
         $sample.CreationFileTimeUtc -le 0 -or -not $sampleIds.Add($sample.ProcessId) -or
         $sample.ImageKind -cnotin @('selected_git_root','console_name_candidate','other') -or
@@ -65,13 +89,20 @@ if ($summary.rootProcessId -gt 0 -and -not $sampleIds.Contains($summary.rootProc
 }
 $header = $summary.censusHeaderObservation
 if ($null -ne $header) {
+    if (-not (Has-ExactFields $header @('StartFileTimeUtc','EndFileTimeUtc','CaptureMode',
+            'MaximumFileSizeMiB','PointerSize','EventsLost','BuffersLost','FirstFailedCheck')) -or
+        -not (Is-Int64Value $header.StartFileTimeUtc) -or -not (Is-Int64Value $header.EndFileTimeUtc) -or
+        -not (Is-UInt32Value $header.CaptureMode) -or -not (Is-UInt32Value $header.MaximumFileSizeMiB) -or
+        -not (Is-UInt32Value $header.PointerSize) -or -not (Is-UInt32Value $header.EventsLost) -or
+        -not (Is-UInt32Value $header.BuffersLost) -or $header.FirstFailedCheck -isnot [string]) {
+        throw 'manual_summary_header_shape_or_type'
+    }
     $reason = if ($header.StartFileTimeUtc -le 0) {'start_time'}
         elseif ($header.EndFileTimeUtc -le $header.StartFileTimeUtc) {'end_time'}
         elseif ($header.CaptureMode -ne 0x02400001) {'capture_mode'}
         elseif ($header.MaximumFileSizeMiB -ne 128) {'maximum_file_size'}
         elseif ($header.PointerSize -notin @(8,64)) {'pointer_size'} else {'none'}
-    if (@($header.PSObject.Properties).Count -ne 8 -or
-        $summary.result -cne 'refused' -or $summary.censusReasonCode -cne 'etl_header_invalid' -or
+    if ($summary.result -cne 'refused' -or $summary.censusReasonCode -cne 'etl_header_invalid' -or
         $reason -ceq 'none' -or $header.FirstFailedCheck -cne $reason) {
         throw 'manual_summary_header_observation'
     }
