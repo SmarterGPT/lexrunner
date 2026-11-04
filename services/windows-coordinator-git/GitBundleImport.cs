@@ -42,13 +42,12 @@ internal static class GitBundleImport
     // Fixed candidate image; independent installed-image and loader protection
     // remain required before any service-token use.
 #if GIT_HOSTED_2022_FIXTURE
-    // The hosted inventory read back these exact PE bytes on windows-2022.
-    // This pins the root image for a source-only fixture. The Git helper and
-    // loader graph remain unknown and cannot authorize installed execution.
-    internal const string GitImage = @"C:\Program Files\Git\bin\git.exe";
-    internal const string GitBin = @"C:\Program Files\Git\bin";
+    // The CI workflow provisions one independently pinned official release.
+    // These fixed bytes are fixture inputs, never installed loader authority.
+    internal const string GitImage = ManualEtwGitProfile.FixedGitImage;
+    internal const string GitBin = @"C:\LexRunner.Qualification.Git\ucrt64\bin";
     internal const string HostedGitImageSha256 =
-        "3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3";
+        "9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8";
 #else
     internal const string GitImage = @"C:\Program Files\Git\mingw64\bin\git.exe";
     internal const string GitBin = @"C:\Program Files\Git\mingw64\bin";
