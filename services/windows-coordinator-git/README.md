@@ -150,3 +150,23 @@ closure; cross-account ReFS and NTFS tests; malicious pack/object and
 alternates/submodule cases; worker file-only handoff, observation, removal,
 interruption and crash recovery. Only a complete installed-host review may
 open service Git or production broker selection.
+
+## Fixed Git release for disposable hosted transitions
+
+The compile-gated hosted transition fixture uses Git for Windows
+`v2.56.0.windows.4` from the official `MinGit-2.56.0.4-64-bit.zip` release,
+SHA256 `e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877`.
+The CI-only preparation step verifies its exact size and full digest before
+extracting to the absent `C:\LexRunner.Qualification.Git` root. The fixed
+`ucrt64/bin/git.exe` is 4,412,760 bytes with SHA256
+`9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8`.
+The native fixture, outer verifier and receipt guard retain that exact pin;
+the former runner-image shim pin is rejected. Nothing selects a new pin from
+the runner's observed Git version, and occupied or mismatching inputs refuse.
+
+This separates the fixture from rolling hosted-image software updates. It
+does not install or update machine Git, acquire the optional helper, change
+the normal Git path or grant loader/installed authority. The ordinary manual
+ETW profile remains separate. npm includes neither the workflow nor this
+CI-only preparation script and never downloads or installs the helper.
+No local Git execution or hosted transition success is implied by these pins.
