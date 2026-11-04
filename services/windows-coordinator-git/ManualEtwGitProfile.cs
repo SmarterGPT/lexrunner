@@ -11,11 +11,14 @@ internal sealed class ManualEtwGitProfile
     private readonly Dictionary<string, string> _expectedEnvironment;
     internal string GitImage => FixedGitImage;
     internal string ExpectedSha256 { get; }
+    internal bool IsManualCalibration { get; }
     internal IReadOnlyDictionary<string, string> Environment { get; }
 
-    private ManualEtwGitProfile(string digest, Dictionary<string, string> environment)
+    private ManualEtwGitProfile(string digest, Dictionary<string, string> environment,
+        bool isManualCalibration)
     {
         ExpectedSha256 = digest;
+        IsManualCalibration = isManualCalibration;
         _expectedEnvironment = new Dictionary<string, string>(environment,
             StringComparer.OrdinalIgnoreCase);
         Environment = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(
@@ -24,7 +27,7 @@ internal sealed class ManualEtwGitProfile
 
     internal static ManualEtwGitProfile Create(ImportSlot slot, string digest)
     {
-        return CreateFixedEnvironment(GitBundleImport.ConstructEnvironment(slot), digest);
+        return CreateFixedEnvironment(GitBundleImport.ConstructEnvironment(slot), digest, true);
     }
 
 #if GIT_HOSTED_2022_FIXTURE
@@ -33,11 +36,11 @@ internal sealed class ManualEtwGitProfile
     internal static ManualEtwGitProfile CreateHostedFixture(
         IReadOnlyDictionary<string, string> environment, string digest) =>
         CreateFixedEnvironment(new Dictionary<string, string>(environment,
-            StringComparer.OrdinalIgnoreCase), digest);
+            StringComparer.OrdinalIgnoreCase), digest, false);
 #endif
 
     private static ManualEtwGitProfile CreateFixedEnvironment(
-        Dictionary<string, string> environment, string digest)
+        Dictionary<string, string> environment, string digest, bool isManualCalibration)
     {
         if (!StringComparer.Ordinal.Equals(digest, SelectedSha256))
             throw new InvalidOperationException("manual_etw_digest_invalid");
@@ -50,7 +53,7 @@ internal sealed class ManualEtwGitProfile
         // does not guess a Git support directory or inherit the runner PATH.
         environment["PATH"] = system + ";" + windows;
         environment.Remove("GIT_EXEC_PATH");
-        return new ManualEtwGitProfile(digest, environment);
+        return new ManualEtwGitProfile(digest, environment, isManualCalibration);
     }
 
     internal void AssertEnvironment(IReadOnlyDictionary<string, string> candidate)
@@ -97,7 +100,7 @@ internal sealed class ManualEtwGitProfile
             }
             var badDigestRefused = DigestRefused(SelectedSha256.ToUpperInvariant()) &&
                 DigestRefused(new string('a', 64));
-            return profile.GitImage == FixedGitImage &&
+            return profile.IsManualCalibration && profile.GitImage == FixedGitImage &&
 #if GIT_HOSTED_2022_FIXTURE
                 profile.GitImage == GitBundleImport.GitImage &&
 #else

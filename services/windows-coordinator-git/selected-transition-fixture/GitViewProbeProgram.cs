@@ -45,7 +45,8 @@ internal static class GitViewProbeProgram
                     GitBundleImport.ConstructEnvironment(slot), GitBundleImport.HostedGitImageSha256);
                 Console.Error.WriteLine("hosted_profile_environment_constructed");
                 profile.AssertEnvironment(profile.Environment);
-                if (profile.GitImage != ManualEtwGitProfile.FixedGitImage ||
+                if (!BoundedGitChild.ManualEtwSourceSelfTest() || profile.IsManualCalibration ||
+                    profile.GitImage != ManualEtwGitProfile.FixedGitImage ||
                     profile.ExpectedSha256 != GitBundleImport.HostedGitImageSha256 ||
                     profile.Environment.ContainsKey("GIT_EXEC_PATH") ||
                     profile.Environment["PATH"].Contains(@"\Git\", StringComparison.OrdinalIgnoreCase))

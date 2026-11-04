@@ -99,7 +99,7 @@ if ($null -ne $header) {
     }
     $reason = if ($header.StartFileTimeUtc -le 0) {'start_time'}
         elseif ($header.EndFileTimeUtc -le $header.StartFileTimeUtc) {'end_time'}
-        elseif ($header.CaptureMode -ne 0x02400001) {'capture_mode'}
+        elseif ($header.CaptureMode -ne 0x02000001) {'capture_mode'}
         elseif ($header.MaximumFileSizeMiB -ne 128) {'maximum_file_size'}
         elseif ($header.PointerSize -notin @(8,64)) {'pointer_size'} else {'none'}
     if ($summary.result -cne 'refused' -or $summary.censusReasonCode -cne 'etl_header_invalid' -or
