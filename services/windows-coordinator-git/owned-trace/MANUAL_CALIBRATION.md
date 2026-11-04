@@ -342,3 +342,29 @@ This source change is a testable hypothesis, not a passed host run. Source CI,
 fresh independent exact-head review and a later exact-main hosted observation
 are required. No installed authority, mapped-loader custody, helper selection,
 governed Attempt or npm helper acquisition is authorized or established.
+
+## Lossless compact schema format
+
+Actual hosted41783012203 at reviewed main9e91757 retained JobTotalProcesses1,
+the selected root sample, exit0 and confirmed drain/STOP/raw deletion. It still
+refused census_summary_limit. The exact source emits that reason only after
+earlier header/loss/nonempty checks, when the would-be census JSON exceeds6144
+bytes. This is source-path inference; exported zeros/empty schemas remain
+refusal defaults. Actual metadata size/schema counts were not retained.
+
+Private census wire/2 and manual summary/3 shorten repeated schema keys without
+omitting, hashing away or truncating any value. Exact mapping:
+g=ClassGuid, o=Opcode, v=Version, i=EventId, c=ClassicHeader, t=TdhStatus,
+d=DecodingSource, n=EventCount, p=PropertyNames. Each row retains all nine keys
+and every original property name. The private reader requires its explicit wire
+version and rejects unknown row members. The outer validator checks exact keys,
+native numeric types/ranges, booleans, canonical GUIDs, unique schema identities,
+ASCII property-name bounds and aggregate counts. Old/manual schemas refuse.
+
+The original6144-byte census,8192-byte outer receipt,64-schema/64-property,
+4096-total-property-character and200000-event caps remain unchanged. A larger
+compact result still refuses; this is not permission to raise a bound. Pure
+round-trip checks preserve all nine values and prove that a repeated verbose
+inventory can fit losslessly after aliasing while an over-cap inventory refuses.
+New wire source tests are synthetic, not a completed host census. All trace,
+Job/lifetime, loss, deadline, raw deletion and false-authority rules remain.
