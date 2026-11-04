@@ -1,21 +1,45 @@
+param([string]$OutputDirectory)
+if ($OutputDirectory -and -not [IO.Path]::IsPathFullyQualified($OutputDirectory)) { throw 'source_output_must_be_absolute' }
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 if (-not $env:OS) { $env:OS = 'Windows_NT' }
+if (-not $env:WINDIR -and $env:SystemRoot) { $env:WINDIR = $env:SystemRoot }
 $project = Join-Path $PSScriptRoot 'LexRunner.WindowsCoordinator.Service.csproj'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$artifactRoot = Join-Path $repo 'artifacts\windows-coordinator-service-source'
+$artifactRoot = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $repo 'artifacts\windows-coordinator-service-source' }
+$allowedArtifacts = [IO.Path]::GetFullPath((Join-Path $repo 'artifacts')) + [IO.Path]::DirectorySeparatorChar
+if (-not $artifactRoot.StartsWith($allowedArtifacts, [StringComparison]::OrdinalIgnoreCase) -or
+    $artifactRoot.IndexOfAny([char[]]@(';', '"', '%', "`r", "`n")) -ge 0) { throw 'source_output_outside_artifacts' }
+$cursor = $artifactRoot
+while ($cursor) {
+    if (Test-Path -LiteralPath $cursor) {
+        $item = Get-Item -LiteralPath $cursor -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'source_output_ancestor_redirected'
+        }
+    }
+    $cursor = [IO.Path]::GetDirectoryName($cursor)
+}
 $normal = Join-Path $artifactRoot 'publish'
 $fixture = Join-Path $artifactRoot 'fixture'
 $image = 'LexRunner.WindowsCoordinator.Service.exe'
 $clock = [Diagnostics.Stopwatch]::StartNew()
 
 function Invoke-Publish([string]$destination, [bool]$fixtureBuild) {
+    $mode = if ($fixtureBuild) { 'fixture-build' } else { 'normal-build' }
+    $obj = (Join-Path $artifactRoot ($mode + '/obj')).Replace('\', '/') + '/'
+    $bin = (Join-Path $artifactRoot ($mode + '/bin')).Replace('\', '/') + '/'
     $publishArgs = @('publish', $project, '-c', 'Release', '-r', 'win-x64',
-        '-p:NuGetAudit=false', ('-p:CoordinatorServiceFixtureTests=' + $fixtureBuild.ToString().ToLowerInvariant()),
-        '-o', $destination)
-    $output = & dotnet @publishArgs 2>&1 | Select-Object -Last 12
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $($output -join ' | ')" }
+        '-p:NuGetAudit=true', ('-p:CoordinatorServiceFixtureTests=' + $fixtureBuild.ToString().ToLowerInvariant()),
+        ("-p:BaseIntermediateOutputPath=" + $obj), ("-p:MSBuildProjectExtensionsPath=" + $obj),
+        ("-p:BaseOutputPath=" + $bin), ("-p:OutputPath=" + $bin), '-o', $destination)
+    Push-Location -LiteralPath $PSScriptRoot
+    try {
+        $output = & dotnet @publishArgs 2>&1 | Select-Object -Last 12
+        $code = $LASTEXITCODE
+    } finally { Pop-Location }
+    if ($code -ne 0) { throw "dotnet publish failed: $($output -join ' | ')" }
 }
 
 Invoke-Publish $normal $false
@@ -27,6 +51,10 @@ if ($LASTEXITCODE -ne 2 -or ($normalPublicationProbe -join '') -ne 'scm_only') {
     throw 'normal image exposed publication model'
 }
 
+$normalCustom = & $normalImage --custom-control-selftest 2>&1
+if ($LASTEXITCODE -ne 2 -or ($normalCustom -join '') -ne 'scm_only') {
+    throw 'normal image exposed custom-control fixture mode'
+}
 $normalProbe = & $normalImage --protocol-selftest 2>&1
 if ($LASTEXITCODE -ne 2 -or ($normalProbe -join '') -ne 'scm_only') {
     throw 'normal image exposed fixture mode'
@@ -78,6 +106,11 @@ if ($LASTEXITCODE -ne 0 -or ($privateLaunchProbe -join '') -ne 'private_launch_s
     throw "fixture private launch selftest failed: $(($privateLaunchProbe | Select-Object -Last 12) -join ' | ')"
 }
 
+$customControlProbe = & $fixtureImage --custom-control-selftest 2>&1
+if ($LASTEXITCODE -ne 0 -or ($customControlProbe -join '') -ne 'custom_control_selftest_pass') {
+    throw 'actual callback custom-control source selftest failed'
+}
+
 $sources = @('CoordinatorPipe.cs', 'CoordinatorPrivateNode.cs', 'CoordinatorProtocol.cs',
     'ObservedPipePeer.cs', 'PipeFixtureTests.cs', 'PrivateLaunchFixture.cs', 'Program.cs',
     'ProtectedGenerationLease.cs', 'ServiceLifecycle.cs',
@@ -93,32 +126,8 @@ foreach ($source in @('CustodyContract.cs', 'CustodyContractV3.cs',
     $hashes["selection-custody/$source"] = (Get-FileHash -LiteralPath $sharedSource -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-# The build tools write bin/obj even when they are ignored by Git. Remove only
-# these two exact project-owned roots after image and source hashes are captured
-# so repository-wide formatters cannot scan stale generated JSON.
-$sourceRoot = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
-$cleanup = [ordered]@{}
-foreach ($leaf in @('bin', 'obj')) {
-    $expected = [IO.Path]::GetFullPath((Join-Path $sourceRoot $leaf))
-    if (-not [string]::Equals([IO.Path]::GetDirectoryName($expected), $sourceRoot,
-            [StringComparison]::OrdinalIgnoreCase)) { throw 'build cleanup escaped source root' }
-    if (-not (Test-Path -LiteralPath $expected)) {
-        $cleanup[$leaf] = 'absent'
-        continue
-    }
-    $item = Get-Item -LiteralPath $expected -Force
-    if (-not $item.PSIsContainer -or
-        -not [string]::Equals($item.FullName, $expected, [StringComparison]::OrdinalIgnoreCase) -or
-        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "unsafe build cleanup target: $leaf"
-    }
-    $links = @(Get-ChildItem -LiteralPath $item.FullName -Force -Recurse |
-        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
-    if ($links.Count -gt 0) { throw "reparse point in build cleanup target: $leaf" }
-    Remove-Item -LiteralPath $item.FullName -Force -Recurse
-    if (Test-Path -LiteralPath $expected) { throw "build cleanup failed: $leaf" }
-    $cleanup[$leaf] = 'removed'
-}
+# All compiler output is routed into this run's artifacts. Preserve old source outputs.
+$cleanup = [ordered]@{ bin = 'preserved_not_output_target'; obj = 'preserved_not_output_target' }
 $clock.Stop()
 $receiptPath = Join-Path $artifactRoot 'verification-receipt.json'
 $receipt = [pscustomobject]@{
@@ -137,6 +146,9 @@ $receipt = [pscustomobject]@{
     publicationPureTestCount = 74
     normalPrivateLaunchMode = 'scm_only'
     normalPrivateChildMode = 'scm_only'
+    customControlCallbackCases = 128
+    customControlSourceSelfTest = 'custom_control_selftest_pass'
+    retainedScmControlHandlesQualified = $false
     installedServiceQualified = $false
     buildCleanup = $cleanup
     sourceSha256 = $hashes
