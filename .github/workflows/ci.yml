@@ -228,6 +228,8 @@ jobs:
         run: npm ci
       - name: Verify install-script policy
         run: npm run check:install-scripts
+      - name: Verify qualified Lex and SQLite graph
+        run: npm run check:lex-compatibility
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
       - name: Lint and typecheck
@@ -396,8 +398,8 @@ jobs:
             artifacts/windows-git-etw-tool-preflight/NEGATIVE_CONTROL_RECEIPT.json
           if-no-files-found: warn
 
-  # The selected Git fixture uses a separately inventoried fixed PE on this
-  # exact hosted image. It does not qualify Git helpers or installed execution.
+  # Provision exact release bytes rather than inheriting a rolling runner Git.
+  # This source fixture does not qualify loader custody or installed execution.
   windows-git-selected-transition:
     runs-on: windows-2022
     timeout-minutes: 25
@@ -413,6 +415,10 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           global-json-file: "proofs/windows-workspace-boundary/global.json"
+      - name: Provision the exact official Git release for this disposable fixture
+        id: selected_git_provision
+        shell: pwsh
+        run: ./.github/scripts/Prepare-SelectedGitFixture.ps1
       - name: Qualify pinned hosted Git source fixture and lost removal reply
         shell: pwsh
         run: ./services/windows-coordinator-git/verify-selected-transition.ps1 -CrashAfterRemoval
@@ -430,7 +436,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: windows-git-selected-transition-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/windows-coordinator-git-selected-transition/receipt-*.json
+          path: |
+            artifacts/windows-coordinator-git-selected-transition/receipt-*.json
+            ${{ steps.selected_git_provision.outputs.receipt }}
           if-no-files-found: error
           retention-days: 1
 

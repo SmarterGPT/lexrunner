@@ -3,6 +3,11 @@ node_modules/
 
 # Build outputs
 dist/
+# Native compiler outputs are generated, not source-format inputs.
+services/**/bin/
+services/**/obj/
+installers/**/bin/
+installers/**/obj/
 *.js.map
 *.d.ts
 

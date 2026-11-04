@@ -706,25 +706,47 @@ describe("form projection and SDK transport conformance", () => {
     }
   });
 
-  it("expires a channel that never responds and cannot attest its later reply", async () => {
-    const h = await setup("memory");
-    let resolve!: (reply: unknown) => void;
-    let inner!: AbortSignal;
-    h.input.expiresAt = new Date(Date.now() + 250).toISOString();
-    vi.mocked(h.channel.request).mockImplementation((_form, window) => {
-      inner = window.signal;
-      return new Promise((done) => {
-        resolve = done;
+  it.each(["monotonic", "wall"] as const)(
+    "closes an unanswered channel at %s expiry and cannot attest its later reply",
+    async (domain) => {
+      const h = await setup("memory");
+      let clock = h.f.time;
+      let resolve!: (reply: unknown) => void;
+      let inner!: AbortSignal;
+      h.input.expiresAt = new Date(Date.parse(clock) + 250).toISOString();
+      const disposition = domain === "wall" ? "expired" : "failed";
+      vi.mocked(h.channel.request).mockImplementation((_form, window) => {
+        inner = window.signal;
+        // Keep the real deadline; independently select the persisted UTC observation.
+        if (domain === "wall") clock = h.input.expiresAt;
+        return new Promise((done) => {
+          resolve = done;
+        });
       });
-    });
-    expect(await h.host().present(h.input, h.signal.signal)).toMatchObject({
-      status: "pending",
-      reason: "expired",
-    });
-    expect(inner.aborted).toBe(true);
-    resolve({ action: "accept", content: { q0: "B" } });
-    await new Promise((done) => setImmediate(done));
-    expect(h.admission.admitInput).not.toHaveBeenCalled();
-    await h.held();
-  });
+      const host = new NativeMcpHumanPresentationHost(
+        h.f.service,
+        h.f.store,
+        h.channel,
+        h.admission,
+        () => clock
+      );
+      expect(await host.present(h.input, h.signal.signal)).toMatchObject({
+        status: "pending",
+        reason: disposition,
+        boundary: "transport",
+      });
+      expect(inner.aborted).toBe(true);
+      const retained = structuredClone(await h.f.store.getRunCoordination("run"));
+      expect(readHumanActionState(retained!.state).entries[0].presentations[0]).toMatchObject({
+        disposition,
+      });
+      expect(await h.f.service.getWorkerAnswer("run", h.input.requestId)).toBeNull();
+      resolve({ action: "accept", content: { q0: "B" } });
+      await new Promise((done) => setImmediate(done));
+      expect(h.channel.request).toHaveBeenCalledOnce();
+      expect(h.admission.admitInput).not.toHaveBeenCalled();
+      expect(await h.f.store.getRunCoordination("run")).toEqual(retained);
+      await h.held();
+    }
+  );
 });
