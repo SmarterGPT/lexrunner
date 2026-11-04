@@ -9,7 +9,13 @@ change fixed C:/D: anchors or ProgramData, select a generation, or clear
 The compile-gated fixture creates a fresh nonce directory only under the
 repository's `artifacts/windows-coordinator-root-provisioner/run-<nonce>`.
 Within that disposable parent, `NtCreateFile(FILE_CREATE)` creates the fixture
-container and seven recorded directories with a protected DACL at creation:
+container and seven recorded directories with a protected DACL at creation.
+The seven children use the actual production fresh-creation method. Each child
+is created once, then the exact same method must refuse its occupied name even
+though the existing object has matching owner/DACL. The held identity and row
+count must remain unchanged after each refusal. The receipt records seven
+occupied-child refusals; this does not establish installation origin or recovery.
+The directories represent:
 a store, two simulated volume
 anchors, and `stage`/`final` under each anchor. It holds parent handles,
 refuses an occupied name, and reads final path, volume/file ID, non-reparse
@@ -61,10 +67,12 @@ provisioning identity, installed graph and authorization handoff remain undefine
 An unreachable core demonstrates the intended fixed-path transaction: verify a
 restricted `LexRunnerCoordinator` SCM object under the exact virtual service
 account and SID, hold C:/D:/ProgramData parent handles, require NTFS or ReFS,
-create or read back the store and two `stage`/`final` parents through parent
-handles, and require SYSTEM ownership with a protected DACL. An occupied path
-is only observed after held identity, no-reparse and exact ACL readback; it is
-never replaced or cleaned. Created rows do not imply selection or execution.
+create the absent store and two `stage`/`final` parents through parent handles,
+and require SYSTEM ownership with a protected DACL. Every occupied name refuses
+without reopening or adopting it, including an object with matching permissions.
+A partial/unknown transaction remains retained for a separate authenticated
+recovery protocol; creation never resets, replaces or cleans it. Created rows
+do not imply selection or execution.
 
 The service itself remains the selected dedicated nonadministrator virtual
 account. This draft does not choose a LocalSystem or administrator runtime for

@@ -211,6 +211,7 @@ $sourceBefore = $null; $sourceAfter = $null
 $buildBefore = $null; $buildAfter = $null
 $normalSha = $null; $fixtureSha = $null
 $fixtureCreated = $false; $fixtureCleaned = $false
+$freshOriginCollisionCases = 0
 $cleanup = [ordered]@{}
 $repoHead = $null
 $imageName = 'LexRunner.WindowsCoordinator.RootProvisioner.exe'
@@ -278,6 +279,7 @@ try {
         Require ($result.State -ceq 'fixture_created_unqualified' -and
             $result.Fixture -ceq $fixturePath -and @($result.Rows).Count -eq 7 -and
             $result.OccupiedRootRefused -eq $true -and
+            $result.OccupiedChildRefusals -eq 7 -and
             $result.AuthorizesProvisioning -eq $false -and
             $result.AuthorizesExecution -eq $false) 'Fixture receipt contract failed'
         foreach ($row in $result.Rows) {
@@ -287,6 +289,7 @@ try {
                 $row.Attributes -match '\A0x[0-9a-f]{8}\z') 'Held identity or ACL readback failed'
         }
         Require (@($result.Rows | Select-Object -ExpandProperty FileId -Unique).Count -eq 7) 'Fixture IDs not distinct'
+        $freshOriginCollisionCases = $result.OccupiedChildRefusals
         Assert-FixtureTree
         $occupied = Step 'occupied-fixture-refused' $repo $fixtureImage @('--fixture', $runNonce) @(4) 30000
         Require ($occupied.stderr.Trim() -ceq 'fixture_refused:fixture_occupied' -and
@@ -329,6 +332,8 @@ finally {
         sourceSha256Before = $sourceBefore; sourceSha256After = $sourceAfter
         sourceBuildBefore = $buildBefore; sourceBuildAfter = $buildAfter
         fixtureCreated = $fixtureCreated; fixtureCleaned = $fixtureCleaned
+        freshOriginCollisionCases = $freshOriginCollisionCases
+        productionFreshCreationPrimitiveExercised = $freshOriginCollisionCases -eq 7
         fixturePresent = (Test-Path -LiteralPath (Join-Path $runRoot 'fixture'))
         checkedCleanup = $cleanup; fixedRootsTouched = $false
         installedServiceQualified = $false; authorizesProvisioning = $false

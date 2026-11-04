@@ -122,7 +122,8 @@ internal static class Program
         catch (IdentityNotMappedException) { serviceSid = null; }
         var policy = RootPolicy.ForFixture(sid);
         var rows = new List<RootObservation>();
-        var collisionRefused = false;
+        var collisionRefusals = 0;
+        var productionRows = new List<ProtectedRootRow>();
         using var run = Native.OpenDirectory(runRoot);
         SafeFileHandle parent;
         try { parent = Native.CreateDirectory(run, "fixture", policy); }
@@ -135,38 +136,47 @@ internal static class Program
             var created = new List<SafeFileHandle>();
             try
             {
+                SafeFileHandle CreateChecked(SafeFileHandle ancestor, string path, string name)
+                {
+                    var count = productionRows.Count;
+                    var handle = ProtectedRootPlan.CreateFreshChild(ancestor, path, name,
+                        policy, productionRows);
+                    created.Add(handle);
+                    var row = productionRows[^1];
+                    if (!row.Created || productionRows.Count != count + 1)
+                        throw new InvalidOperationException("fresh_creation_record_missing");
+                    rows.Add(row.Observation);
+                    try
+                    {
+                        using var duplicate = ProtectedRootPlan.CreateFreshChild(ancestor,
+                            path, name, policy, productionRows);
+                        throw new InvalidOperationException("occupied_root_adopted");
+                    }
+                    catch (InvalidOperationException error) when (
+                        error.Message == "create_refused_ntstatus_0xc0000035")
+                    {
+                        collisionRefusals++;
+                    }
+                    // The existing object has precisely the expected descriptor;
+                    // even that object must refuse, without changing held identity
+                    // or appending a fresh-origin row on the failed attempt.
+                    var after = Native.Observe(handle, path, policy);
+                    if (productionRows.Count != count + 1 || after != row.Observation)
+                        throw new InvalidOperationException("occupied_root_observation_changed");
+                    return handle;
+                }
                 foreach (var rootName in new[] { "store", "c-anchor", "d-anchor" })
                 {
                     var rootPath = Path.Combine(fixture, rootName);
-                    var root = Native.CreateDirectory(parent, rootName, policy);
-                    created.Add(root);
-                    rows.Add(Native.Observe(root, rootPath, policy));
-                    if (rootName == "store")
-                    {
-                        try
-                        {
-                            using var duplicate = Native.CreateDirectory(parent, rootName, policy);
-                            throw new InvalidOperationException("occupied_root_replaced");
-                        }
-                        catch (InvalidOperationException error) when (
-                            error.Message == "create_refused_ntstatus_0xc0000035")
-                        {
-                            collisionRefused = true;
-                        }
-                        if (Native.Observe(root, rootPath, policy).FileId != rows[0].FileId)
-                            throw new InvalidOperationException("occupied_root_identity_changed");
-                        continue;
-                    }
+                    var root = CreateChecked(parent, rootPath, rootName);
+                    if (rootName == "store") continue;
                     foreach (var childName in new[] { "stage", "final" })
-                    {
-                        var childPath = Path.Combine(rootPath, childName);
-                        var child = Native.CreateDirectory(root, childName, policy);
-                        created.Add(child);
-                        rows.Add(Native.Observe(child, childPath, policy));
-                    }
+                        _ = CreateChecked(root, Path.Combine(rootPath, childName), childName);
                 }
+                if (collisionRefusals != 7 || productionRows.Count != 7)
+                    throw new InvalidOperationException("fresh_origin_fixture_incomplete");
                 var receipt = new FixtureReceipt("fixture_created_unqualified", fixture,
-                    sid, serviceSid, policy.Sddl, rows.ToArray(), collisionRefused,
+                    sid, serviceSid, policy.Sddl, rows.ToArray(), true, collisionRefusals,
                     false, false);
                 Console.WriteLine(JsonSerializer.Serialize(receipt, RootJsonContext.Default.FixtureReceipt));
                 return 0;
@@ -193,7 +203,8 @@ internal sealed record RootObservation(string Path, string VolumeSerial, string 
     string Attributes, string Sddl, bool Consistent);
 internal sealed record FixtureReceipt(string State, string Fixture, string CurrentUserSid,
     string? InstalledServiceSid, string Policy, RootObservation[] Rows,
-    bool OccupiedRootRefused, bool AuthorizesProvisioning, bool AuthorizesExecution);
+    bool OccupiedRootRefused, int OccupiedChildRefusals, bool AuthorizesProvisioning,
+    bool AuthorizesExecution);
 [JsonSerializable(typeof(FixtureReceipt))]
 internal partial class RootJsonContext : JsonSerializerContext { }
 
@@ -227,13 +238,6 @@ internal static class Native
     }
 
     internal static SafeFileHandle CreateDirectory(SafeFileHandle parent, string name, RootPolicy policy)
-        => OpenChildDirectoryCore(parent, name, policy, 2);
-
-    internal static SafeFileHandle OpenChildDirectory(SafeFileHandle parent, string name)
-        => OpenChildDirectoryCore(parent, name, null, 1);
-
-    private static SafeFileHandle OpenChildDirectoryCore(SafeFileHandle parent, string name,
-        RootPolicy? policy, uint disposition)
     {
         if (name is not ("fixture" or "store" or "c-anchor" or "d-anchor" or
             "stage" or "final" or ProtectedRootPlan.RootName))
@@ -250,8 +254,7 @@ internal static class Native
         IntPtr descriptor = IntPtr.Zero;
         try
         {
-            if (policy is not null &&
-                !ConvertStringSecurityDescriptorToSecurityDescriptorW(policy.Sddl, 1,
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(policy.Sddl, 1,
                     out descriptor, out _))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "security_descriptor_invalid");
             var attributes = new ObjectAttributes
@@ -265,7 +268,8 @@ internal static class Native
             var status = NtCreateFile(out var handle,
                 FileReadAttributes | FileAddSubdirectory | ReadControl | Synchronize,
                 ref attributes, out _, IntPtr.Zero, FileAttributeDirectory,
-                FileShareRead, disposition, FileDirectoryFile | FileOpenReparsePoint |
+                FileShareRead, 2 /* FILE_CREATE: occupied names always refuse */,
+                FileDirectoryFile | FileOpenReparsePoint |
                 FileSynchronousIoNonalert, IntPtr.Zero, 0);
             if (status < 0)
             {
