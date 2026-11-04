@@ -72,7 +72,14 @@ void CheckPe(const std::vector<BYTE>& bytes, DWORD& certOffset, DWORD& certLengt
 }
 
 void Cms::Init(const std::vector<BYTE>& bytes, DWORD offset, DWORD length) {
-        CRYPT_DATA_BLOB blob{length, const_cast<BYTE*>(bytes.data() + offset)};
+        Need(offset <= bytes.size() && length <= bytes.size() - offset, "cms_slice_bounds");
+        InitEncodedMessage(bytes.data() + offset, length);
+}
+
+void Cms::InitEncodedMessage(const BYTE* encoded, DWORD bytes) {
+        Need(encoded && bytes > 0 && bytes <= 64 * 1024 * 1024 && !store && !message,
+            "cms_encoded_bounds");
+        CRYPT_DATA_BLOB blob{bytes, const_cast<BYTE*>(encoded)};
         Need(CryptQueryObject(CERT_QUERY_OBJECT_BLOB, &blob, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED,
             CERT_QUERY_FORMAT_FLAG_BINARY, 0, nullptr, nullptr, nullptr, &store, &message, nullptr), "cms_query");
         DWORD size = sizeof(primaryCount);

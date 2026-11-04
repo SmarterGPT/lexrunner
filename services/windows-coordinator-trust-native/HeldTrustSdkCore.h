@@ -8,6 +8,7 @@
 #include <wintrust.h>
 #include <softpub.h>
 #include <bcrypt.h>
+#include <mssip.h>
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -83,6 +84,7 @@ struct Cms {
     const BYTE* token = nullptr; DWORD tokenBytes = 0;
     Cms() = default;
     void Init(const std::vector<BYTE>& bytes, DWORD offset, DWORD length);
+    void InitEncodedMessage(const BYTE* encoded, DWORD bytes);
     Cms(const Cms&) = delete;
     ~Cms();
     bool CloseObserved() noexcept;
@@ -220,3 +222,10 @@ struct SharedTimestampOperation {
     SharedTimestampOperation(const SharedTimestampOperation&) = delete;
     SharedTimestampOperation& operator=(const SharedTimestampOperation&) = delete;
 };
+
+// Fixed MSI SIP identity from independent Microsoft Windows HKLM64 registration,
+// not from a candidate's returned GUID. Provider path observation is diagnostic;
+// actual MSI hFile use and loader custody remain separately unqualified.
+inline constexpr GUID ExpectedMsiSubject{0x000c10f1,0,0,{0xc0,0,0,0,0,0,0,0x46}};
+void ReadMsiSubject(HANDLE image,const std::wstring& finalPath,
+    std::vector<BYTE>& encoded,GUID& observedSubject);
