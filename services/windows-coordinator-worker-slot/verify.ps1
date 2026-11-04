@@ -1,3 +1,5 @@
+param([string]$OutputDirectory)
+if ($OutputDirectory -and -not [IO.Path]::IsPathFullyQualified($OutputDirectory)) { throw 'source_output_must_be_absolute' }
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -9,7 +11,20 @@ if (-not [OperatingSystem]::IsWindows() -or [IntPtr]::Size -ne 8) {
 
 $project = Join-Path $PSScriptRoot 'LexRunner.WindowsCoordinator.WorkerSlot.csproj'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$artifact = Join-Path $repo 'artifacts\windows-coordinator-worker-slot-source'
+$artifact = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $repo 'artifacts\windows-coordinator-worker-slot-source' }
+$allowedArtifacts = [IO.Path]::GetFullPath((Join-Path $repo 'artifacts')) + [IO.Path]::DirectorySeparatorChar
+if (-not $artifact.StartsWith($allowedArtifacts, [StringComparison]::OrdinalIgnoreCase) -or
+    $artifact.IndexOfAny([char[]]@(';', '"', '%', "`r", "`n")) -ge 0) { throw 'source_output_outside_artifacts' }
+$cursor = $artifact
+while ($cursor) {
+    if (Test-Path -LiteralPath $cursor) {
+        $item = Get-Item -LiteralPath $cursor -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'source_output_ancestor_redirected'
+        }
+    }
+    $cursor = [IO.Path]::GetDirectoryName($cursor)
+}
 $normal = Join-Path $artifact 'normal'
 $fixture = Join-Path $artifact 'fixture'
 $image = 'LexRunner.WindowsCoordinator.WorkerSlot.exe'
@@ -44,13 +59,21 @@ function Invoke-Recorded([string]$file, [string[]]$arguments, [string]$cwd) {
 }
 
 $normalBuild = Invoke-Recorded 'dotnet' @('publish', $project, '-c', 'Release',
-    '-r', 'win-x64', '-p:NuGetAudit=false', '-p:WorkerSlotFixtureTests=false',
+    '-r', 'win-x64', '-p:NuGetAudit=true', '-p:WorkerSlotFixtureTests=false',
+    ("-p:BaseIntermediateOutputPath=" + (Join-Path $artifact 'normal-build/obj').Replace('\', '/') + '/'),
+    ("-p:MSBuildProjectExtensionsPath=" + (Join-Path $artifact 'normal-build/obj').Replace('\', '/') + '/'),
+    ("-p:BaseOutputPath=" + (Join-Path $artifact 'normal-build/bin').Replace('\', '/') + '/'),
+    ("-p:OutputPath=" + (Join-Path $artifact 'normal-build/bin').Replace('\', '/') + '/'),
     '-o', $normal, '--nologo') $PSScriptRoot
 if ($normalBuild.exitCode -ne 0) { throw 'normal NativeAOT worker slot publish failed' }
 $normalImage = Join-Path $normal $image
 if (-not (Test-Path -LiteralPath $normalImage -PathType Leaf)) { throw 'normal worker slot image missing' }
 $normalHash = (Get-FileHash -LiteralPath $normalImage -Algorithm SHA256).Hash.ToLowerInvariant()
 
+$normalCustom = Invoke-Recorded $normalImage @('--custom-control-selftest') $PSScriptRoot
+if ($normalCustom.exitCode -ne 2 -or $normalCustom.outputTail.Trim() -cne 'scm_only') {
+    throw 'normal worker slot image exposed custom-control fixture mode'
+}
 $normalPolicy = Invoke-Recorded $normalImage @('--policy-selftest') $PSScriptRoot
 $normalToken = Invoke-Recorded $normalImage @('--token-refusal-selftest') $PSScriptRoot
 $normalConsole = Invoke-Recorded $normalImage @('--service') $PSScriptRoot
@@ -61,7 +84,11 @@ if ($normalPolicy.exitCode -ne 2 -or $normalPolicy.outputTail.Trim() -cne 'scm_o
 }
 
 $fixtureBuild = Invoke-Recorded 'dotnet' @('publish', $project, '-c', 'Release',
-    '-r', 'win-x64', '-p:NuGetAudit=false', '-p:WorkerSlotFixtureTests=true',
+    '-r', 'win-x64', '-p:NuGetAudit=true', '-p:WorkerSlotFixtureTests=true',
+    ("-p:BaseIntermediateOutputPath=" + (Join-Path $artifact 'fixture-build/obj').Replace('\', '/') + '/'),
+    ("-p:MSBuildProjectExtensionsPath=" + (Join-Path $artifact 'fixture-build/obj').Replace('\', '/') + '/'),
+    ("-p:BaseOutputPath=" + (Join-Path $artifact 'fixture-build/bin').Replace('\', '/') + '/'),
+    ("-p:OutputPath=" + (Join-Path $artifact 'fixture-build/bin').Replace('\', '/') + '/'),
     '-o', $fixture, '--nologo') $PSScriptRoot
 if ($fixtureBuild.exitCode -ne 0) { throw 'fixture NativeAOT worker slot publish failed' }
 $fixtureImage = Join-Path $fixture $image
@@ -75,6 +102,11 @@ if ($policy.exitCode -ne 0 -or $policy.outputTail.Trim() -cne 'policy_selftest_p
     $token.exitCode -ne 0 -or $token.outputTail.Trim() -cne 'token_refusal_selftest_pass' -or
     $fixtureConsole.exitCode -ne 3 -or $fixtureConsole.outputTail.Trim() -cne 'scm_required') {
     throw 'fixture worker slot source gate failed'
+}
+
+$customControl = Invoke-Recorded $fixtureImage @('--custom-control-selftest') $PSScriptRoot
+if ($customControl.exitCode -ne 0 -or $customControl.outputTail.Trim() -cne 'custom_control_selftest_pass') {
+    throw 'actual worker callback custom-control source selftest failed'
 }
 
 $sources = @('.gitignore', 'global.json', 'LexRunner.WindowsCoordinator.WorkerSlot.csproj',
@@ -94,6 +126,8 @@ $receipt = [pscustomobject]@{
     fixtureImageSha256 = $fixtureHash
     commands = $commands
     sourceSha256 = $hashes
+    customControlCallbackCases = 128
+    retainedScmControlHandlesQualified = $false
     installed = $false
     serviceInstalled = $false
     workerLaunched = $false
