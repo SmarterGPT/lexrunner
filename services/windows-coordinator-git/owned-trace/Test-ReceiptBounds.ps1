@@ -25,10 +25,10 @@ if ($receipt.schemaVersion -cne 'lexrunner-windows-owned-etw-source-gate/1' -or
     $receipt.sourceHead -notmatch '^[0-9a-f]{40}$' -or
     ($env:GITHUB_SHA -and $receipt.sourceHead -cne $env:GITHUB_SHA) -or
     $receipt.processArchitecture -cne 'X64' -or
-    $receipt.caseCount -ne 57 -or
+    $receipt.caseCount -ne 57 -or $receipt.schemaWireCaseCount -ne 37 -or
     $receipt.preflightCaseCount -ne 39 -or $receipt.statusSanitizerCaseCount -ne 172 -or $receipt.nativeActionDiagnosticCaseCount -ne 130 -or
     $receipt.imageSha256 -notmatch '^[0-9a-f]{64}$' -or
-    @($receipt.commands).Count -ne 6 -or
+    @($receipt.commands).Count -ne 7 -or
     @($receipt.sourceSha256.PSObject.Properties).Count -ne 14 -or
     $receipt.nativeTraceStarted -ne $false -or
     $receipt.nativeTraceStopped -ne $false -or
@@ -37,10 +37,10 @@ if ($receipt.schemaVersion -cne 'lexrunner-windows-owned-etw-source-gate/1' -or
     $receipt.authorizesExecution -ne $false) {
     throw 'owned_etw_receipt_readback_invalid'
 }
-$labels = @('build', 'selftest', 'query-diagnostic-selftest', 'preflight-selftest', 'capture-refusal', 'calibration-refusal')
-$exits = @(0, 0, 0, 0, 3, 3)
-$caps = @(65536, 8192, 8192, 8192, 1024, 1024)
-for ($i = 0; $i -lt 6; $i++) {
+$labels = @('build', 'selftest', 'schema-wire-selftest', 'query-diagnostic-selftest', 'preflight-selftest', 'capture-refusal', 'calibration-refusal')
+$exits = @(0, 0, 0, 0, 0, 3, 3)
+$caps = @(65536, 8192, 4096, 8192, 8192, 1024, 1024)
+for ($i = 0; $i -lt 7; $i++) {
     $command = $receipt.commands[$i]
     if ($command.label -cne $labels[$i] -or
         $command.exitCode -ne $exits[$i] -or

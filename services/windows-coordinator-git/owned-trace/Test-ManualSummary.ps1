@@ -39,7 +39,7 @@ if ($text.StartsWith([char]0xFEFF) -or $text.Contains("`r") -or
     throw 'manual_summary_encoding_invalid'
 }
 $summary = $text | ConvertFrom-Json
-if ($summary.schemaVersion -cne 'lexrunner-windows-owned-etw-manual/2' -or
+if ($summary.schemaVersion -cne 'lexrunner-windows-owned-etw-manual/3' -or
     $summary.result -cnotin @('calibration_observed','refused') -or
     $summary.reasonCode -cnotmatch '^[a-z0-9_]+$' -or
     $summary.sourceHead -cnotmatch '^[0-9a-f]{40}$' -or
@@ -106,6 +106,50 @@ if ($null -ne $header) {
         $reason -ceq 'none' -or $header.FirstFailedCheck -cne $reason) {
         throw 'manual_summary_header_observation'
     }
+}
+# All nine schema values remain present under the private v3 short-key map.
+# Do not accept an unknown/replaced slot, coercion, payload or partial census.
+if ($null -ne $summary.schemas) {
+    if ($summary.schemas -isnot [array] -or $summary.schemas.Count -gt 64 -or
+        -not (Is-UInt32Value $summary.censusEventCount) -or $summary.censusEventCount -gt 200000) {
+        throw 'manual_summary_schema_shape'
+    }
+    $schemaIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $schemaEvents = 0L
+    $schemaNameChars = 0L
+    foreach ($row in $summary.schemas) {
+        if (-not (Has-ExactFields $row @('g','o','v','i','c','t','d','n','p'))) {
+            throw 'manual_summary_schema_fields'
+        }
+        if ($row.g -isnot [string] -or $row.g -cnotmatch '\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z' -or
+            -not (Is-UInt32Value $row.o) -or $row.o -gt 255 -or
+            -not (Is-UInt32Value $row.v) -or $row.v -gt 255 -or
+            -not (Is-UInt32Value $row.i) -or $row.i -gt 65535 -or $row.c -isnot [bool] -or
+            -not (Is-UInt32Value $row.t) -or -not (Is-Int64Value $row.d) -or
+            $row.d -lt -2147483648L -or $row.d -gt 2147483647L -or
+            -not (Is-UInt32Value $row.n) -or $row.n -le 0 -or $row.n -gt 200000 -or
+            $row.p -isnot [array] -or $row.p.Count -gt 64) {
+            throw 'manual_summary_schema_value'
+        }
+        $key = '{0}|{1}|{2}|{3}|{4}' -f $row.g,$row.o,$row.v,$row.i,$row.c
+        if (-not $schemaIds.Add($key)) { throw 'manual_summary_schema_duplicate' }
+        $schemaEvents += $row.n
+        foreach ($name in $row.p) {
+            if ($name -isnot [string] -or $name -cnotmatch '\A[A-Za-z0-9_.]{1,95}\z') {
+                throw 'manual_summary_schema_name'
+            }
+            $schemaNameChars += $name.Length
+        }
+        if ($schemaNameChars -gt 4096 -or $schemaEvents -gt 200000) {
+            throw 'manual_summary_schema_totals'
+        }
+    }
+    if ($schemaEvents -ne $summary.censusEventCount -or
+        ($summary.result -ceq 'calibration_observed' -and $summary.schemas.Count -eq 0)) {
+        throw 'manual_summary_schema_totals'
+    }
+} elseif ($summary.result -ceq 'calibration_observed') {
+    throw 'manual_summary_schema_shape'
 }
 $scratchName = $summary.commandCwd.Substring('RUNNER_TEMP/'.Length)
 if (-not [IO.Directory]::Exists($env:RUNNER_TEMP) -or

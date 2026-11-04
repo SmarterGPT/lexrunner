@@ -175,7 +175,7 @@ internal static class CaptureCalibration
         {
             var summary = new
             {
-                schemaVersion = "lexrunner-windows-owned-etw-manual/2",
+                schemaVersion = "lexrunner-windows-owned-etw-manual/3",
                 result = reason == "calibration_observed" ? "calibration_observed" : "refused",
                 reasonCode = reason,
                 sourceHead = expectedHead,
@@ -258,7 +258,7 @@ internal static class CaptureCalibration
 
     internal static bool SyntheticCensusWireRoundTrip()
     {
-        var original = new SchemaCensusResult("census_observed", 1,
+        var original = new SchemaCensusResult(SchemaCensusResult.WireVersion, "census_observed", 1,
             [new SchemaCensusItem("3d6fa8d0-fe05-11d0-9dda-00c04fd7ba7c",
                 1, 3, 0, true, 0, 0, 1, ["ProcessId"])],
             0, 0, 1, 2, false, false);
@@ -506,7 +506,7 @@ internal static class CaptureCalibration
             var error = stderr.GetAwaiter().GetResult();
             if (error.Length != 0 || output.Length == 0) return null;
             var result = JsonSerializer.Deserialize<SchemaCensusResult>(output);
-            if (result is null || result.AuthorizesLoaderClosure ||
+            if (result is null || !result.WireVersionIsExpected || result.AuthorizesLoaderClosure ||
                 result.AuthorizesExecution ||
                 (process.ExitCode == 0) != result.Accepted ||
                 (result.HeaderObservation is { } header &&

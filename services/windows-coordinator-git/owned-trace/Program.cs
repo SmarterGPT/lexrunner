@@ -11,6 +11,14 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args is ["--schema-wire-selftest"])
+        {
+            var wireCases = SchemaCensus.WireSelfTest();
+            var wirePassed = wireCases.All(value => value.Passed);
+            Console.WriteLine(JsonSerializer.Serialize(new { result = wirePassed ? "source_wire_pass" : "refused",
+                cases = wireCases, nativeTraceStarted = false, authorizesExecution = false }));
+            return wirePassed ? 0 : 3;
+        }
         if (args is ["--query-diagnostic-selftest"])
         {
             var queryCases = NativeActionDiagnostic.SelfTest();

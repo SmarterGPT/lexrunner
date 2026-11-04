@@ -1,8 +1,14 @@
 // Bounded numeric readback, not a completed census or execution authority.
 // A non-null record means all seven header fields were read after ProcessTrace.
-internal sealed record EtlHeaderObservation(long StartFileTimeUtc, long EndFileTimeUtc,
-    uint CaptureMode, uint MaximumFileSizeMiB, uint PointerSize,
-    uint EventsLost, uint BuffersLost)
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
+internal sealed record EtlHeaderObservation(
+    [property: System.Text.Json.Serialization.JsonRequired] long StartFileTimeUtc,
+    [property: System.Text.Json.Serialization.JsonRequired] long EndFileTimeUtc,
+    [property: System.Text.Json.Serialization.JsonRequired] uint CaptureMode,
+    [property: System.Text.Json.Serialization.JsonRequired] uint MaximumFileSizeMiB,
+    [property: System.Text.Json.Serialization.JsonRequired] uint PointerSize,
+    [property: System.Text.Json.Serialization.JsonRequired] uint EventsLost,
+    [property: System.Text.Json.Serialization.JsonRequired] uint BuffersLost)
 {
     public string FirstFailedCheck => StartFileTimeUtc <= 0 ? "start_time" :
         EndFileTimeUtc <= StartFileTimeUtc ? "end_time" :

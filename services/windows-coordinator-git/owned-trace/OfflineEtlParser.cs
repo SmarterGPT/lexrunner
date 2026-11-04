@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 // Diagnostic-only offline census. It never starts or stops an ETW session,
 // reads event payloads, or returns host process names, command lines or paths.
@@ -131,6 +132,81 @@ internal static class SchemaCensus
         return checks;
     }
 
+    internal static IReadOnlyList<SchemaCensusCheck> WireSelfTest()
+    {
+        var checks = new List<SchemaCensusCheck>();
+        void Add(string name, bool passed) => checks.Add(new(name, passed));
+        var row = new SchemaCensusItem("3d6fa8d0-fe05-11d0-9dda-00c04fd7ba7c",
+            255, 254, 65535, true, uint.MaxValue, int.MinValue, 17, ["ProcessId", "Image.File"]);
+        var rowWire = JsonSerializer.Serialize(row);
+        var rowRead = JsonSerializer.Deserialize<SchemaCensusItem>(rowWire)!;
+        Add("compact_row_preserves_all_nine_values",
+            rowRead.ClassGuid == row.ClassGuid && rowRead.Opcode == row.Opcode &&
+            rowRead.Version == row.Version && rowRead.EventId == row.EventId &&
+            rowRead.ClassicHeader == row.ClassicHeader && rowRead.TdhStatus == row.TdhStatus &&
+            rowRead.DecodingSource == row.DecodingSource && rowRead.EventCount == row.EventCount &&
+            rowRead.PropertyNames.SequenceEqual(row.PropertyNames));
+        using (var wireDocument = JsonDocument.Parse(rowWire))
+            Add("compact_row_exact_short_keys", wireDocument.RootElement.EnumerateObject()
+                .Select(p => p.Name).SequenceEqual(["g", "o", "v", "i", "c", "t", "d", "n", "p"]));
+        bool RowRefuses(string json)
+        {
+            try { JsonSerializer.Deserialize<SchemaCensusItem>(json); return false; }
+            catch (JsonException) { return true; }
+        }
+        Add("compact_row_unknown_field_refuses", RowRefuses(rowWire[..^1] + ",\"extra\":0}"));
+        Add("compact_row_legacy_key_refuses", RowRefuses(rowWire.Replace("\"g\":", "\"ClassGuid\":")));
+        Add("compact_row_fractional_integer_refuses", RowRefuses(rowWire.Replace("\"o\":255", "\"o\":1.5")));
+        var rows = Enumerable.Range(0, 32).Select(i => row with {
+            ClassGuid = new Guid(i, 1, 2, new byte[8]).ToString("D"),
+            EventCount = 1, TdhStatus = 0, DecodingSource = 0 }).ToArray();
+        var result = new SchemaCensusResult(SchemaCensusResult.WireVersion,
+            "census_observed", 32, rows, 0, 0, 1, 2, false, false);
+        var compactBytes = JsonSerializer.SerializeToUtf8Bytes(result);
+        var verboseBytes = JsonSerializer.SerializeToUtf8Bytes(rows.Select(s => new {
+            s.ClassGuid, s.Opcode, s.Version, s.EventId, s.ClassicHeader,
+            s.TdhStatus, s.DecodingSource, s.EventCount, s.PropertyNames }));
+        Add("compact_inventory_fits_without_losing_rows", compactBytes.Length <= 6144 &&
+            verboseBytes.Length > 6144 && BoundSummary(result).Accepted &&
+            JsonSerializer.Deserialize<SchemaCensusResult>(compactBytes)!.Schemas.Count == 32);
+        Add("compact_inventory_over_cap_still_refuses", BoundSummary(result with {
+            EventCount = 64, Schemas = rows.Concat(rows).ToArray()
+        }).ReasonCode == "census_summary_limit");
+        Add("census_unknown_wire_version_refuses", !(result with {
+            WireSchemaVersion = "lexrunner-etw-schema-census/1" }).Accepted);
+        var missingVersion = JsonSerializer.Serialize(result).Replace(
+            "\"WireSchemaVersion\":\"" + SchemaCensusResult.WireVersion + "\",", "");
+        bool WireRefuses<T>(string json)
+        {
+            try { JsonSerializer.Deserialize<T>(json); return false; }
+            catch (JsonException) { return true; }
+        }
+        Add("census_missing_wire_version_refuses", WireRefuses<SchemaCensusResult>(missingVersion));
+        void RequireEach<T>(T value, string prefix, string[] names)
+        {
+            var original = JsonSerializer.Serialize(value);
+            foreach (var name in names)
+            {
+                var copy = System.Text.Json.Nodes.JsonNode.Parse(original)!.AsObject();
+                copy.Remove(name);
+                Add(prefix + name, WireRefuses<T>(copy.ToJsonString()));
+            }
+        }
+        RequireEach(row, "row_required_", ["g", "o", "v", "i", "c", "t", "d", "n", "p"]);
+        RequireEach(result, "result_required_", ["WireSchemaVersion", "ReasonCode", "EventCount", "Schemas",
+            "HeaderEventsLost", "HeaderBuffersLost", "HeaderStartFileTimeUtc", "HeaderEndFileTimeUtc",
+            "AuthorizesLoaderClosure", "AuthorizesExecution", "HeaderObservation"]);
+        var header = new EtlHeaderObservation(1, 2, ExpectedCaptureMode, 128, 8, 0, 0);
+        RequireEach(header, "header_required_", ["StartFileTimeUtc", "EndFileTimeUtc", "CaptureMode",
+            "MaximumFileSizeMiB", "PointerSize", "EventsLost", "BuffersLost"]);
+        var refusedRead = JsonSerializer.Deserialize<SchemaCensusResult>(
+            JsonSerializer.Serialize(Refuse("synthetic")))!;
+        Add("present_zero_refusal_facts_preserved", refusedRead.WireVersionIsExpected &&
+            !refusedRead.Accepted && refusedRead.HeaderEventsLost == 0 && refusedRead.HeaderBuffersLost == 0 &&
+            !refusedRead.AuthorizesLoaderClosure && !refusedRead.AuthorizesExecution);
+        return checks;
+    }
+
     // The caller must also enforce an out-of-process deadline: a stalled
     // ProcessTrace call can block without invoking either callback.
     internal static SchemaCensusResult Parse(string etlPath,
@@ -230,17 +306,20 @@ internal static class SchemaCensus
                 s.TdhStatus, s.DecodingSource, s.Count,
                 s.PropertyNames.ToArray()))
             .ToArray();
-        var observed = new SchemaCensusResult("census_observed", state.EventCount, items,
+        var observed = new SchemaCensusResult(SchemaCensusResult.WireVersion, "census_observed", state.EventCount, items,
             headerEventsLost, headerBuffersLost, headerStart, headerEnd,
             false, false);
-        // Leave room for the outer run/Job/loss/deletion receipt under 8 KiB.
-        if (JsonSerializer.SerializeToUtf8Bytes(observed).Length > 6144)
-            return Refuse("census_summary_limit");
-        return observed;
+        return BoundSummary(observed);
     }
 
+    // Lossless short field names reduce representation overhead. The original
+    // byte cap stays exact; no schema/property/count is truncated or omitted.
+    private static SchemaCensusResult BoundSummary(SchemaCensusResult observed) =>
+        JsonSerializer.SerializeToUtf8Bytes(observed).Length > 6144
+            ? Refuse("census_summary_limit") : observed;
+
     private static SchemaCensusResult Refuse(string reason, EtlHeaderObservation? header = null) =>
-        new(reason, 0, Array.Empty<SchemaCensusItem>(), 0, 0, 0, 0,
+        new(SchemaCensusResult.WireVersion, reason, 0, Array.Empty<SchemaCensusItem>(), 0, 0, 0, 0,
             false, false, header);
 
     private sealed class CensusState(TimeSpan maxDuration)
@@ -449,17 +528,35 @@ internal static class SchemaCensus
     }
 }
 
-internal sealed record SchemaCensusItem(string ClassGuid, byte Opcode,
-    byte Version, ushort EventId, bool ClassicHeader, uint TdhStatus,
-    int DecodingSource, int EventCount, IReadOnlyList<string> PropertyNames);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record SchemaCensusItem(
+    [property: JsonPropertyName("g"), JsonRequired] string ClassGuid,
+    [property: JsonPropertyName("o"), JsonRequired] byte Opcode,
+    [property: JsonPropertyName("v"), JsonRequired] byte Version,
+    [property: JsonPropertyName("i"), JsonRequired] ushort EventId,
+    [property: JsonPropertyName("c"), JsonRequired] bool ClassicHeader,
+    [property: JsonPropertyName("t"), JsonRequired] uint TdhStatus,
+    [property: JsonPropertyName("d"), JsonRequired] int DecodingSource,
+    [property: JsonPropertyName("n"), JsonRequired] int EventCount,
+    [property: JsonPropertyName("p"), JsonRequired] IReadOnlyList<string> PropertyNames);
 
-internal sealed record SchemaCensusResult(string ReasonCode, int EventCount,
-    IReadOnlyList<SchemaCensusItem> Schemas, uint HeaderEventsLost,
-    uint HeaderBuffersLost, long HeaderStartFileTimeUtc,
-    long HeaderEndFileTimeUtc, bool AuthorizesLoaderClosure,
-    bool AuthorizesExecution, EtlHeaderObservation? HeaderObservation = null)
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed record SchemaCensusResult(
+    [property: JsonRequired] string WireSchemaVersion,
+    [property: JsonRequired] string ReasonCode,
+    [property: JsonRequired] int EventCount,
+    [property: JsonRequired] IReadOnlyList<SchemaCensusItem> Schemas,
+    [property: JsonRequired] uint HeaderEventsLost,
+    [property: JsonRequired] uint HeaderBuffersLost,
+    [property: JsonRequired] long HeaderStartFileTimeUtc,
+    [property: JsonRequired] long HeaderEndFileTimeUtc,
+    [property: JsonRequired] bool AuthorizesLoaderClosure,
+    [property: JsonRequired] bool AuthorizesExecution,
+    [property: JsonRequired] EtlHeaderObservation? HeaderObservation = null)
 {
-    internal bool Accepted => ReasonCode == "census_observed";
+    internal const string WireVersion = "lexrunner-etw-schema-census/2";
+    internal bool WireVersionIsExpected => WireSchemaVersion == WireVersion;
+    internal bool Accepted => WireVersionIsExpected && ReasonCode == "census_observed";
     internal bool HeaderEndTimeValid => HeaderStartFileTimeUtc > 0 &&
         HeaderEndFileTimeUtc > HeaderStartFileTimeUtc;
 }
