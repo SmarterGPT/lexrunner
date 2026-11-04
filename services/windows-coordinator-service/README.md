@@ -79,7 +79,8 @@ skips the SCM dispatcher, pipe and private-launch host checks and reports
 `source_pure_only_pass`, not the full source gate. Neither mode installs a service.
 
 Both modes use fresh `artifacts/windows-coordinator-service-source/qualification-<nonce>`
-outputs, including separate intermediates; they do not delete project `bin/obj` or
+outputs, including separate intermediates. `-OutputDirectory` accepts a fresh absolute
+path under repository artifacts. They do not delete project `bin/obj` or
 overwrite old evidence. The engineering GUI capture reads both byte streams with
 32 KiB retained per stream and 64 KiB total, strict UTF-8 and exact expected line
 endings. It waits for direct process exit and stream settlement, attempts at most
@@ -121,3 +122,14 @@ are build requirements, not proof of an independently protected initial loader.
 No installed bootstrap/process/selection, broker or governed execution readiness
 follows; helper_missing stays refused. npm never downloads or installs this
 separately optional application.
+
+Both fixed service objects permanently refuse custom controls 128 through 255 with
+ERROR_CALL_NOT_IMPLEMENTED (120) before payload access or product-state locks.
+This is the selected staged-creation profile invariant, not a configurable verb
+range. The fixture-only `--custom-control-selftest` invokes the actual callbacks
+with poisoned payload pointers. The coordinator test also holds its registration
+lock on another thread and checks that cancellation/status remain untouched; its
+standard STOP and shutdown callbacks still follow the lifecycle path. Normal
+images reject the fixture flag. Neither callback tests nor a fresh-open denial
+qualify previously opened SCM handles: real retained-handle, creation/hardening,
+start and queue-denial-of-service controls remain pending approved installation.

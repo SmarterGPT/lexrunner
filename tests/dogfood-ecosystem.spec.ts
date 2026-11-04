@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,7 +20,9 @@ import {
   assertExactPublishedVersions,
   assertRegistryOnlyPackageLock,
   inspectDogfoodRun,
+  verifyReviewedNativePrebuild,
   reapDogfoodRun,
+  reviewedNativePrebuildRelative,
   resolveOrdinaryPackageRoot,
   scrubRuntimeEnvironment,
 } from "../scripts/dogfood-ecosystem.js";
@@ -28,6 +39,168 @@ afterEach(async () => {
 });
 
 describe("ecosystem dogfood allocation lifecycle", () => {
+  async function nativeFixture() {
+    const root = await mkdtemp(path.join(os.tmpdir(), "lexrunner-native-prebuild-"));
+    temporaryRoots.push(root);
+    const roots = [path.join(root, "source"), path.join(root, "consumer")];
+    for (const directory of roots) {
+      const packageRoot = path.join(directory, "node_modules", "better-sqlite3-multiple-ciphers");
+      await mkdir(path.join(packageRoot, "prebuilds"), { recursive: true });
+      await writeFile(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({ name: "better-sqlite3-multiple-ciphers", version: "13.0.3" })
+      );
+      await writeFile(
+        path.join(packageRoot, reviewedNativePrebuildRelative()),
+        "reviewed-prebuild-fixture"
+      );
+      await writeFile(
+        path.join(directory, "package-lock.json"),
+        JSON.stringify({
+          packages: {
+            "node_modules/better-sqlite3-multiple-ciphers": {
+              version: "13.0.3",
+              resolved:
+                "https://registry.npmjs.org/better-sqlite3-multiple-ciphers/-/better-sqlite3-multiple-ciphers-13.0.3.tgz",
+              integrity: "sha512-fixture",
+            },
+          },
+        })
+      );
+    }
+    const runner = path.join(roots[1]!, "node_modules", "@smartergpt", "lexrunner");
+    await mkdir(runner, { recursive: true });
+    await writeFile(
+      path.join(runner, "package.json"),
+      JSON.stringify({
+        name: "@smartergpt/lexrunner",
+        version: "2.5.0",
+        dependencies: { "better-sqlite3-multiple-ciphers": "13.0.3" },
+      })
+    );
+    return {
+      source: roots[0]!,
+      consumer: roots[1]!,
+      target: path.join(roots[1]!, "node_modules", "better-sqlite3-multiple-ciphers"),
+    };
+  }
+
+  it("verifies the shipped N-API prebuild without a generated build directory or copying bytes", async () => {
+    const f = await nativeFixture();
+    expect(await verifyReviewedNativePrebuild(f.source, f.consumer)).toMatch(
+      /^sha256:[a-f0-9]{64}$/
+    );
+    expect(await readFile(path.join(f.target, reviewedNativePrebuildRelative()), "utf8")).toBe(
+      "reviewed-prebuild-fixture"
+    );
+    await expect(
+      readFile(path.join(f.target, "build", "Release", "better_sqlite3.node"))
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(reviewedNativePrebuildRelative("linux", "arm64", true)).toBe(
+      path.join("prebuilds", "linuxmusl-arm64.node")
+    );
+    expect(() => reviewedNativePrebuildRelative("win32", "ia32", false)).toThrow(
+      "platform_unsupported"
+    );
+  });
+
+  it("verifies Runner's nested native dependency instead of another package's hoisted SQLite", async () => {
+    const f = await nativeFixture();
+    const nested = path.join(
+      f.consumer,
+      "node_modules",
+      "@smartergpt",
+      "lexrunner",
+      "node_modules",
+      "better-sqlite3-multiple-ciphers"
+    );
+    await mkdir(path.dirname(nested), { recursive: true });
+    await rename(f.target, nested);
+    await mkdir(f.target);
+    await writeFile(
+      path.join(f.target, "package.json"),
+      JSON.stringify({ name: "better-sqlite3-multiple-ciphers", version: "12.11.1" })
+    );
+    const lockPath = path.join(f.consumer, "package-lock.json");
+    const lock = JSON.parse(await readFile(lockPath, "utf8"));
+    const key = "node_modules/better-sqlite3-multiple-ciphers";
+    lock.packages["node_modules/@smartergpt/lexrunner/" + key] = lock.packages[key];
+    lock.packages[key] = {
+      version: "12.11.1",
+      resolved: "https://registry.npmjs.org/old-fixture.tgz",
+      integrity: "sha512-old-fixture",
+    };
+    await writeFile(lockPath, JSON.stringify(lock));
+    expect(await verifyReviewedNativePrebuild(f.source, f.consumer)).toMatch(
+      /^sha256:[a-f0-9]{64}$/
+    );
+    expect(JSON.parse(await readFile(path.join(f.target, "package.json"), "utf8")).version).toBe(
+      "12.11.1"
+    );
+  });
+  it("uses physical lock roots when temporary source and consumer paths are aliases", async () => {
+    const f = await nativeFixture();
+    const sourceAlias = path.join(path.dirname(f.source), "source-alias");
+    const consumerAlias = path.join(path.dirname(f.consumer), "consumer-alias");
+    await symlink(f.source, sourceAlias, directoryLinkType);
+    await symlink(f.consumer, consumerAlias, directoryLinkType);
+    expect(await verifyReviewedNativePrebuild(sourceAlias, consumerAlias)).toMatch(
+      /^sha256:[a-f0-9]{64}$/
+    );
+  });
+
+  it("refuses Runner's native package resolving outside the consumer even through an alias", async () => {
+    const f = await nativeFixture();
+    await rm(f.target, { recursive: true });
+    await symlink(
+      path.join(f.source, "node_modules", "better-sqlite3-multiple-ciphers"),
+      f.target,
+      directoryLinkType
+    );
+    await expect(verifyReviewedNativePrebuild(f.source, f.consumer)).rejects.toThrow(
+      "native_binding_target_escape"
+    );
+  });
+  it("refuses missing, replaced and mismatched native prebuilds rather than repairing them", async () => {
+    const f = await nativeFixture();
+    const target = path.join(f.target, reviewedNativePrebuildRelative());
+    await writeFile(target, "different native bytes");
+    await expect(verifyReviewedNativePrebuild(f.source, f.consumer)).rejects.toThrow(
+      "prebuild_bytes_mismatch"
+    );
+    await rm(target);
+    await expect(verifyReviewedNativePrebuild(f.source, f.consumer)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    const directory = path.join(f.target, "prebuilds");
+    await rm(directory, { recursive: true });
+    await symlink(
+      path.join(f.source, "node_modules", "better-sqlite3-multiple-ciphers", "prebuilds"),
+      directory,
+      directoryLinkType
+    );
+    await expect(verifyReviewedNativePrebuild(f.source, f.consumer)).rejects.toThrow(
+      "prebuild_directory_invalid"
+    );
+  });
+
+  it("refuses old package versions and registry identity mismatches before native selection", async () => {
+    const f = await nativeFixture();
+    const lockPath = path.join(f.consumer, "package-lock.json");
+    const lock = JSON.parse(await readFile(lockPath, "utf8"));
+    lock.packages["node_modules/better-sqlite3-multiple-ciphers"].version = "12.11.1";
+    await writeFile(lockPath, JSON.stringify(lock));
+    await expect(verifyReviewedNativePrebuild(f.source, f.consumer)).rejects.toThrow(
+      "version_mismatch"
+    );
+    lock.packages["node_modules/better-sqlite3-multiple-ciphers"].version = "13.0.3";
+    lock.packages["node_modules/better-sqlite3-multiple-ciphers"].integrity = "sha512-other";
+    await writeFile(lockPath, JSON.stringify(lock));
+    await expect(verifyReviewedNativePrebuild(f.source, f.consumer)).rejects.toThrow(
+      "registry_identity_mismatch"
+    );
+  });
+
   it("defaults to the coordinated published ecosystem", () => {
     expect(DEFAULT_VERSIONS).toEqual({
       lex: "4.0.3",

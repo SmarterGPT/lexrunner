@@ -1,11 +1,26 @@
 [CmdletBinding()]
-param([switch]$PureOnly)
+param([switch]$PureOnly,[string]$OutputDirectory)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 if(-not $env:OS){$env:OS='Windows_NT'}
 if(-not $env:WINDIR){$env:WINDIR=$env:SystemRoot}
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
-$artifactRoot=Join-Path $repo ('artifacts/windows-coordinator-service-source/qualification-'+[Guid]::NewGuid().ToString('N'))
+if($OutputDirectory -and -not [IO.Path]::IsPathFullyQualified($OutputDirectory)){throw 'source_output_must_be_absolute'}
+$artifactRoot=if($OutputDirectory){[IO.Path]::GetFullPath($OutputDirectory)}else{
+    Join-Path $repo ('artifacts/windows-coordinator-service-source/qualification-'+[Guid]::NewGuid().ToString('N'))
+}
+$allowed=[IO.Path]::GetFullPath((Join-Path $repo 'artifacts'))+[IO.Path]::DirectorySeparatorChar
+if(-not $artifactRoot.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase) -or
+    $artifactRoot.IndexOfAny([char[]]@(';','"','%','&','|','<','>','^','!',"`r","`n")) -ge 0){throw 'source_output_outside_artifacts'}
+$cursor=$artifactRoot
+while($cursor){
+    if(Test-Path -LiteralPath $cursor){
+        $item=Get-Item -LiteralPath $cursor -Force
+        if(-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'source_output_ancestor_redirected'}
+    }
+    $cursor=[IO.Path]::GetDirectoryName($cursor)
+}
+if(Test-Path -LiteralPath $artifactRoot){throw 'source_output_must_be_fresh'}
 $null=New-Item -ItemType Directory -Path $artifactRoot
 $clock=[Diagnostics.Stopwatch]::StartNew()
 # Engineering capture proves only the owned direct process and its two streams.
@@ -129,7 +144,8 @@ try{
     if($nativePureCases -lt 1 -or $nativePureCases -gt 2000){throw 'native_pure_count_failed'}
 }finally{$document.Dispose()}
 foreach($entry in @(@('publication','--v3-publication-contract-selftest'),@('protocol','--protocol-selftest'),
-    @('pipe','--pipe-selftest'),@('lifecycle','--lifecycle-selftest'),@('launch','--private-launch-selftest'),@('trust','--trust-contract-selftest'))){
+    @('pipe','--pipe-selftest'),@('lifecycle','--lifecycle-selftest'),@('launch','--private-launch-selftest'),@('trust','--trust-contract-selftest'),
+    @('custom_controls','--custom-control-selftest'))){
     Exact-Line (Invoke-Image ('normal_refuses_'+$entry[0]) $normalImage @($entry[1]) 2) 'scm_only' $true
 }
 Exact-Line (Invoke-Image 'normal_refuses_private_child' $normalImage @('--private-child-fixture','Normal') 2) 'scm_only' $true
@@ -141,6 +157,7 @@ if($publication.Stderr.Length -ne 0 -or -not $publication.Stdout.EndsWith(
     'publication_contract_pure_selftest PASS cases=74 failures=0 authorizesLaunch=false authorizesEffect=false nativeEffects=0'+[Environment]::NewLine)){throw 'publication_pure_failed'}
 Exact-Line (Invoke-Image 'fixture_protocol_pure' $fixtureImage @('--protocol-selftest') 0) 'protocol_selftest_pass'
 Exact-Line (Invoke-Image 'fixture_lifecycle_pure' $fixtureImage @('--lifecycle-selftest') 0) 'lifecycle_selftest_pass'
+Exact-Line (Invoke-Image 'fixture_custom_controls_pure' $fixtureImage @('--custom-control-selftest') 0) 'custom_control_selftest_pass'
 if(-not $PureOnly){
     Exact-Line (Invoke-Image 'normal_direct_service_refusal' $normalImage @('--service') 3) 'scm_required' $true
     Exact-Line (Invoke-Image 'fixture_pipe' $fixtureImage @('--pipe-selftest') 0) 'pipe_selftest_pass'
@@ -162,6 +179,7 @@ $receipt=[ordered]@{result=$(if($PureOnly){'source_pure_only_pass'}else{'source_
     normalImageSha256=(Get-FileHash -LiteralPath $normalImage).Hash.ToLowerInvariant();
     fixtureImageSha256=(Get-FileHash -LiteralPath $fixtureImage).Hash.ToLowerInvariant();
     nativeArchiveSha256=$native.sha256;nativePureCases=$nativePureCases;publicationPureTestCount=74;
+    customControlCallbackCases=128;customControlSourceSelfTest='custom_control_selftest_pass';retainedScmControlHandlesQualified=$false;
     historicalPipeAndPrivateLaunchExecuted=(-not $PureOnly);installedServiceQualified=$false;
     sdkFunctionalExecution=$false;sourceSha256=$sourceHashes;helperMissingCleared=$false}
 $receiptPath=Join-Path $artifactRoot 'verification-receipt.json'
