@@ -755,14 +755,16 @@ async function readLockPackage(
   packageName: string,
   packageRoot = path.join(root, "node_modules", packageName)
 ): Promise<Record<string, string>> {
-  const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8")) as {
+  // Windows temporary roots can be exposed through an 8.3 name or junction.
+  // Derive the lock key using physical paths on both sides. Actual escapes
+  // still refuse; this does not authenticate an installed helper namespace.
+  const physicalRoot = await realpath(root);
+  const physicalPackageRoot = await realpath(packageRoot);
+  assertDescendant(physicalRoot, physicalPackageRoot, "native_binding_lock_root_escape");
+  const lock = JSON.parse(await readFile(path.join(physicalRoot, "package-lock.json"), "utf8")) as {
     packages?: Record<string, Record<string, string>>;
   };
-  assertDescendant(await realpath(root), packageRoot, "native_binding_lock_root_escape");
-  const packageKey = path
-    .relative(await realpath(root), packageRoot)
-    .split(path.sep)
-    .join("/");
+  const packageKey = path.relative(physicalRoot, physicalPackageRoot).split(path.sep).join("/");
   const identity = lock.packages?.[packageKey];
   if (!identity?.version || !identity.resolved || !identity.integrity) {
     throw failure("native_binding_lock_identity_missing");

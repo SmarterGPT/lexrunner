@@ -138,6 +138,29 @@ describe("ecosystem dogfood allocation lifecycle", () => {
       "12.11.1"
     );
   });
+  it("uses physical lock roots when temporary source and consumer paths are aliases", async () => {
+    const f = await nativeFixture();
+    const sourceAlias = path.join(path.dirname(f.source), "source-alias");
+    const consumerAlias = path.join(path.dirname(f.consumer), "consumer-alias");
+    await symlink(f.source, sourceAlias, directoryLinkType);
+    await symlink(f.consumer, consumerAlias, directoryLinkType);
+    expect(await verifyReviewedNativePrebuild(sourceAlias, consumerAlias)).toMatch(
+      /^sha256:[a-f0-9]{64}$/
+    );
+  });
+
+  it("refuses Runner's native package resolving outside the consumer even through an alias", async () => {
+    const f = await nativeFixture();
+    await rm(f.target, { recursive: true });
+    await symlink(
+      path.join(f.source, "node_modules", "better-sqlite3-multiple-ciphers"),
+      f.target,
+      directoryLinkType
+    );
+    await expect(verifyReviewedNativePrebuild(f.source, f.consumer)).rejects.toThrow(
+      "native_binding_target_escape"
+    );
+  });
   it("refuses missing, replaced and mismatched native prebuilds rather than repairing them", async () => {
     const f = await nativeFixture();
     const target = path.join(f.target, reviewedNativePrebuildRelative());
