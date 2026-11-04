@@ -25,7 +25,7 @@ if ($receipt.schemaVersion -cne 'lexrunner-windows-owned-etw-source-gate/1' -or
     $receipt.sourceHead -notmatch '^[0-9a-f]{40}$' -or
     ($env:GITHUB_SHA -and $receipt.sourceHead -cne $env:GITHUB_SHA) -or
     $receipt.processArchitecture -cne 'X64' -or
-    $receipt.caseCount -ne 57 -or $receipt.schemaWireCaseCount -ne 9 -or
+    $receipt.caseCount -ne 57 -or $receipt.schemaWireCaseCount -ne 37 -or
     $receipt.preflightCaseCount -ne 39 -or $receipt.statusSanitizerCaseCount -ne 172 -or $receipt.nativeActionDiagnosticCaseCount -ne 130 -or
     $receipt.imageSha256 -notmatch '^[0-9a-f]{64}$' -or
     @($receipt.commands).Count -ne 7 -or

@@ -112,7 +112,7 @@ if ($selfResult.schemaVersion -cne 'lexrunner-owned-etw-policy-draft/1' -or
 $wire = Invoke-Bounded 'schema-wire-selftest' @($dll, '--schema-wire-selftest') 4096 10000
 if ($wire.exitCode -ne 0 -or $wire.stderrBytes -ne 0) { throw 'schema_wire_selftest_failed' }
 $wireResult = Get-Content -LiteralPath (Join-Path $stage 'schema-wire-selftest.stdout') -Raw | ConvertFrom-Json
-if ($wireResult.result -cne 'source_wire_pass' -or @($wireResult.cases).Count -ne 9 -or
+if ($wireResult.result -cne 'source_wire_pass' -or @($wireResult.cases).Count -ne 37 -or
     @($wireResult.cases | Where-Object { $_.Passed -ne $true }).Count -ne 0 -or
     $wireResult.nativeTraceStarted -ne $false -or $wireResult.authorizesExecution -ne $false) {
     throw 'schema_wire_selftest_readback_invalid'
@@ -187,7 +187,7 @@ $receipt = [ordered]@{
     sourceCwd = $PSScriptRoot
     durationMs = $clock.ElapsedMilliseconds
     imageSha256 = $imageHash
-    schemaWireCaseCount = 9
+    schemaWireCaseCount = 37
     nativeActionDiagnosticCaseCount = 130
     caseCount = 57
     preflightCaseCount = 39
