@@ -6,11 +6,8 @@ namespace LexRunner.WindowsCoordinator.Git;
 // production Git import selection.
 internal sealed class ManualEtwGitProfile
 {
-#if GIT_HOSTED_2022_FIXTURE
     internal const string FixedGitImage = @"C:\LexRunner.Qualification.Git\ucrt64\bin\git.exe";
-#else
-    internal const string FixedGitImage = @"C:\Program Files\Git\bin\git.exe";
-#endif
+    internal const string SelectedSha256 = "9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8";
     private readonly Dictionary<string, string> _expectedEnvironment;
     internal string GitImage => FixedGitImage;
     internal string ExpectedSha256 { get; }
@@ -42,15 +39,14 @@ internal sealed class ManualEtwGitProfile
     private static ManualEtwGitProfile CreateFixedEnvironment(
         Dictionary<string, string> environment, string digest)
     {
-        if (digest.Length != 64 || !digest.All(value =>
-                value is >= '0' and <= '9' or >= 'a' and <= 'f'))
+        if (!StringComparer.Ordinal.Equals(digest, SelectedSha256))
             throw new InvalidOperationException("manual_etw_digest_invalid");
         var windows = environment["WINDIR"];
         var system = Path.GetDirectoryName(environment["COMSPEC"]);
         if (system is null || !StringComparer.OrdinalIgnoreCase.Equals(
                 Path.GetFullPath(Path.Combine(windows, "System32")), system))
             throw new InvalidOperationException("manual_etw_system_path_invalid");
-        // The hosted inventory establishes this one PE only. The diagnostic
+        // The independently pinned release selects this one PE. The diagnostic
         // does not guess a Git support directory or inherit the runner PATH.
         environment["PATH"] = system + ";" + windows;
         environment.Remove("GIT_EXEC_PATH");
@@ -77,7 +73,7 @@ internal sealed class ManualEtwGitProfile
             var slot = new ImportSlot(@"C:\fixture", @"C:\fixture", @"C:\fixture",
                 @"C:\fixture", @"C:\fixture", @"C:\fixture", @"C:\fixture",
                 new string('0', 40), new string('a', 64));
-            var profile = Create(slot, new string('a', 64));
+            var profile = Create(slot, SelectedSha256);
             profile.AssertEnvironment(profile.Environment);
             var changedPath = new Dictionary<string, string>(profile.Environment,
                 StringComparer.OrdinalIgnoreCase)
@@ -94,11 +90,20 @@ internal sealed class ManualEtwGitProfile
                 try { profile.AssertEnvironment(candidate); return false; }
                 catch (InvalidOperationException) { return true; }
             }
-            bool badDigestRefused;
-            try { Create(slot, new string('A', 64)); badDigestRefused = false; }
-            catch (InvalidOperationException) { badDigestRefused = true; }
+            bool DigestRefused(string value)
+            {
+                try { Create(slot, value); return false; }
+                catch (InvalidOperationException) { return true; }
+            }
+            var badDigestRefused = DigestRefused(SelectedSha256.ToUpperInvariant()) &&
+                DigestRefused(new string('a', 64));
             return profile.GitImage == FixedGitImage &&
+#if GIT_HOSTED_2022_FIXTURE
+                profile.GitImage == GitBundleImport.GitImage &&
+#else
                 profile.GitImage != GitBundleImport.GitImage &&
+#endif
+                profile.ExpectedSha256 == SelectedSha256 &&
                 (profile.Environment is not IDictionary<string, string> exposed ||
                     exposed.IsReadOnly) &&
                 profile.Environment["PATH"].IndexOf(@"\Git\",
