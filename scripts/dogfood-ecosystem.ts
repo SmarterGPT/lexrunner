@@ -12,6 +12,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -45,7 +46,7 @@ export const DOGFOOD_INSTALL_POLICY = {
 
 const EXACT_STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const NATIVE_PACKAGE = "better-sqlite3-multiple-ciphers";
-const NATIVE_BINDING_RELATIVE = path.join("build", "Release", "better_sqlite3.node");
+const QUALIFIED_NATIVE_VERSION = "13.0.3";
 
 interface DogfoodMarker {
   schema_version: 1;
@@ -256,7 +257,7 @@ export async function runEcosystemDogfood(options: RunOptions): Promise<Record<s
     );
     receipt = await advanceReceipt(runRoot, receipt, "registry-lock", registryLockEvidence);
 
-    const nativeBindingEvidence = await materializeReviewedNativeBinding(
+    const nativeBindingEvidence = await verifyReviewedNativePrebuild(
       options.projectRoot,
       consumerRoot
     );
@@ -548,7 +549,23 @@ async function runCommand(
   });
 }
 
-async function materializeReviewedNativeBinding(
+export function reviewedNativePrebuildRelative(
+  platform = process.platform as string,
+  architecture = process.arch as string,
+  linuxMusl = platform === "linux" && !process.report?.getReport().header.glibcVersionRuntime
+): string {
+  if (
+    !["linux", "darwin", "win32"].includes(platform) ||
+    !["x64", "arm64"].includes(architecture)
+  ) {
+    throw failure("native_binding_prebuild_platform_unsupported");
+  }
+  // Exact 13.0.3's public default loader selects this shipped N-API prebuild first.
+  // No node-gyp fallback or cross-version binary copy is qualified by this harness.
+  return path.join("prebuilds", `${linuxMusl ? "linuxmusl" : platform}-${architecture}.node`);
+}
+
+export async function verifyReviewedNativePrebuild(
   projectRoot: string,
   consumerRoot: string
 ): Promise<string> {
@@ -557,22 +574,36 @@ async function materializeReviewedNativeBinding(
     NATIVE_PACKAGE,
     "native_binding_source_root_invalid"
   );
-  const targetPackageRoot = await resolveOrdinaryPackageRoot(
+  const runnerRoot = await resolveOrdinaryPackageRoot(
     path.join(consumerRoot, "node_modules"),
-    NATIVE_PACKAGE,
+    "@smartergpt/lexrunner",
+    "native_binding_runner_root_invalid"
+  );
+  const runnerManifest = await readJson(path.join(runnerRoot, "package.json"));
+  if (runnerManifest.name !== "@smartergpt/lexrunner")
+    throw failure("native_binding_runner_identity_mismatch");
+  // Follow the packed Runner's actual dependency, including a nested install.
+  // A different package's hoisted SQLite is not evidence for Runner's loader.
+  const runnerRequire = createRequire(path.join(runnerRoot, "package.json"));
+  const targetInput = path.dirname(runnerRequire.resolve(`${NATIVE_PACKAGE}/package.json`));
+  const targetPackageRoot = await resolveOrdinaryPackageRoot(
+    path.dirname(targetInput),
+    path.basename(targetInput),
     "native_binding_target_root_invalid"
   );
+  assertDescendant(await realpath(consumerRoot), targetPackageRoot, "native_binding_target_escape");
   const [sourceManifest, targetManifest, sourceLock, targetLock] = await Promise.all([
     readJson(path.join(sourcePackageRoot, "package.json")),
     readJson(path.join(targetPackageRoot, "package.json")),
     readLockPackage(projectRoot, NATIVE_PACKAGE),
-    readLockPackage(consumerRoot, NATIVE_PACKAGE),
+    readLockPackage(consumerRoot, NATIVE_PACKAGE, targetPackageRoot),
   ]);
   if (sourceManifest.name !== NATIVE_PACKAGE || targetManifest.name !== NATIVE_PACKAGE) {
     throw failure("native_binding_package_name_mismatch");
   }
   for (const identity of [sourceManifest, targetManifest, sourceLock, targetLock]) {
-    if (identity.version !== sourceLock.version) throw failure("native_binding_version_mismatch");
+    if (identity.version !== QUALIFIED_NATIVE_VERSION)
+      throw failure("native_binding_version_mismatch");
   }
   if (
     sourceLock.resolved !== targetLock.resolved ||
@@ -583,25 +614,36 @@ async function materializeReviewedNativeBinding(
     throw failure("native_binding_registry_identity_mismatch");
   }
 
-  const sourceBindingInput = path.join(sourcePackageRoot, NATIVE_BINDING_RELATIVE);
-  const sourceStat = await lstat(sourceBindingInput);
-  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
-    throw failure("native_binding_source_invalid");
-  }
-  const sourceBinding = await realpath(sourceBindingInput);
-  assertDescendant(sourcePackageRoot, sourceBinding, "native_binding_source_escape");
-  const targetDirectory = path.join(targetPackageRoot, "build", "Release");
-  await mkdir(targetDirectory, { recursive: true });
-  const resolvedTargetDirectory = await realpath(targetDirectory);
-  assertDescendant(targetPackageRoot, resolvedTargetDirectory, "native_binding_target_escape");
-  const bytes = await readFile(sourceBinding);
-  await writeFile(path.join(resolvedTargetDirectory, "better_sqlite3.node"), bytes, { flag: "wx" });
+  const bindingRelative = reviewedNativePrebuildRelative();
+  const bindings = await Promise.all(
+    [sourcePackageRoot, targetPackageRoot].map(async (root) => {
+      const prebuildDirectory = path.join(root, "prebuilds");
+      const directoryStat = await lstat(prebuildDirectory);
+      if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink())
+        throw failure("native_binding_prebuild_directory_invalid");
+      const input = path.join(root, bindingRelative);
+      const stat = await lstat(input);
+      if (
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        stat.size === 0 ||
+        stat.size > 64 * 1024 * 1024
+      ) {
+        throw failure("native_binding_prebuild_invalid");
+      }
+      const resolved = await realpath(input);
+      assertDescendant(root, resolved, "native_binding_prebuild_escape");
+      return readFile(resolved);
+    })
+  );
+  if (!bindings[0]!.equals(bindings[1]!)) throw failure("native_binding_prebuild_bytes_mismatch");
   return computeCanonicalHash({
     package: NATIVE_PACKAGE,
     version: sourceLock.version,
     resolved: sourceLock.resolved,
     integrity: sourceLock.integrity,
-    binding_sha256: hashBytes(bytes),
+    binding_relative: bindingRelative.split(path.sep).join("/"),
+    binding_sha256: hashBytes(bindings[0]!),
     platform: process.platform,
     architecture: process.arch,
     node_abi: process.versions.modules,
@@ -708,11 +750,20 @@ function resolveFileSpec(root: string, resolved: string): string {
   return path.resolve(root, decodeURIComponent(resolved.slice("file:".length)));
 }
 
-async function readLockPackage(root: string, packageName: string): Promise<Record<string, string>> {
+async function readLockPackage(
+  root: string,
+  packageName: string,
+  packageRoot = path.join(root, "node_modules", packageName)
+): Promise<Record<string, string>> {
   const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8")) as {
     packages?: Record<string, Record<string, string>>;
   };
-  const identity = lock.packages?.[`node_modules/${packageName}`];
+  assertDescendant(await realpath(root), packageRoot, "native_binding_lock_root_escape");
+  const packageKey = path
+    .relative(await realpath(root), packageRoot)
+    .split(path.sep)
+    .join("/");
+  const identity = lock.packages?.[packageKey];
   if (!identity?.version || !identity.resolved || !identity.integrity) {
     throw failure("native_binding_lock_identity_missing");
   }

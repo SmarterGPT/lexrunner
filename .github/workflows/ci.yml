@@ -227,6 +227,8 @@ jobs:
         run: npm ci
       - name: Verify install-script policy
         run: npm run check:install-scripts
+      - name: Verify qualified Lex and SQLite graph
+        run: npm run check:lex-compatibility
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
       - name: Lint and typecheck
