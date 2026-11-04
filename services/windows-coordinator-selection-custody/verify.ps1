@@ -38,7 +38,7 @@ function Source-Hashes {
     $hashes = [ordered]@{}
     foreach ($name in @('global.json', 'LexRunner.WindowsCoordinator.SelectionCustody.csproj',
             'Program.cs', 'CustodyContract.cs', 'NativeRegistryReader.cs', 'FixtureTests.cs',
-            'CustodyContractV3.cs', 'NativeRegistryReaderV3.cs', 'FixtureTestsV3.cs',
+            'CustodyContractV3.cs', 'NativeRegistryReaderV3.cs', 'NativeInstalledPublicationReader.cs', 'FixtureTestsV3.cs',
             'PublicationContractV3.cs', 'PublicationContractV3FixtureTests.cs',
             'README.md', 'verify.ps1')) {
         $path = Join-Path $sourceRoot $name
@@ -206,7 +206,7 @@ try {
     $normalProps = @("-p:BaseIntermediateOutputPath=$normalObj\", "-p:MSBuildProjectExtensionsPath=$normalObj\",
         "-p:BaseOutputPath=$normalBin\", "-p:OutputPath=$normalBin\")
     $normalArgs = @('publish', $project, '-c', 'Release', '-r', 'win-x64',
-        '-p:NuGetAudit=false', '-p:SelectionCustodyFixture=false') + $normalProps + @('-o', $normalDir, '-v:q')
+        '-p:SelectionCustodyFixture=false') + $normalProps + @('-o', $normalDir, '-v:q')
     $null = Step 'publish-normal' $sourceRoot $dotnet $normalArgs
     Require (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'bin')) -and
         -not (Test-Path -LiteralPath (Join-Path $sourceRoot 'obj'))) 'Native build escaped nonce output'
@@ -227,7 +227,7 @@ try {
     $fixtureProps = @("-p:BaseIntermediateOutputPath=$fixtureObj\", "-p:MSBuildProjectExtensionsPath=$fixtureObj\",
         "-p:BaseOutputPath=$fixtureBin\", "-p:OutputPath=$fixtureBin\")
     $fixtureArgs = @('publish', $project, '-c', 'Release', '-r', 'win-x64',
-        '-p:NuGetAudit=false', '-p:SelectionCustodyFixture=true') + $fixtureProps + @('-o', $fixtureDir, '-v:q')
+        '-p:SelectionCustodyFixture=true') + $fixtureProps + @('-o', $fixtureDir, '-v:q')
     $null = Step 'publish-fixture' $sourceRoot $dotnet $fixtureArgs
     Require (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'bin')) -and
         -not (Test-Path -LiteralPath (Join-Path $sourceRoot 'obj'))) 'Fixture build escaped nonce output'

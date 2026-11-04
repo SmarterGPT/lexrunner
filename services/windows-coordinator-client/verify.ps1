@@ -6,7 +6,7 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
 
 $projectRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '..\..'))
-$artifactRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'artifacts\windows-coordinator-client'))
+$artifactRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot ('artifacts\windows-coordinator-client\qualification-' + [Guid]::NewGuid().ToString('N'))))
 $normalRoot = Join-Path $artifactRoot 'publish'
 $fixtureRoot = Join-Path $artifactRoot 'fixture-publish'
 $normalImage = Join-Path $normalRoot 'lexrunner-windows-coordinator-client.exe'
@@ -16,11 +16,53 @@ $oldOS = $env:OS
 $oldWindir = $env:WINDIR
 $steps = [Collections.Generic.List[object]]::new()
 $failure = $null
+$sourceBefore = $null
+$artifactCreated = $false
+$sourceBuildOutputsBefore = $null
+$sourceBuildOutputsAfter = $null
+$sourceBuildOutputEscapeObserved = $null
+$outputReadbackFailure = $null
+$receiptWriteFailure = $null
 $testCount = 0
 $heldCount = 0
 $graphCount = 0
 $retainedUseCount = 0
 $clock = [Diagnostics.Stopwatch]::StartNew()
+
+function Source-Hashes {
+  $sources = [ordered]@{}
+  foreach ($name in @('.gitignore', 'LexRunner.WindowsCoordinator.Client.csproj',
+      'global.json', 'Program.cs', 'NativeClient.cs', 'FixtureTests.cs',
+      'CoordinatorSelection.cs', 'CoordinatorSources.cs',
+      'CoordinatorAcquisition.cs', 'CoordinatorSelectionFixtureTests.cs',
+      'CoordinatorV2RegistryObservation.cs', 'CoordinatorV2RegistryFixtureTests.cs',
+      'CoordinatorV3RegistryObservation.cs', 'CoordinatorV3RegistryFixtureTests.cs',
+      'CoordinatorV3InstalledObservation.cs', 'V3InstalledFixtureTests.cs',
+      'V3HeldInstalledFiles.cs', 'V3HeldInstalledFixtureTests.cs',
+      'V3HeldGraphFixtureTests.cs',
+      'V3RetainedUseFixtureTests.cs',
+      'README.md', 'verify.ps1')) {
+    $path = Join-Path $projectRoot $name
+    if (Test-Path -LiteralPath $path) {
+      $sources[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+  }
+  foreach ($name in @('CustodyContract.cs', 'NativeRegistryReader.cs',
+      'CustodyContractV3.cs', 'NativeRegistryReaderV3.cs',
+      'PublicationContractV3.cs', 'PublicationContractV3FixtureTests.cs')) {
+    $path = Join-Path $repoRoot "services/windows-coordinator-selection-custody/$name"
+    $sources["selection-custody/$name"] =
+      (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+  $graphSource = Join-Path $repoRoot 'installers/windows-coordinator/v3/GraphV3.cs'
+  $sources['graph-v3/GraphV3.cs'] =
+    (Get-FileHash -LiteralPath $graphSource -Algorithm SHA256).Hash.ToLowerInvariant()
+  foreach ($name in @('package.json', 'scripts/validate-package-boundary.ts')) {
+    $path = Join-Path $repoRoot $name
+    $sources[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+  $sources
+}
 
 function Invoke-CheckedStep([string] $name, [string] $file, [string[]] $arguments,
     [string] $cwd, [int] $expectedExit) {
@@ -66,37 +108,26 @@ function Invoke-CheckedStep([string] $name, [string] $file, [string[]] $argument
   return $record.output_tail
 }
 
-function Remove-CheckedBuildDirectory([string] $name) {
-  $target = [IO.Path]::GetFullPath((Join-Path $projectRoot $name))
-  if (-not [string]::Equals([IO.Path]::GetDirectoryName($target), $projectRoot,
-      [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Build cleanup escaped the client project.'
-  }
-  if (-not (Test-Path -LiteralPath $target)) { return }
-  $item = Get-Item -LiteralPath $target -Force
-  $resolved = (Resolve-Path -LiteralPath $target).ProviderPath
-  if (-not $item.PSIsContainer -or
-      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-      -not [string]::Equals([IO.Path]::GetFullPath($resolved), $target,
-        [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Build cleanup target is not an exact ordinary client directory.'
-  }
-  $descendants = Get-ChildItem -LiteralPath $target -Recurse -Force
-  if ($descendants | Where-Object {
-      ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }) {
-    throw 'Build cleanup contains a reparse point.'
-  }
-  Remove-Item -LiteralPath $target -Recurse -Force
-}
-
 try {
   $env:OS = 'Windows_NT'
   if (-not $env:WINDIR) { $env:WINDIR = $env:SystemRoot }
-  New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+  if (Test-Path -LiteralPath $artifactRoot) { throw 'Client source output occupied' }
+  New-Item -ItemType Directory -Path $artifactRoot -ErrorAction Stop | Out-Null
+  $artifactCreated = $true
+  $sourceBuildOutputsBefore = [ordered]@{
+    bin = Test-Path -LiteralPath (Join-Path $projectRoot 'bin') -ErrorAction Stop
+    obj = Test-Path -LiteralPath (Join-Path $projectRoot 'obj') -ErrorAction Stop
+  }
+  if ($sourceBuildOutputsBefore.bin -or $sourceBuildOutputsBefore.obj) { throw 'Source build output occupied; preserve it' }
+  $sourceBefore = Source-Hashes
+  function Output-Properties([string]$mode) {
+    $bin = Join-Path $artifactRoot ($mode+'-bin'); $obj = Join-Path $artifactRoot ($mode+'-obj')
+    @("-p:BaseIntermediateOutputPath=$obj\", "-p:MSBuildProjectExtensionsPath=$obj\", "-p:BaseOutputPath=$bin\", "-p:OutputPath=$bin\")
+  }
   $buildArgs = @('publish', '.\LexRunner.WindowsCoordinator.Client.csproj',
-    '-c', 'Release', '-r', 'win-x64', '-p:NuGetAudit=false',
+    '-c', 'Release', '-r', 'win-x64',
     '-p:TreatWarningsAsErrors=true')
-  Invoke-CheckedStep 'normal_publish' 'dotnet' ($buildArgs + @('-o', $normalRoot)) `
+  Invoke-CheckedStep 'normal_publish' 'dotnet' ($buildArgs + (Output-Properties 'normal') + @('-o', $normalRoot)) `
     $projectRoot 0 | Out-Null
   $statusText = Invoke-CheckedStep 'normal_status' $normalImage @('--status') `
     $projectRoot 0
@@ -153,7 +184,7 @@ try {
   if (($sendText.Trim() | ConvertFrom-Json).state -ne 'helper_missing') {
     throw 'Ordinary image accepted an execution argument.'
   }
-  Invoke-CheckedStep 'fixture_publish' 'dotnet' ($buildArgs + @(
+  Invoke-CheckedStep 'fixture_publish' 'dotnet' ($buildArgs + (Output-Properties 'fixture') + @(
       '-p:CoordinatorClientFixtureTests=true', '-o', $fixtureRoot)) `
     $projectRoot 0 | Out-Null
   $pureText = Invoke-CheckedStep 'v3_installed_pure_selftest' $fixtureImage `
@@ -257,43 +288,26 @@ catch {
 }
 finally {
   $clock.Stop()
+  # Observe even after failed/refused builds. Presence is evidence of escape,
+  # not a claim about the contents/mtime of an already occupied directory.
   try {
-    Remove-CheckedBuildDirectory 'bin'
-    Remove-CheckedBuildDirectory 'obj'
-  }
-  catch {
-    if (-not $failure) { $failure = 'client_build_cleanup_failed: ' + $_.Exception.Message }
-  }
-  $sources = [ordered]@{}
-  foreach ($name in @('.gitignore', 'LexRunner.WindowsCoordinator.Client.csproj',
-      'global.json', 'Program.cs', 'NativeClient.cs', 'FixtureTests.cs',
-      'CoordinatorSelection.cs', 'CoordinatorSources.cs',
-      'CoordinatorAcquisition.cs', 'CoordinatorSelectionFixtureTests.cs',
-      'CoordinatorV2RegistryObservation.cs', 'CoordinatorV2RegistryFixtureTests.cs',
-      'CoordinatorV3RegistryObservation.cs', 'CoordinatorV3RegistryFixtureTests.cs',
-      'CoordinatorV3InstalledObservation.cs', 'V3InstalledFixtureTests.cs',
-      'V3HeldInstalledFiles.cs', 'V3HeldInstalledFixtureTests.cs',
-      'V3HeldGraphFixtureTests.cs',
-      'V3RetainedUseFixtureTests.cs',
-      'README.md', 'verify.ps1')) {
-    $path = Join-Path $projectRoot $name
-    if (Test-Path -LiteralPath $path) {
-      $sources[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sourceBuildOutputsAfter = [ordered]@{
+      bin = Test-Path -LiteralPath (Join-Path $projectRoot 'bin') -ErrorAction Stop
+      obj = Test-Path -LiteralPath (Join-Path $projectRoot 'obj') -ErrorAction Stop
     }
+    if ($null -ne $sourceBuildOutputsBefore) {
+      $sourceBuildOutputEscapeObserved =
+        ($sourceBuildOutputsAfter.bin -and -not $sourceBuildOutputsBefore.bin) -or
+        ($sourceBuildOutputsAfter.obj -and -not $sourceBuildOutputsBefore.obj)
+      if ($sourceBuildOutputEscapeObserved -and -not $failure) { $failure = 'client_build_output_escaped' }
+    }
+  } catch {
+    $outputReadbackFailure = $_.Exception.Message
+    if (-not $failure) { $failure = 'client_build_output_readback_failed' }
   }
-  foreach ($name in @('CustodyContract.cs', 'NativeRegistryReader.cs',
-      'CustodyContractV3.cs', 'NativeRegistryReaderV3.cs',
-      'PublicationContractV3.cs', 'PublicationContractV3FixtureTests.cs')) {
-    $path = Join-Path $repoRoot "services/windows-coordinator-selection-custody/$name"
-    $sources["selection-custody/$name"] =
-      (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-  }
-  $graphSource = Join-Path $repoRoot 'installers/windows-coordinator/v3/GraphV3.cs'
-  $sources['graph-v3/GraphV3.cs'] =
-    (Get-FileHash -LiteralPath $graphSource -Algorithm SHA256).Hash.ToLowerInvariant()
-  foreach ($name in @('package.json', 'scripts/validate-package-boundary.ts')) {
-    $path = Join-Path $repoRoot $name
-    $sources[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+  $sources = Source-Hashes
+  if ($sourceBefore -and ($sourceBefore | ConvertTo-Json -Compress) -cne ($sources | ConvertTo-Json -Compress)) {
+    if (-not $failure) { $failure = 'client_source_changed_during_verification' }
   }
   $sourceLines = @($sources.Keys | Sort-Object | ForEach-Object {
       "$_ $($sources[$_])"
@@ -304,6 +318,13 @@ finally {
     state = if ($failure) { 'fail' } else { 'pass' }
     source_head = (& git -C $repoRoot rev-parse HEAD).Trim()
     source_sha256 = $sources
+    source_sha256_before = $sourceBefore
+    source_sha256_after = $sources
+    build_output_root = $artifactRoot
+    source_build_outputs_before = $sourceBuildOutputsBefore
+    source_build_outputs_after = $sourceBuildOutputsAfter
+    source_build_output_escape_observed = $sourceBuildOutputEscapeObserved
+    output_readback_failure = $outputReadbackFailure
     source_candidate_sha256 = $sourceDigest
     normal_image_sha256 = if (Test-Path -LiteralPath $normalImage) {
       (Get-FileHash -LiteralPath $normalImage -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -321,12 +342,22 @@ finally {
     steps = $steps
     failure = $failure
   }
-  $receipt | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $receiptPath -Encoding utf8NoBOM
+  if ($artifactCreated) {
+    try {
+      $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($receipt | ConvertTo-Json -Depth 12).Replace("`r`n","`n")+"`n")
+      $stream = [IO.FileStream]::new($receiptPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+      try { $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
+    } catch {
+      $receiptWriteFailure = $_.Exception.Message
+      if (-not $failure) { $failure = 'client_receipt_write_failed' }
+    }
+  }
   $env:OS = $oldOS
   $env:WINDIR = $oldWindir
   Write-Output ([ordered]@{
-    state = $receipt.state
-    receipt = $receiptPath
+    state = if ($failure) { 'fail' } else { 'pass' }
+    receipt = if ($artifactCreated -and -not $receiptWriteFailure) { $receiptPath } else { $null }
+    receipt_write_failure = $receiptWriteFailure
     native_test_count = $testCount
     held_test_count = $heldCount
     graph_test_count = $graphCount

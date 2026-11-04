@@ -123,6 +123,24 @@ No installed bootstrap/process/selection, broker or governed execution readiness
 follows; helper_missing stays refused. npm never downloads or installs this
 separately optional application.
 
+## Native publication storage, closed installation origin
+
+The service also links the fixed HKLM64 retained publication reader and History-only
+compare/write/flush/readback owner. Its ephemeral exact-descriptor mutex is not a
+persistent installer root. Preview facts never authorize work; the private live
+administration Session and RequireLive remain closed without an independently
+admitted installed origin. This source does not install, select, start or repair
+the optional helper and does not clear helper_missing. The new publication routes
+accept only their exact single argument; extra arguments retain prior refusal.
+
+Run `tests/Verify-PublicationStorageSource.ps1` separately for the actual shared
+fake-port/data-parser120 cases plus historical model74; it runs no native
+publication, admin or preview entrypoint. The service verifier keeps its SDK
+archive/ABI/private-context checks and records the complete combined source graph.
+Use `-PureOnly` for local source-only service validation; historical pipe/private
+launch fixtures remain separately scoped. Neither artifact review is an installed
+origin, actual HKLM qualification, deployment approval or governed execution proof.
+
 Both fixed service objects permanently refuse custom controls 128 through 255 with
 ERROR_CALL_NOT_IMPLEMENTED (120) before payload access or product-state locks.
 This is the selected staged-creation profile invariant, not a configurable verb

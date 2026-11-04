@@ -108,7 +108,27 @@ function Exact-Line($Result,[string]$Text,[bool]$ErrorStream=$false){
     if($ErrorStream){if($Result.Stderr -cne $expected -or $Result.Stdout.Length){throw 'source_stderr_mismatch'}}
     elseif($Result.Stdout -cne $expected -or $Result.Stderr.Length){throw 'source_stdout_mismatch'}
 }
+function Service-SourceHashes {
+    $sourceHashes=[ordered]@{}
+    foreach($file in Get-ChildItem -LiteralPath $PSScriptRoot -File|Where-Object { $_.Extension -in '.cs','.csproj','.ps1','.json','.md' -or $_.Name -ceq '.gitignore' }){
+        $sourceHashes[$file.Name]=(Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+    }
+    foreach($file in Get-ChildItem -LiteralPath (Split-Path -Parent $nativeBuilder) -File){
+        $sourceHashes['trust-native/'+$file.Name]=(Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+    }
+    foreach($name in @('CustodyContract.cs','CustodyContractV3.cs','PublicationContractV3.cs','PublicationContractV3FixtureTests.cs','NativeRegistryReaderV3.cs','NativeInstalledPublicationReader.cs')){
+        $sourceHashes['selection-custody/'+$name]=(Get-FileHash -LiteralPath (Join-Path $repo ('services/windows-coordinator-selection-custody/'+$name))).Hash.ToLowerInvariant()
+    }
+    foreach($name in @('NativeProtectedPublicationStore.cs','NativePublicationAdministration.cs','NativePublicationMutex.cs','PublicationAdminEntrypoint.cs')){
+        $sourceHashes['selection-publisher/'+$name]=(Get-FileHash -LiteralPath (Join-Path $repo ('services/windows-coordinator-selection-publisher/'+$name))).Hash.ToLowerInvariant()
+    }
+    foreach($name in @('PublicationStoragePure.cs','PublicationStoragePure.csproj','global.json','Verify-PublicationStorageSource.ps1','.gitignore')){
+        $sourceHashes['tests/'+$name]=(Get-FileHash -LiteralPath (Join-Path $repo ('tests/'+$name))).Hash.ToLowerInvariant()
+    }
+    $sourceHashes
+}
 $nativeBuilder=Join-Path $repo 'services/windows-coordinator-trust-native/Build-NativeTrustCore.ps1'
+$sourceHashesBefore=Service-SourceHashes
 $native=& $nativeBuilder -OutputDirectory (Join-Path $artifactRoot 'native') -ServiceArtifactRoot $artifactRoot
 $builds=[Collections.Generic.List[object]]::new()
 foreach($mode in @('normal','fixture')){
@@ -151,6 +171,9 @@ foreach($entry in @(@('publication','--v3-publication-contract-selftest'),@('pro
 Exact-Line (Invoke-Image 'normal_refuses_private_child' $normalImage @('--private-child-fixture','Normal') 2) 'scm_only' $true
 Exact-Line (Invoke-Image 'normal_closed_trust_context' $normalImage @('--private-trust-child') 3) 'protected_bootstrap_unavailable' $true
 Exact-Line (Invoke-Image 'normal_trust_no_extra_args' $normalImage @('--private-trust-child','extra') 2) 'scm_only' $true
+foreach($mode in @('--publication-preview','--admin-publication','--admin-publication-recover')){
+    Exact-Line (Invoke-Image ('normal_publication_no_extra_args_'+$mode) $normalImage @($mode,'extra') 2) 'scm_only' $true
+}
 Exact-Line (Invoke-Image 'fixture_trust_abi_pure' $fixtureImage @('--trust-contract-selftest') 0) 'trust_contract_pure_pass sdkTrustCalls=0 authorizesExecution=false'
 $publication=Invoke-Image 'fixture_publication_pure' $fixtureImage @('--v3-publication-contract-selftest') 0
 if($publication.Stderr.Length -ne 0 -or -not $publication.Stdout.EndsWith(
@@ -163,16 +186,8 @@ if(-not $PureOnly){
     Exact-Line (Invoke-Image 'fixture_pipe' $fixtureImage @('--pipe-selftest') 0) 'pipe_selftest_pass'
     Exact-Line (Invoke-Image 'fixture_private_launch' $fixtureImage @('--private-launch-selftest') 0) 'private_launch_selftest_pass'
 }
-$sourceHashes=[ordered]@{}
-foreach($file in Get-ChildItem -LiteralPath $PSScriptRoot -File|Where-Object { $_.Extension -in '.cs','.csproj','.ps1','.json','.md' -or $_.Name -ceq '.gitignore' }){
-    $sourceHashes[$file.Name]=(Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant()
-}
-foreach($file in Get-ChildItem -LiteralPath (Split-Path -Parent $nativeBuilder) -File){
-    $sourceHashes['trust-native/'+$file.Name]=(Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant()
-}
-foreach($name in @('CustodyContract.cs','CustodyContractV3.cs','PublicationContractV3.cs','PublicationContractV3FixtureTests.cs')){
-    $sourceHashes['selection-custody/'+$name]=(Get-FileHash -LiteralPath (Join-Path $repo ('services/windows-coordinator-selection-custody/'+$name))).Hash.ToLowerInvariant()
-}
+$sourceHashes=Service-SourceHashes
+if(($sourceHashesBefore|ConvertTo-Json -Compress) -cne ($sourceHashes|ConvertTo-Json -Compress)){throw 'combined_source_changed_during_verification'}
 $clock.Stop()
 $receipt=[ordered]@{result=$(if($PureOnly){'source_pure_only_pass'}else{'source_fixture_pass'});cwd=$PSScriptRoot;
     repoHead=(& git -C $repo rev-parse HEAD).Trim();durationMs=$clock.ElapsedMilliseconds;pureOnly=[bool]$PureOnly;
@@ -181,7 +196,8 @@ $receipt=[ordered]@{result=$(if($PureOnly){'source_pure_only_pass'}else{'source_
     nativeArchiveSha256=$native.sha256;nativePureCases=$nativePureCases;publicationPureTestCount=74;
     customControlCallbackCases=128;customControlSourceSelfTest='custom_control_selftest_pass';retainedScmControlHandlesQualified=$false;
     historicalPipeAndPrivateLaunchExecuted=(-not $PureOnly);installedServiceQualified=$false;
-    sdkFunctionalExecution=$false;sourceSha256=$sourceHashes;helperMissingCleared=$false}
+    sdkFunctionalExecution=$false;sourceSha256=$sourceHashes;sourceSha256Before=$sourceHashesBefore;sourceSha256After=$sourceHashes;
+    publicationLiveOriginQualified=$false;helperMissingCleared=$false}
 $receiptPath=Join-Path $artifactRoot 'verification-receipt.json'
 [IO.File]::WriteAllText($receiptPath,(($receipt|ConvertTo-Json -Depth 8).Replace("`r`n","`n")+"`n"),[Text.UTF8Encoding]::new($false))
 [pscustomobject]@{result=$receipt.result;durationMs=$receipt.durationMs;receiptPath=$receiptPath;pureOnly=[bool]$PureOnly}|ConvertTo-Json -Compress

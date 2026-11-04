@@ -23,6 +23,14 @@ function Source-Hashes([string]$repo) {
             'PublicationContractV3.cs', 'PublicationContractV3FixtureTests.cs')) {
         $hashes["selection-custody/$name"] = Sha (Join-Path $repo "services/windows-coordinator-selection-custody/$name")
     }
+    # These classes are intentionally excluded from this standalone project.
+    # Record them as exclusions, never as compiled publisher implementation.
+    $projectXml = [xml][IO.File]::ReadAllText((Join-Path $PSScriptRoot 'LexRunner.WindowsCoordinator.SelectionPublisher.csproj'))
+    $removed = @($projectXml.SelectNodes('/Project/ItemGroup/Compile[@Remove]') | ForEach-Object { $_.GetAttribute('Remove') })
+    foreach ($name in @('NativeProtectedPublicationStore.cs','NativePublicationAdministration.cs','NativePublicationMutex.cs','PublicationAdminEntrypoint.cs')) {
+        Require (@($removed | Where-Object { $_ -ceq $name }).Count -eq 1) "Missing exact standalone exclusion: $name"
+        $hashes["excluded-service-only/$name"] = Sha (Join-Path $PSScriptRoot $name)
+    }
     $hashes
 }
 function Step([string]$phase, [string]$cwd, [string]$image, [string[]]$argv,
@@ -157,7 +165,7 @@ try {
         "-p:MSBuildProjectExtensionsPath=$normalObj\", "-p:BaseOutputPath=$normalBin\",
         "-p:OutputPath=$normalBin\")
     $normalArgs = @('publish', $project, '-c', 'Release', '-r', 'win-x64',
-        '-p:NuGetAudit=false', '-p:SelectionPublisherFixture=false') + $normalBuildProps + @('-o', $normalDir, '-v:q')
+        '-p:SelectionPublisherFixture=false') + $normalBuildProps + @('-o', $normalDir, '-v:q')
     $null = Step 'publish-normal' $PSScriptRoot $dotnet $normalArgs
     Require (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'bin')) -and
         -not (Test-Path -LiteralPath (Join-Path $sourceRoot 'obj'))) 'Native build escaped nonce output'
@@ -171,7 +179,7 @@ try {
         "-p:MSBuildProjectExtensionsPath=$fixtureObj\", "-p:BaseOutputPath=$fixtureBin\",
         "-p:OutputPath=$fixtureBin\")
     $fixtureArgs = @('publish', $project, '-c', 'Release', '-r', 'win-x64',
-        '-p:NuGetAudit=false', '-p:SelectionPublisherFixture=true') + $fixtureBuildProps + @('-o', $fixtureDir, '-v:q')
+        '-p:SelectionPublisherFixture=true') + $fixtureBuildProps + @('-o', $fixtureDir, '-v:q')
     $null = Step 'publish-fixture' $PSScriptRoot $dotnet $fixtureArgs
     Require (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'bin')) -and
         -not (Test-Path -LiteralPath (Join-Path $sourceRoot 'obj'))) 'Native build escaped nonce output'

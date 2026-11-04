@@ -48,6 +48,25 @@ internal static class PublicationContractV3
     private sealed record State(string Epoch, Operation[] Operations);
     internal sealed class Refusal(string reason) : Exception(reason);
 
+    internal sealed record HistoryFacts(string Epoch, long ModelHighWater,
+        string Next, IReadOnlyDictionary<string, string> Catalogs);
+
+    // Strict canonical data validation only. A persisted issued row continues
+    // to mean reconciliation, never a recreated live instruction.
+    internal static HistoryFacts ReadHistory(string canonical)
+    {
+        var state = ParseState(canonical);
+        return new HistoryFacts(state.Epoch, HighWater(state), Next(state), Catalogs(state));
+    }
+
+    internal static bool MatchesIntentOrigin(string canonicalIntent, string provisioningDigest,
+        string serviceBindingDigest)
+    {
+        var intent = ParseIntent(canonicalIntent);
+        return intent.ProvenanceReference == provisioningDigest &&
+            intent.ServiceBindingDigest == serviceBindingDigest;
+    }
+
     internal static string Empty(string epoch)
     {
         RequireDigest(epoch);

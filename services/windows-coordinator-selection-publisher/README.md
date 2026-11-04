@@ -64,3 +64,13 @@ The relevant Windows contracts are
 [registry key security](https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry-key-security-and-access-rights),
 [RegOpenKeyExW link handling](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regopenkeyexw),
 and [RegFlushKey](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regflushkey).
+
+The four production publication/admin/mutex/entrypoint source files in this folder
+are explicitly excluded from this standalone project's normal and fixture compile
+globs. They are linked only into the existing coordinator service and the bounded
+pure harness. The standalone normal Program still reports
+`no_production_publisher_entrypoint`; these source files add no publisher CLI.
+The verifier records excluded source hashes separately from its compiled model
+inputs and keeps package security audit enabled. Its historical HKCU fixture is
+not invoked by `tests/Verify-PublicationStorageSource.ps1`, which instead tests the
+same storage/ownership sequence through fake ports without native authority.
