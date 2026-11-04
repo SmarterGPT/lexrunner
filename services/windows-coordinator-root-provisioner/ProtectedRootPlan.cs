@@ -29,17 +29,17 @@ internal static class ProtectedRootPlan
             $"O:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{ServiceSid})");
     }
 
-    // No provisioning identity or exact authorization handoff has been
-    // selected. In particular, the coordinator runs as a nonadministrator
-    // virtual service account; this code does not require or substitute a
-    // LocalSystem coordinator. Normal source cannot reach the effect path.
+    // The selected separate installer/operator path has not established its
+    // admitted installation origin or exact-artifact handoff. The coordinator
+    // remains nonadministrator; normal source cannot reach this effect path.
     [SupportedOSPlatform("windows")]
     internal static ProtectedRootObservation Provision()
         => throw new InvalidOperationException("approved_provisioning_authority_unavailable");
 
     // A future reviewed installer/operator authority may call this core only
-    // after establishing its own token and exact-artifact approval. Existing
-    // protected roots may be observed, never cleaned or replaced.
+    // after establishing its own token and exact-artifact approval. Every
+    // name must be absent: an occupied object is not fresh installation origin.
+    // Partial/unknown state must be retained for a separate recovery protocol.
     [SupportedOSPlatform("windows")]
     private static ProtectedRootObservation ProvisionCore()
     {
@@ -61,19 +61,19 @@ internal static class ProtectedRootPlan
             throw new InvalidOperationException("fixed_volume_identity_mismatch");
 
         var rows = new List<ProtectedRootRow>(7);
-        using var store = OpenOrCreate(storeParent, Path.Combine(StoreParent, RootName),
+        using var store = CreateFreshChild(storeParent, Path.Combine(StoreParent, RootName),
             RootName, policy, rows);
-        using var cAnchor = OpenOrCreate(cVolume, Path.Combine(CVolumeParent, RootName),
+        using var cAnchor = CreateFreshChild(cVolume, Path.Combine(CVolumeParent, RootName),
             RootName, policy, rows);
-        using var cStage = OpenOrCreate(cAnchor,
+        using var cStage = CreateFreshChild(cAnchor,
             Path.Combine(CVolumeParent, RootName, "stage"), "stage", policy, rows);
-        using var cFinal = OpenOrCreate(cAnchor,
+        using var cFinal = CreateFreshChild(cAnchor,
             Path.Combine(CVolumeParent, RootName, "final"), "final", policy, rows);
-        using var dAnchor = OpenOrCreate(dVolume, Path.Combine(DVolumeParent, RootName),
+        using var dAnchor = CreateFreshChild(dVolume, Path.Combine(DVolumeParent, RootName),
             RootName, policy, rows);
-        using var dStage = OpenOrCreate(dAnchor,
+        using var dStage = CreateFreshChild(dAnchor,
             Path.Combine(DVolumeParent, RootName, "stage"), "stage", policy, rows);
-        using var dFinal = OpenOrCreate(dAnchor,
+        using var dFinal = CreateFreshChild(dAnchor,
             Path.Combine(DVolumeParent, RootName, "final"), "final", policy, rows);
 
         foreach (var row in rows)
@@ -97,24 +97,17 @@ internal static class ProtectedRootPlan
             throw new InvalidOperationException("unsupported_provisioning_filesystem");
     }
 
-    private static SafeFileHandle OpenOrCreate(SafeFileHandle parent,
+    internal static SafeFileHandle CreateFreshChild(SafeFileHandle parent,
         string expectedPath, string name, RootPolicy policy, List<ProtectedRootRow> rows)
     {
-        SafeFileHandle handle;
-        var created = true;
-        try { handle = Native.CreateDirectory(parent, name, policy); }
-        catch (InvalidOperationException error) when (
-            error.Message == "create_refused_ntstatus_0xc0000035")
-        {
-            // An occupied path is accepted only after exact held-handle,
-            // no-reparse, owner and DACL readback. It is never replaced.
-            created = false;
-            handle = Native.OpenChildDirectory(parent, name);
-        }
+        // FILE_CREATE is mandatory. Matching identity, owner or DACL on an
+        // existing object cannot establish which installation created it.
+        // Never reopen, adopt, reset or delete an occupied/partial root here.
+        var handle = Native.CreateDirectory(parent, name, policy);
         try
         {
             var observation = Native.Observe(handle, expectedPath, policy);
-            rows.Add(new ProtectedRootRow(created, observation));
+            rows.Add(new ProtectedRootRow(true, observation));
             return handle;
         }
         catch
