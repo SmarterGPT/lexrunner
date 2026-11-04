@@ -62,7 +62,7 @@ internal static class BoundedGitChild
     // a new invisible console. Job/handle-list/suspension flags stay identical.
     private static uint SelectManualCreationFlags(ManualEtwGitProfile? profile) =>
         CreateSuspended | CreateUnicodeEnvironment | ExtendedStartupInfoPresent |
-        (profile is null ? CreateNoWindow : DetachedProcess);
+        (profile?.IsManualCalibration == true ? DetachedProcess : CreateNoWindow);
 
     internal static bool ManualEtwSourceSelfTest()
     {
@@ -72,6 +72,12 @@ internal static class BoundedGitChild
                 @"C:\fixture", @"C:\fixture", @"C:\fixture", @"C:\fixture",
                 new string('0', 40), new string('a', 64));
             var manual = ManualEtwGitProfile.Create(slot, ManualEtwGitProfile.SelectedSha256);
+#if GIT_HOSTED_2022_FIXTURE
+            var hosted = ManualEtwGitProfile.CreateHostedFixture(manual.Environment,
+                ManualEtwGitProfile.SelectedSha256);
+            if (hosted.IsManualCalibration ||
+                SelectManualCreationFlags(hosted) != 0x08080404) return false;
+#endif
             return SelectImagePath(null, manual) ==
                 @"C:\LexRunner.Qualification.Git\ucrt64\bin\git.exe" &&
                 SelectImagePath(null, null) == GitBundleImport.GitImage &&
