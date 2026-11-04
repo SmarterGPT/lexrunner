@@ -175,7 +175,7 @@ internal static class CaptureCalibration
         {
             var summary = new
             {
-                schemaVersion = "lexrunner-windows-owned-etw-manual/1",
+                schemaVersion = "lexrunner-windows-owned-etw-manual/2",
                 result = reason == "calibration_observed" ? "calibration_observed" : "refused",
                 reasonCode = reason,
                 sourceHead = expectedHead,
@@ -184,7 +184,8 @@ internal static class CaptureCalibration
                 runnerImage = Environment.GetEnvironmentVariable("ImageOS") ?? "",
                 runnerImageVersion = Environment.GetEnvironmentVariable("ImageVersion") ?? "",
                 hostOS = Environment.OSVersion.VersionString,
-                diagnosticImageSha256 = ShaFile(Environment.ProcessPath!),
+                diagnosticApphostSha256 = ShaFile(Environment.ProcessPath!),
+                diagnosticManagedAssemblySha256 = ShaFile(Path.Combine(AppContext.BaseDirectory, "OwnedTraceDraft.dll")),
                 expectedGitSha256 = expectedGitSha,
                 sessionGuid = identity?.Guid,
                 traceStarted = started,
@@ -192,8 +193,10 @@ internal static class CaptureCalibration
                 traceStopped = stopConfirmed,
                 fixedCommand = "git.exe --version",
                 commandCwd = "RUNNER_TEMP/" + Path.GetFileName(scratch),
-                gitFixtureImageSha256 = ShaFile(Path.Combine(AppContext.BaseDirectory,
+                gitFixtureApphostSha256 = ShaFile(Path.Combine(AppContext.BaseDirectory,
                     "git-fixture", "LexRunner.WindowsCoordinator.Git.exe")),
+                gitFixtureManagedAssemblySha256 = ShaFile(Path.Combine(AppContext.BaseDirectory,
+                    "git-fixture", "LexRunner.WindowsCoordinator.Git.dll")),
                 rootProcessId = probe?.RootProcessId,
                 rootCreationFileTimeUtc = probe?.RootCreationFileTimeUtc,
                 gitDurationMs = probe?.DurationMs,
@@ -201,6 +204,7 @@ internal static class CaptureCalibration
                 jobAssignedAtCreation = probe?.JobAssignedAtCreation,
                 jobTerminalDrained = probe?.TerminalJobDrained,
                 gitExitCode = probe?.ExitCode,
+                jobSamples = probe?.Samples,
                 etlBytes,
                 etlSha256 = etlSha,
                 liveLoss = Loss(initial),
@@ -210,6 +214,7 @@ internal static class CaptureCalibration
                 headerBuffersLost = census?.HeaderBuffersLost,
                 headerEndTimeValid = census?.HeaderEndTimeValid,
                 censusReasonCode = census?.ReasonCode,
+                censusHeaderObservation = census?.HeaderObservation,
                 censusEventCount = census?.EventCount,
                 schemas = census?.Schemas,
                 durationMs = watch.ElapsedMilliseconds,
@@ -415,7 +420,7 @@ internal static class CaptureCalibration
                 throw new InvalidDataException("probe_stderr_unexpected");
             using var json = JsonDocument.Parse(output);
             var root = json.RootElement;
-            if (root.GetProperty("SchemaVersion").GetString() != "lexrunner-etw-version-probe/1" ||
+            if (root.GetProperty("SchemaVersion").GetString() != "lexrunner-etw-version-probe/2" ||
                 !root.GetProperty("TerminalJobDrained").GetBoolean() ||
                 root.GetProperty("AuthorizesLoaderClosure").GetBoolean() ||
                 root.GetProperty("AuthorizesExecution").GetBoolean())
@@ -437,8 +442,29 @@ internal static class CaptureCalibration
                 throw new InvalidDataException("probe_exit_receipt_mismatch");
             if (duration is < 0 or > 30000)
                 throw new InvalidDataException("probe_duration_invalid");
+            var samplesElement = root.GetProperty("JobSamples");
+            if (samplesElement.ValueKind != JsonValueKind.Array || samplesElement.GetArrayLength() > 32)
+                throw new InvalidDataException("probe_samples_invalid");
+            var samples = new List<ProbeJobSample>();
+            var sampleIds = new HashSet<uint>();
+            foreach (var item in samplesElement.EnumerateArray())
+            {
+                if (item.EnumerateObject().Count() != 4) throw new InvalidDataException("probe_sample_shape");
+                var samplePid = item.GetProperty("ProcessId").GetUInt32();
+                var parentPid = item.GetProperty("ParentProcessId").GetUInt32();
+                var creation = item.GetProperty("CreationFileTimeUtc").GetInt64();
+                var kind = item.GetProperty("ImageKind").GetString();
+                if (samplePid == 0 || parentPid == 0 || creation <= 0 || !sampleIds.Add(samplePid) ||
+                    kind is not ("selected_git_root" or "console_name_candidate" or "other") ||
+                    (kind == "selected_git_root") != (samplePid == pid) ||
+                    (samplePid == pid && creation != created))
+                    throw new InvalidDataException("probe_sample_value");
+                samples.Add(new(samplePid, parentPid, creation, kind));
+            }
+            if (samples.Count > total || (pid > 0 && !sampleIds.Contains(pid)))
+                throw new InvalidDataException("probe_sample_count");
             return new VersionProbe(observed, pid, created, total, assigned, true,
-                code, duration);
+                code, duration, samples);
         }
         catch { throw new InvalidOperationException("probe_terminal_uncertain"); }
         finally
@@ -482,7 +508,9 @@ internal static class CaptureCalibration
             var result = JsonSerializer.Deserialize<SchemaCensusResult>(output);
             if (result is null || result.AuthorizesLoaderClosure ||
                 result.AuthorizesExecution ||
-                (process.ExitCode == 0) != result.Accepted)
+                (process.ExitCode == 0) != result.Accepted ||
+                (result.HeaderObservation is { } header &&
+                    (result.ReasonCode != "etl_header_invalid" || header.HeaderValid)))
                 return null;
             return result;
         }
@@ -547,5 +575,8 @@ internal static class CaptureCalibration
     private sealed record VersionProbe(bool Observed, uint RootProcessId,
         long RootCreationFileTimeUtc, uint JobTotalProcesses,
         bool JobAssignedAtCreation, bool TerminalJobDrained, int ExitCode,
-        long DurationMs);
+        long DurationMs, IReadOnlyList<ProbeJobSample> Samples);
+
+    private sealed record ProbeJobSample(uint ProcessId, uint ParentProcessId,
+        long CreationFileTimeUtc, string ImageKind);
 }

@@ -49,18 +49,25 @@ internal static class Program
                     !record.Canceled && !record.OutputExceeded &&
                     record.StreamsCompleted && record.JobAssignedAtCreation &&
                     record.ChildResumed && record.TerminalJobDrained &&
-                    record.DescendantCleanupProven && record.JobTotalProcesses == 1 &&
+                    record.DescendantCleanupProven && record.Error is null && record.JobTotalProcesses == 1 &&
                     record.HeldImageSha256 == expectedGitSha &&
                     record.Stdout.StartsWith("git version ", StringComparison.Ordinal) &&
                     root is { CreationFileTimeUtc: > 0 };
                 var result = new EtwVersionProbeReport(
-                    "lexrunner-etw-version-probe/1", observed ? "observed" : "refused",
+                    "lexrunner-etw-version-probe/2", observed ? "observed" : "refused",
                     observed ? "fixed_git_version_observed" : "fixed_git_version_refused",
                     record.RootProcessId, root?.CreationFileTimeUtc,
                     record.JobTotalProcesses, record.JobAssignedAtCreation,
                     record.TerminalJobDrained, record.ExitCode, record.DurationMs,
                     record.HeldImageSha256, record.StdoutBytes, record.StdoutSha256,
-                    false, false);
+                    false, false,
+                    record.ObservedJobProcesses.OrderBy(value => value.ProcessId)
+                        .Select(value => new EtwJobSample(value.ProcessId, value.ParentProcessId,
+                            value.CreationFileTimeUtc ?? 0,
+                            value.ProcessId == record.RootProcessId ? "selected_git_root" :
+                            string.Equals(Path.GetFileName(value.ImageNativePath), "conhost.exe",
+                                StringComparison.OrdinalIgnoreCase) ? "console_name_candidate" : "other"))
+                        .ToArray());
                 Console.WriteLine(JsonSerializer.Serialize(result,
                     FixtureJsonContext.Default.EtwVersionProbeReport));
                 return observed ? 0 : 3;
@@ -68,8 +75,8 @@ internal static class Program
             catch
             {
                 var result = new EtwVersionProbeReport(
-                    "lexrunner-etw-version-probe/1", "refused", "probe_exception",
-                    null, null, 0, false, false, null, 0, "", 0, "", false, false);
+                    "lexrunner-etw-version-probe/2", "refused", "probe_exception",
+                    null, null, 0, false, false, null, 0, "", 0, "", false, false, []);
                 Console.WriteLine(JsonSerializer.Serialize(result,
                     FixtureJsonContext.Default.EtwVersionProbeReport));
                 return 3;
@@ -194,7 +201,12 @@ internal sealed record EtwVersionProbeReport(string SchemaVersion, string Result
     string ReasonCode, uint? RootProcessId, long? RootCreationFileTimeUtc,
     uint JobTotalProcesses, bool JobAssignedAtCreation, bool TerminalJobDrained,
     int? ExitCode, long DurationMs, string GitImageSha256, int StdoutBytes,
-    string StdoutSha256, bool AuthorizesLoaderClosure, bool AuthorizesExecution);
+    string StdoutSha256, bool AuthorizesLoaderClosure, bool AuthorizesExecution,
+    IReadOnlyList<EtwJobSample> JobSamples);
+
+// Names are only diagnostic classes, never OS provenance or permitted companions.
+internal sealed record EtwJobSample(uint ProcessId, uint ParentProcessId,
+    long CreationFileTimeUtc, string ImageKind);
 
 [JsonSerializable(typeof(GraphSelectedImportReport))]
 [JsonSerializable(typeof(ImportOutcome))]
