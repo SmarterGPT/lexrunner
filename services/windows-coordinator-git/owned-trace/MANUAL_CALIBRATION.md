@@ -1,37 +1,38 @@
 # Manual owned ETW schema calibration
 
-Status: source-only diagnostic; no ETW session or Git probe has run. This is a
-diagnostic, not a protected helper, loader closure or execution authority.
+Status: non-authorizing diagnostic. Source qualification starts no trace or Git
+child; actual hosted observations and refusals are recorded below. This is not
+a protected helper, loader closure or execution authority.
 
 The separate `windows-owned-etw-manual.yml` runs only through
-`workflow_dispatch` on `main` on a fresh GitHub-hosted `windows-2022` VM.
-It requires the exact reviewed commit and a previously read-back fixed Git
-image SHA-256. The separate manual `windows-owned-etw-git-inventory.yml`
-checks only four fixed `C:\Program Files\Git` PE candidate paths on a
-hosted `windows-2022` runner. Its bounded receipt distinguishes absent,
-reparse, unsafe present and PE present files; SHA-256 and byte count appear
-only for safe PE candidates. A second step reads each fixed path again and
-checks the receipt before one-day upload. The workflow uses no caller path or
-`PATH` lookup and never starts Git. Initial hosted inventory run `40813845303`
-refused the original `mingw64\bin\git.exe` path as missing, empty or reparse
-and produced no artifact. Corrected inventory run `40816727040` on source
-`9466951ecbb2fbda580c4b0c695e3f9bada4aa86` and Windows 2022 image
-`win22`/`20261026.347.1` produced an 866-byte receipt (SHA-256
-`DB6B8E0957A660DA14B52930135AF7B19EC2520207390A417CE742B02E57A41D`).
-It observed `C:\Program Files\Git\bin\git.exe` and `cmd\git.exe` as
-PE-present, each 44,872 bytes with SHA-256
-`3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3`;
-both `mingw64` candidate paths were absent. The calibration now fixes only
-the `bin\git.exe` path. Its dispatch still requires the receipt's exact digest,
-and both the workflow and native diagnostic rehash that path on the later
-runner, refusing any mismatch. This inventory is a point-in-time path
-observation, not protected image binding or a stable selection record.
-Neither workflow has a trace route during inventory. The calibration job has
-read-only repository permission, no persisted
-checkout credential, no npm/MSI/helper install and a 15-minute timeout.
-An agent can dispatch it after exact-head independent review and required
-source CI under the standing workspace authorization. No new install or
-retention profile is proposed.
+`workflow_dispatch` on exact reviewed `main` on a fresh GitHub-hosted
+`windows-2022` VM. It requires the exact reviewed commit and selected official
+Git engine SHA-256 `9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8`.
+It reuses the reviewed `Prepare-SelectedGitFixture.ps1` CI acquisition:
+the exact official Git for Windows2.56.0.4 MinGit archive must match its
+independently published full digest and length before extraction into the absent
+fixed `C:\LexRunner.Qualification.Git` root. Existing roots refuse. The
+`ucrt64\bin\git.exe` engine must match its fixed4,412,760-byte length and
+digest; both the workflow and diagnostic recheck the selected image. The fixed
+fixture rejects every other digest, including a well-formed unknown digest.
+This is disposable CI fixture acquisition, outside the npm package; no helper,
+service, machine selection or user-host Git installation is performed. Only the
+bounded preparation receipt and sanitized capture summary may upload for one day.
+
+The older read-only Git inventory remains a point-in-time diagnostic, not the
+source of a new approved pin. Inventory41771581863 atf810 observed Windows image
+20261101.353.1 and the44888-byte shim matching official release SHA20d0dde3.
+The later calibration41771889101 received image20261025.346.1 and correctly
+refused `manual_etw_fixed_git_digest_refused` before build/capture; it produced
+no ETL or summary. Older inventory40816727040 observed the44872-byte shim
+SHA3b64043b. These observations show that a Windows runner label is not a fixed
+tool version. No observed host byte is auto-approved and no mismatch is retried
+as success. The new independently pinned release changes that failing premise.
+
+The calibration job has read-only repository permission, no persisted checkout
+credential, no npm/MSI/helper install and a15-minute timeout. An agent may dispatch
+it after exact-head independent review and required source CI under the standing
+workspace authorization. No new installation or retention profile is proposed.
 
 The `--capture-calibrate` command requires the exact manual runner argv and
 checks the GitHub event, repository, main ref, HEAD, runner OS, x64 and
@@ -49,8 +50,8 @@ different handle/name stop or automatic cleanup. The fixed Git fixture uses
 `STARTUPINFOEXW` with `PROC_THREAD_ATTRIBUTE_JOB_LIST` at `CreateProcessW`,
 `CREATE_SUSPENDED`, no breakaway permission, a held process handle,
 `IsProcessInJob` and `GetProcessTimes` creation FILETIME before resuming.
-Its compile-gated manual profile selects the observed `bin\git.exe` image
-for the actual child launch. The child environment contains only the
+Its compile-gated manual profile selects the fixed official `ucrt64\bin\git.exe`
+engine for the actual child launch. The child environment contains only the
 OS-queried System32 and Windows directories on `PATH`, and omits
 `GIT_EXEC_PATH`; it does not guess a Git support directory or use the runner's
 ambient `PATH`. The normal Git import image and environment stay unchanged.

@@ -14,6 +14,8 @@ internal static class CaptureCalibration
     private const uint Flags = 0x16000307;
     private const long MaxEtlBytes = 128L * 1024 * 1024;
     private const int MaxSummaryBytes = 8192;
+    private const string FixedGitImage = @"C:\LexRunner.Qualification.Git\ucrt64\bin\git.exe";
+    private const string SelectedGitSha256 = "9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     internal static int Run(string[] args)
@@ -294,8 +296,8 @@ internal static class CaptureCalibration
                 Directory.Exists(temp) && NoReparseAncestors(temp),
             "workspace_root" => Path.IsPathFullyQualified(work ?? "") &&
                 Directory.Exists(work) && NoReparseAncestors(work),
-            "git_image_digest" => gitSha is not null &&
-                ShaFile(@"C:\Program Files\Git\bin\git.exe") == gitSha,
+            "git_image_digest" => gitSha == SelectedGitSha256 &&
+                ShaFile(FixedGitImage) == SelectedGitSha256,
             "fixture_image" => File.Exists(Path.Combine(AppContext.BaseDirectory,
                 "git-fixture", "LexRunner.WindowsCoordinator.Git.exe")),
             _ => false,

@@ -64,9 +64,9 @@ internal static class BoundedGitChild
             var slot = new ImportSlot(@"C:\fixture", @"C:\fixture", @"C:\fixture",
                 @"C:\fixture", @"C:\fixture", @"C:\fixture", @"C:\fixture",
                 new string('0', 40), new string('a', 64));
-            var manual = ManualEtwGitProfile.Create(slot, new string('a', 64));
+            var manual = ManualEtwGitProfile.Create(slot, ManualEtwGitProfile.SelectedSha256);
             return SelectImagePath(null, manual) ==
-                @"C:\Program Files\Git\bin\git.exe" &&
+                @"C:\LexRunner.Qualification.Git\ucrt64\bin\git.exe" &&
                 SelectImagePath(null, null) == GitBundleImport.GitImage;
         }
         catch { return false; }

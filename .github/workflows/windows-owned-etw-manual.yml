@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       expected_git_sha256:
-        description: Reviewed fixed Git image digest from a read-only runner inventory
+        description: Exact selected official Git release engine SHA-256
         required: true
         type: string
 
@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: proofs/windows-workspace-boundary/global.json
-      - name: Bind exact head and fixed Git image
+      - name: Bind exact head and selected Git release digest
         shell: pwsh
         env:
           EXPECTED_HEAD: ${{ inputs.expected_head }}
@@ -40,7 +40,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
           if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or
-              $env:EXPECTED_GIT_SHA256 -cnotmatch '^[0-9a-f]{64}$' -or
+              $env:EXPECTED_GIT_SHA256 -cne '9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8' -or
               $env:GITHUB_SHA -cne $env:EXPECTED_HEAD -or
               $env:GITHUB_REPOSITORY -cne 'SmarterGPT/lexrunner' -or
               $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
@@ -52,10 +52,18 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $head -cne $env:EXPECTED_HEAD) {
             throw 'manual_etw_checkout_head_refused'
           }
-          $gitImage = 'C:\Program Files\Git\bin\git.exe'
+      - name: Provision the exact official Git release for this disposable fixture
+        id: selected_git_provision
+        shell: pwsh
+        run: ./.github/scripts/Prepare-SelectedGitFixture.ps1
+      - name: Recheck the exact selected Git engine before any trace
+        shell: pwsh
+        run: |
+          $gitImage = 'C:\LexRunner.Qualification.Git\ucrt64\bin\git.exe'
           if (-not [IO.File]::Exists($gitImage) -or
+              ([IO.FileInfo]::new($gitImage)).Length -ne 4412760 -or
               (Get-FileHash -LiteralPath $gitImage -Algorithm SHA256).Hash.ToLowerInvariant() -cne
-                  $env:EXPECTED_GIT_SHA256) {
+                  '9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8') {
             throw 'manual_etw_fixed_git_digest_refused'
           }
       - name: Verify source and bare capture refusals without ETW
@@ -164,6 +172,14 @@ jobs:
         with:
           name: windows-owned-etw-manual-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/windows-owned-etw-manual/${{ github.run_id }}-${{ github.run_attempt }}/summary.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Retain the bounded pinned release preparation receipt
+        if: always() && steps.selected_git_provision.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-owned-etw-git-preparation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.selected_git_provision.outputs.receipt }}
           if-no-files-found: error
           retention-days: 1
       - name: Preserve capture refusal as a failed workflow
