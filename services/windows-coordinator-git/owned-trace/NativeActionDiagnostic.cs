@@ -9,7 +9,7 @@ internal sealed record NativeActionDiagnostic(uint? NativeResultCode, string Fai
     internal bool Valid(uint adapterCode, string nativePhase)
     {
         uint expectedFlags;
-        if (nativePhase is "initial_query" or "final_query") expectedFlags = 0x06000307;
+        if (nativePhase is "initial_query" or "final_query") expectedFlags = 0x16000307;
         else if (nativePhase == "stop") expectedFlags = NativeTraceAdapter.ExpectedTerminalFlags;
         else return false;
         var empty = ParseFailure is null && IdentityMismatchMask == 0 &&
@@ -38,7 +38,7 @@ internal sealed record NativeActionDiagnostic(uint? NativeResultCode, string Fai
 
     internal static object[] WireSamples() => new[] {
         new NativeActionDiagnostic(13, "native"), new NativeActionDiagnostic(0, "parse", "capacity"),
-        new NativeActionDiagnostic(0, "identity", IdentityMismatchMask:1, ObservedMode:0x02400001, ObservedFlags:0x06000307)
+        new NativeActionDiagnostic(0, "identity", IdentityMismatchMask:1, ObservedMode:0x02400001, ObservedFlags:0x16000307)
     }.SelectMany(diagnostic => new[] {
         ManualCaptureDiagnostic.Status("capture", "refused", "initial_ownership_uncertain", null, "initial_query", 13, diagnostic),
         ManualCaptureDiagnostic.Status("capture", "refused", "ownership_or_stop_uncertain", null, "stop", 13,
@@ -53,7 +53,7 @@ internal sealed record NativeActionDiagnostic(uint? NativeResultCode, string Fai
             "logger_empty", "logger_termination", "file_offset", "file_bounds", "file_empty", "file_termination" })
             Check(failure, NativeTraceAdapter.SyntheticParseFailure(failure));
         var expected = new TraceIdentity("LexRunner Windows Git Loader Qualification",
-            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02400001, 0x06000307);
+            Guid.Parse("f6a585fc-57f8-4805-8599-d671282184f5"), @"C:\private\file.etl", 0x02400001, 0x16000307);
         Check("fixed_mode_accepted", NativeTraceAdapter.IdentityIsBounded(expected) &&
             SchemaCensus.CaptureModeIsExpected(expected.Mode));
         foreach (var mode in new uint[] { 0x02000001, 0x02800001, 0x02c00001,
@@ -127,7 +127,7 @@ internal sealed record NativeActionDiagnostic(uint? NativeResultCode, string Fai
             native with { NativeResultCode = 5 }, native with { ObservedFlags = 0 },
             new NativeActionDiagnostic(null,"unknown"), new NativeActionDiagnostic(0,"identity", IdentityMismatchMask:32,ObservedMode:0,ObservedFlags:0),
             new NativeActionDiagnostic(0,"identity", IdentityMismatchMask:1,ObservedMode:0,ObservedFlags:0),
-            new NativeActionDiagnostic(0,"identity", IdentityMismatchMask:0,ObservedMode:0x02400001,ObservedFlags:0x06000307),
+            new NativeActionDiagnostic(0,"identity", IdentityMismatchMask:0,ObservedMode:0x02400001,ObservedFlags:0x16000307),
             new NativeActionDiagnostic(0,"gate",IdentityMismatchMask:1,ObservedMode:0,ObservedFlags:0),
             new NativeActionDiagnostic(0,"gate"),
         };
@@ -176,7 +176,7 @@ internal sealed record NativeActionDiagnostic(uint? NativeResultCode, string Fai
         Check("terminal_zero", terminalZero.OneShot && terminalZero.MatchedQueries == 2 &&
             terminalZero.Result.Code == 0 && terminalZero.Result.Observation?.Flags == 0);
         var terminalRefusals = true;
-        foreach (var flags in new uint[] { 0x06000307, 1, 0x06000306, 0x80000000, uint.MaxValue })
+        foreach (var flags in new uint[] { 0x06000307, 0x16000307, 1, 0x16000306, 0x80000000, uint.MaxValue })
         {
             var value = NativeTraceAdapter.SyntheticStopResult(0, terminalFlags:flags);
             terminalRefusals &= value.OneShot && value.MatchedQueries == 2 && value.Result.Code == 13 &&
@@ -184,13 +184,56 @@ internal sealed record NativeActionDiagnostic(uint? NativeResultCode, string Fai
                 detail.IdentityMismatchMask == 16 && detail.ObservedFlags == flags && detail.Valid(13, "stop");
         }
         Check("terminal_nonzero_refused", terminalRefusals);
-        var activeFlags = new NativeActionDiagnostic(0,"identity",IdentityMismatchMask:1,ObservedMode:0x02400001,ObservedFlags:0x06000307);
+        var activeFlags = new NativeActionDiagnostic(0,"identity",IdentityMismatchMask:1,ObservedMode:0x02400001,ObservedFlags:0x16000307);
         var zeroFlags = activeFlags with { ObservedFlags = 0 };
         Check("active_query_phase", activeFlags.Valid(13,"initial_query") && activeFlags.Valid(13,"final_query") && !activeFlags.Valid(13,"stop"));
         Check("terminal_stop_phase", zeroFlags.Valid(13,"stop") && !zeroFlags.Valid(13,"initial_query") && !zeroFlags.Valid(13,"final_query"));
         Check("active_flagbit", (activeFlags with { IdentityMismatchMask = 16 }).Valid(13,"stop") && !(activeFlags with { IdentityMismatchMask = 16 }).Valid(13,"final_query"));
         Check("zero_flagbit", (zeroFlags with { IdentityMismatchMask = 16 }).Valid(13,"initial_query") && !(zeroFlags with { IdentityMismatchMask = 16 }).Valid(13,"stop"));
         Check("unknown_action_phase", !native.Valid(13,"other"));
+        Check("no_sysconfig_required_bits", expected.Flags == 0x16000307 &&
+            (expected.Flags & 0x06000307) == 0x06000307 &&
+            (expected.Flags ^ 0x06000307) == 0x10000000 &&
+            NativeTraceAdapter.IdentityIsBounded(expected));
+        bool RefusesActiveFlags(uint flags)
+        {
+            if (NativeTraceAdapter.IdentityIsBounded(expected with { Flags = flags })) return false;
+            foreach (var priorMatch in new[] { false, true })
+            {
+                var gate = new OwnedHandleGate(expected);
+                if (!gate.BeginStart()) return false;
+                gate.CompleteStart(new(0, 42));
+                if (priorMatch)
+                {
+                    if (!gate.BeginQuery(42) || !gate.CompleteQuery(42,
+                        new(0, new(expected.Name, expected.Guid, expected.EtlPath,
+                            expected.Mode, expected.Flags, 0, 0, 0)))) return false;
+                }
+                if (!gate.BeginQuery(42)) return false;
+                var seen = new TraceObservation(expected.Name, expected.Guid, expected.EtlPath,
+                    expected.Mode, flags, 0, 0, 0);
+                if (gate.CompleteQuery(42, new(0, seen), out var mismatch, out var matched) ||
+                    !matched || mismatch != 16 || gate.BeginStop(42) || gate.BeginQuery(42)) return false;
+            }
+            return true;
+        }
+        Check("old_active_profile_refused", RefusesActiveFlags(0x06000307));
+        var removalsRefuse = true;
+        var additionsRefuse = true;
+        for (var bit = 0; bit < 32; bit++)
+        {
+            var mask = 1u << bit;
+            if ((expected.Flags & mask) != 0) removalsRefuse &= RefusesActiveFlags(expected.Flags & ~mask);
+            else additionsRefuse &= RefusesActiveFlags(expected.Flags | mask);
+        }
+        Check("required_bit_removals_refused", removalsRefuse);
+        Check("unknown_bit_additions_refused", additionsRefuse);
+        var oldProfileMismatch = new NativeActionDiagnostic(0, "identity", IdentityMismatchMask:16,
+            ObservedMode:expected.Mode, ObservedFlags:0x06000307);
+        Check("old_profile_mismatch_grammar", oldProfileMismatch.Valid(13, "initial_query") &&
+            oldProfileMismatch.Valid(13, "final_query") &&
+            !(oldProfileMismatch with { IdentityMismatchMask = 1 }).Valid(13, "initial_query") &&
+            !(oldProfileMismatch with { IdentityMismatchMask = 1 }).Valid(13, "final_query"));
         return cases;
     }
 }
