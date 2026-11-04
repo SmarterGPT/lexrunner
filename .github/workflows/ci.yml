@@ -208,7 +208,8 @@ jobs:
   # Native Windows bootstrap, portable regressions, and a source-built shared broker
   # slice through verify-removal.ps1. Full native-host conformance remains #893 work.
   windows-bootstrap:
-    runs-on: windows-latest
+    # Native trust builds require the qualified VS 2022 (MSVC17) toolchain.
+    runs-on: windows-2022
     timeout-minutes: 45
     if: >-
       github.event_name == 'pull_request' ||
