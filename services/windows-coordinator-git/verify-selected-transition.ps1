@@ -9,8 +9,8 @@ if (-not $env:WINDIR) { $env:WINDIR=$env:SystemRoot }
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')).TrimEnd('\')
 $artifact=Join-Path $repo 'artifacts\windows-coordinator-git-selected-transition'
 [IO.Directory]::CreateDirectory($artifact) | Out-Null
-$git='C:\Program Files\Git\bin\git.exe'
-$expectedGitSha='3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3'
+$git='C:\LexRunner.Qualification.Git\ucrt64\bin\git.exe'
+$expectedGitSha='9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8'
 if ($env:GITHUB_ACTIONS -ceq 'true' -and $env:ImageOS -cne 'win22') {
     throw 'hosted_git_fixture_runner_not_windows_2022'
 }
@@ -19,7 +19,7 @@ if (-not [IO.File]::Exists($git) -or
     throw 'fixed_hosted_git_image_missing_or_reparse'
 }
 $gitHold=[IO.File]::Open($git,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
-if($gitHold.Length -ne 44872) { throw 'fixed_hosted_git_image_size_mismatch' }
+if($gitHold.Length -ne 4412760) { throw 'fixed_hosted_git_image_size_mismatch' }
 $gitSha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($gitHold)).ToLowerInvariant()
 $gitHold.Position=0
 if($gitSha -cne $expectedGitSha) { throw 'fixed_hosted_git_image_digest_mismatch' }

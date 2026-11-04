@@ -73,12 +73,11 @@ describe("Toolchain Manifest", () => {
       expect(typescript?.version).toMatch(/^\d+\.\d+/);
     });
 
-    it("should include ESLint version from package.json", () => {
+    it("omits ESLint when it is not a declared source tool", () => {
       const manifest = generateToolchainManifest();
 
       const eslint = manifest.tools.find((t) => t.name === "ESLint");
-      expect(eslint).toBeDefined();
-      expect(eslint?.version).toMatch(/^\d+\.\d+/);
+      expect(eslint).toBeUndefined();
     });
 
     it("should use UTC timezone from environment", () => {
