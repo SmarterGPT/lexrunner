@@ -9,7 +9,7 @@ function Assert-SelectedReceipt([object]$receipt, [long]$byteCount) {
         $receipt.authorizesExecution -ne $false -or
         $receipt.installedCrossAccountProof -ne $false -or
         $receipt.loaderGraphQualified -ne $false -or
-        $receipt.fixedGitSha256 -cne '3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3' -or
+        $receipt.fixedGitSha256 -cne '9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8' -or
         @($receipt.commands).Count -gt 40) { throw 'selected_git_receipt_contract_invalid' }
     foreach ($command in @($receipt.commands)) {
         if ($command.stdoutTail.Length -gt 512 -or $command.stderrTail.Length -gt 512) {
@@ -22,7 +22,7 @@ if ($SelfTest) {
     function New-Receipt([int]$count) {
         [pscustomobject]@{ schemaVersion='windows-git-view-transition-source/1'
           authorizesExecution=$false; installedCrossAccountProof=$false; loaderGraphQualified=$false
-          fixedGitSha256='3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3'
+          fixedGitSha256='9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8'
           commands=@(1..$count | ForEach-Object { [pscustomobject]@{stdoutTail='';stderrTail=''} }) }
     }
     function Expect-Refusal([object]$receipt,[long]$bytes,[string]$reason) {
@@ -39,7 +39,9 @@ if ($SelfTest) {
     Expect-Refusal $tail 131072 'selected_git_receipt_command_unbounded'
     $authority=New-Receipt 34; $authority.authorizesExecution=$true
     Expect-Refusal $authority 131072 'selected_git_receipt_contract_invalid'
-    'selected_git_receipt_guard_selftest_pass six_cases no_git_started'
+    $wrongGit=New-Receipt 34; $wrongGit.fixedGitSha256='3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3'
+    Expect-Refusal $wrongGit 131072 'selected_git_receipt_contract_invalid'
+    'selected_git_receipt_guard_selftest_pass seven_cases no_git_started'
     exit 0
 }
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
