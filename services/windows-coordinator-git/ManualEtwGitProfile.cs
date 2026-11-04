@@ -6,7 +6,11 @@ namespace LexRunner.WindowsCoordinator.Git;
 // production Git import selection.
 internal sealed class ManualEtwGitProfile
 {
+#if GIT_HOSTED_2022_FIXTURE
+    internal const string FixedGitImage = @"C:\LexRunner.Qualification.Git\ucrt64\bin\git.exe";
+#else
     internal const string FixedGitImage = @"C:\Program Files\Git\bin\git.exe";
+#endif
     private readonly Dictionary<string, string> _expectedEnvironment;
     internal string GitImage => FixedGitImage;
     internal string ExpectedSha256 { get; }
