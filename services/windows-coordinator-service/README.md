@@ -2,8 +2,10 @@
 
 This directory contains the first **source-only** NativeAOT SCM service host
 for the selected optional Windows coordinator profile. The normal image accepts
-only `--service` and calls `StartServiceCtrlDispatcherW`; direct console
-launch fails. It requires the current user SID to resolve to
+`--service` through `StartServiceCtrlDispatcherW` and one exact private trust
+child mode which refuses while its installed context is unavailable. Direct service
+launch fails. The NativeAOT image uses the GUI subsystem so private children do not
+create a separate console host. It requires the current user SID to resolve to
 `NT SERVICE\LexRunnerCoordinator` and refuses an administrator token.
 It registers stop/shutdown controls and reports SCM start, running, stop
 pending, and stopped states. The stop handler attempts `STOP_PENDING` before
@@ -68,17 +70,26 @@ encoding, and bounded v1 denial encoding for an isolated fixture;
 mid-header disconnect recovery; `--lifecycle-selftest` checks the state order.
 `--private-launch-selftest` exercises only the compile-gated private child.
 That fixture's `no_effect` response is not reachable in the normal image.
-Run `pwsh -NoLogo -NoProfile -File .\verify.ps1` from this directory to
-publish both images and run the selftest plus direct-launch refusals. It does
-not register, start, stop, or install a service. Compiler output is isolated in
-run-owned artifacts; existing project `bin/` and `obj/` directories are preserved.
-Use `-OutputDirectory` with a fresh absolute directory under repository artifacts
-when retaining multiple runs. NuGet auditing stays enabled.
-The ordinary publish output is
-`artifacts/windows-coordinator-service-source/publish/LexRunner.WindowsCoordinator.Service.exe`;
-the bounded JSON receipt is saved at
-`artifacts/windows-coordinator-service-source/verification-receipt.json`.
-An installer must consume a separately reviewed and signed exact payload.
+Run `pwsh -NoLogo -NoProfile -File .\verify.ps1` from this directory for the
+complete historical source gate, including pipe and private-launch fixtures. It
+builds the actual shared native archive and both NativeAOT images with package
+auditing enabled. `-PureOnly` runs the native policy, managed ABI, publication,
+protocol and lifecycle pure tests plus normal closed-mode refusals; it explicitly
+skips the SCM dispatcher, pipe and private-launch host checks and reports
+`source_pure_only_pass`, not the full source gate. Neither mode installs a service.
+
+Both modes use fresh `artifacts/windows-coordinator-service-source/qualification-<nonce>`
+outputs, including separate intermediates. `-OutputDirectory` accepts a fresh absolute
+path under repository artifacts. They do not delete project `bin/obj` or
+overwrite old evidence. The engineering GUI capture reads both byte streams with
+32 KiB retained per stream and 64 KiB total, strict UTF-8 and exact expected line
+endings. It waits for direct process exit and stream settlement, attempts at most
+one direct-process kill and refuses timeout/overflow/close or terminal uncertainty.
+Unsettled managed owners remain retained until verifier exit. This is direct-parent
+and stream evidence, not descendant terminal proof or native OS-close attestation.
+`process-checks.json`, `build-checks.json`, native build evidence and
+`verification-receipt.json` retain the scoped observations. An installer must
+consume a separately reviewed and signed exact payload.
 
 Unqualified installed gates include SCM image/configuration readback, service
 SID and privilege token, mandatory integrity behavior, cross-account
@@ -92,6 +103,25 @@ Primary Windows API references:
 [service status](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-setservicestatus),
 [named-pipe security](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights),
 and [peer impersonation](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient).
+
+## Statically linked trust primitive, closed installed context
+
+`NativeTrustAbi` links the private version2 C ABI through NativeAOT DirectPInvoke
+to the actual `windows-coordinator-trust-native` archive. The fixed
+`--private-trust-child` route cannot obtain `PrivateTrustChildContext`; it returns
+`protected_bootstrap_unavailable` before any trust API. No request/path/hash/JSON
+or selected helper can authenticate itself. `TryOpenInstalled` also remains false.
+The compile-gated `--trust-contract-selftest` checks ABI layout and rejection facts
+without SDK trust calls. Full selected-policy success is a one-use, start-relative
+30-second observation requiring independent retained installed custody, not
+execution/admission authority. Node continues to own policy and Attempt semantics.
+
+The shared SDK and selected policy enforce explicit request/chain/purpose/current
+revocation and once-close outcomes. `/DEPENDENTLOADFLAG:0x800` and static linkage
+are build requirements, not proof of an independently protected initial loader.
+No installed bootstrap/process/selection, broker or governed execution readiness
+follows; helper_missing stays refused. npm never downloads or installs this
+separately optional application.
 
 Both fixed service objects permanently refuse custom controls 128 through 255 with
 ERROR_CALL_NOT_IMPLEMENTED (120) before payload access or product-state locks.

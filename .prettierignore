@@ -32,3 +32,9 @@ pnpm-lock.yaml
 .env.*
 test-mcp-dogfood.mjs
 test-mcp.mjs
+
+# Generated .NET build outputs
+services/**/bin/
+services/**/obj/
+installers/**/bin/
+installers/**/obj/

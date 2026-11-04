@@ -16,6 +16,7 @@ on:
       - "services/windows-coordinator-host/**"
       - "services/windows-coordinator-client/**"
       - "services/windows-coordinator-service/**"
+      - "services/windows-coordinator-trust-native/**"
       - "services/windows-coordinator-worker-slot/**"
       - "services/windows-coordinator-admission/**"
       - "services/windows-coordinator-git/**"
@@ -207,7 +208,8 @@ jobs:
   # Native Windows bootstrap, portable regressions, and a source-built shared broker
   # slice through verify-removal.ps1. Full native-host conformance remains #893 work.
   windows-bootstrap:
-    runs-on: windows-latest
+    # Native trust builds require the qualified VS 2022 (MSVC17) toolchain.
+    runs-on: windows-2022
     timeout-minutes: 45
     if: >-
       github.event_name == 'pull_request' ||
@@ -291,7 +293,7 @@ jobs:
               $result.sourceOnly -ne $true) {
             throw 'Installed-readback source contract made an unsupported authority claim'
           }
-      - name: Qualify fail-closed Windows coordinator service source
+      - name: Qualify statically linked fail-closed Windows coordinator source
         shell: pwsh
         run: ./services/windows-coordinator-service/verify.ps1
       - name: Qualify inactive Windows worker-slot source
@@ -377,7 +379,10 @@ jobs:
             artifacts/windows-helper-msi-install-ci/*.log
             artifacts/windows-coordinator-host-probe/verification-receipt.json
             artifacts/windows-coordinator-client/verification-receipt.json
-            artifacts/windows-coordinator-service-source/verification-receipt.json
+            artifacts/windows-coordinator-service-source/qualification-*/verification-receipt.json
+            artifacts/windows-coordinator-service-source/qualification-*/process-checks.json
+            artifacts/windows-coordinator-service-source/qualification-*/build-checks.json
+            artifacts/windows-coordinator-service-source/qualification-*/native/build-receipt.json
             artifacts/windows-coordinator-worker-slot-source/verification-receipt.json
             artifacts/windows-coordinator-v3-graph-source/qualification-*/verification-receipt.json
             artifacts/windows-coordinator-root-provisioner/run-*/verification-receipt.json
